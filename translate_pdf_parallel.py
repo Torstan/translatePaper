@@ -53,7 +53,7 @@ def load_cached_translations(path: Path, valid_ids: set[str], *, retranslate: bo
 
     existing = json.loads(path.read_text(encoding="utf-8"))
     overlap = len(valid_ids & set(existing))
-    if valid_ids and overlap < max(1, int(len(valid_ids) * 0.6)):
+    if valid_ids and overlap == 0:
         backup_if_exists(path, "stale")
         return {}
     return {key: value for key, value in existing.items() if key in valid_ids}
@@ -223,7 +223,15 @@ def translate_one_pdf(pdf_path: Path, output_dir: Path, args) -> dict:
         job_paths["source_pages_path"].unlink(missing_ok=True)
 
     pdf_size_pt = pipeline.get_pdf_page_size(pdf_path)
-    pages = pipeline.load_or_build_source_pages(pdf_path, args.dpi, job_paths, pdf_size_pt)
+    pages = pipeline.load_or_build_source_pages(
+        pdf_path,
+        args.dpi,
+        job_paths,
+        pdf_size_pt,
+        args.page_start,
+        args.page_end,
+        force_ocr=args.force_ocr,
+    )
     page_end = args.page_end or len(pages)
     selected_pages = [
         (idx, page)
@@ -243,14 +251,24 @@ def translate_one_pdf(pdf_path: Path, output_dir: Path, args) -> dict:
     )
     translations = run_parallel_translation(batches, translations, job_paths, args)
 
-    pipeline.render_pages(selected_pages, translations, args.dpi, job_paths)
     output_dir.mkdir(parents=True, exist_ok=True)
-    pipeline.write_latex(
-        output_path,
-        [idx for idx, _ in selected_pages],
-        pdf_size_pt,
-        job_paths,
-    )
+    if args.render_mode == "raster":
+        pipeline.render_pages(selected_pages, translations, args.dpi, job_paths)
+        pipeline.write_latex(
+            output_path,
+            [idx for idx, _ in selected_pages],
+            pdf_size_pt,
+            job_paths,
+        )
+    else:
+        pipeline.write_vector_pdf(
+            pdf_path,
+            output_path,
+            selected_pages,
+            translations,
+            pdf_size_pt,
+            args.dpi,
+        )
 
     result = {
         "pdf": str(pdf_path),
@@ -323,6 +341,8 @@ def main():
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--retranslate", action="store_true")
     parser.add_argument("--refresh-source", action="store_true")
+    parser.add_argument("--force-ocr", action="store_true")
+    parser.add_argument("--render-mode", choices=["vector", "raster"], default="vector")
     parser.add_argument("--no-qa", dest="qa", action="store_false")
     parser.add_argument("--qa-mode", choices=["all", "sample"], default="sample")
     parser.add_argument("--qa-sample-size", type=int, default=100)

@@ -22,9 +22,16 @@ TOOL_ROOT = Path(__file__).resolve().parent
 TMP_ROOT = TOOL_ROOT / "work"
 VENDOR_ROOT = TOOL_ROOT / "vendor"
 FONT_PATH = "/usr/share/fonts/truetype/arphic/uming.ttc"
+SOURCE_FONT_SCALE = 0.94
 FORMULA_COLUMN_FRACTION = 0.52
 FORMULA_PAD_TOP_PX = 8
 FORMULA_PAD_BOTTOM_PX = 4
+TEXT_BOX_MARGIN_PX = 8
+VECTOR_FONT = "china-s"
+VECTOR_BODY_COLOR = (0, 0, 0)
+VECTOR_ACCENT_COLOR = (0.58, 0.0, 0.06)
+FULL_PAGE_IMAGE_AREA_FRACTION = 0.70
+EDGE_ICON_MAX_SIZE_PT = 40.0
 
 
 def slugify(text: str) -> str:
@@ -66,7 +73,13 @@ def run(cmd, *, input_text=None, cwd=TOOL_ROOT, check=True):
     return proc
 
 
-def ensure_assets(pdf_path: Path, dpi: int, job_paths) -> Path:
+def ensure_assets(
+    pdf_path: Path,
+    dpi: int,
+    job_paths,
+    page_start: int = 1,
+    page_end: int = 0,
+) -> Path:
     TMP_ROOT.mkdir(parents=True, exist_ok=True)
     job_paths["job_dir"].mkdir(parents=True, exist_ok=True)
     job_paths["pages_dir"].mkdir(parents=True, exist_ok=True)
@@ -75,10 +88,22 @@ def ensure_assets(pdf_path: Path, dpi: int, job_paths) -> Path:
     if not bbox_path.exists():
         proc = run(["pdftotext", "-bbox-layout", str(pdf_path), "-"], check=True)
         bbox_path.write_text(proc.stdout, encoding="utf-8")
-    first_page = job_paths["pages_dir"] / "page-001.png"
-    if not first_page.exists():
+    if page_end:
+        expected_pages = [
+            job_paths["pages_dir"] / f"page-{page_num:03d}.png"
+            for page_num in range(page_start, page_end + 1)
+        ]
+        needs_render = any(not path.exists() for path in expected_pages)
+    else:
+        needs_render = not (job_paths["pages_dir"] / "page-001.png").exists()
+
+    if needs_render:
         prefix = str(job_paths["pages_dir"] / "page")
-        run(["pdftocairo", "-png", "-r", str(dpi), str(pdf_path), prefix], check=True)
+        cmd = ["pdftocairo", "-png", "-r", str(dpi)]
+        if page_end:
+            cmd.extend(["-f", str(page_start), "-l", str(page_end)])
+        cmd.extend([str(pdf_path), prefix])
+        run(cmd, check=True)
         for src in sorted(job_paths["pages_dir"].glob("page-*.png")):
             # pdftocairo emits page-1.png, page-2.png; normalize to page-001.png.
             m = re.search(r"page-(\d+)\.png$", src.name)
@@ -213,6 +238,39 @@ def should_use_ocr(pages) -> bool:
     ]
     total_chars = sum(len(block["text"]) for block in nontrivial)
     return len(nontrivial) <= max(10, len(pages) * 2) and total_chars <= max(600, len(pages) * 80)
+
+
+def text_extraction_looks_garbled(pages) -> bool:
+    texts = [
+        block["text"]
+        for page in pages
+        for block in page
+        if not is_trivial_keep(block["text"])
+    ]
+    if not texts:
+        return False
+
+    joined = " ".join(texts)
+    compact = re.sub(r"\s+", "", joined)
+    total_chars = len(compact)
+    if total_chars < 400:
+        return False
+
+    word_chars = sum(len(token) for token in re.findall(r"[A-Za-z]{3,}", joined))
+    symbol_chars = len(re.findall(r"[^A-Za-z0-9\s]", joined))
+    garbled_blocks = 0
+    for text in texts:
+        text_compact = re.sub(r"\s+", "", text)
+        if not text_compact:
+            continue
+        alnum_chars = len(re.findall(r"[A-Za-z0-9]", text))
+        if alnum_chars < max(2, int(len(text_compact) * 0.25)):
+            garbled_blocks += 1
+
+    word_ratio = word_chars / total_chars
+    symbol_ratio = symbol_chars / total_chars
+    garbled_block_ratio = garbled_blocks / max(1, len(texts))
+    return word_ratio < 0.45 and symbol_ratio > 0.35 and garbled_block_ratio > 0.30
 
 
 def build_ocr_preserve_groups(ocr_lines, page_width_px: int, page_height_px: int):
@@ -383,9 +441,13 @@ def merge_ocr_lines(lines, page_width_px: int, barriers=None):
 def generate_ocr_pages(job_paths, pdf_size_pt):
     ocr = load_rapidocr()
     width_pt, height_pt = pdf_size_pt
-    pages = []
+    pages_by_num = {}
 
-    for page_idx, image_path in enumerate(sorted(job_paths["pages_dir"].glob("page-*.png")), start=1):
+    for image_path in sorted(job_paths["pages_dir"].glob("page-*.png")):
+        match = re.search(r"page-(\d+)\.png$", image_path.name)
+        if not match:
+            continue
+        page_idx = int(match.group(1))
         image = Image.open(image_path)
         width_px, height_px = image.size
         scale_x = width_pt / width_px
@@ -447,18 +509,28 @@ def generate_ocr_pages(job_paths, pdf_size_pt):
                     **block,
                 }
             )
-        pages.append(page_blocks)
-    return pages
+        pages_by_num[page_idx] = page_blocks
+    if not pages_by_num:
+        return []
+    return [pages_by_num.get(idx, []) for idx in range(1, max(pages_by_num) + 1)]
 
 
-def load_or_build_source_pages(pdf_path: Path, dpi: int, job_paths, pdf_size_pt):
+def load_or_build_source_pages(
+    pdf_path: Path,
+    dpi: int,
+    job_paths,
+    pdf_size_pt,
+    page_start: int = 1,
+    page_end: int = 0,
+    force_ocr: bool = False,
+):
     source_pages_path = job_paths["source_pages_path"]
+    ensure_assets(pdf_path, dpi, job_paths, page_start, page_end)
     if source_pages_path.exists():
         return load_source_pages(job_paths)
 
-    bbox_path = ensure_assets(pdf_path, dpi, job_paths)
-    pages = parse_bbox(bbox_path)
-    if should_use_ocr(pages):
+    pages = parse_bbox(job_paths["bbox_path"])
+    if force_ocr or should_use_ocr(pages) or text_extraction_looks_garbled(pages):
         pages = generate_ocr_pages(job_paths, pdf_size_pt)
     save_source_pages(pages, job_paths)
     return pages
@@ -690,27 +762,65 @@ def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int):
     lines = []
     dummy = ImageDraw.Draw(Image.new("RGB", (10, 10), "white"))
 
-    for paragraph in paragraphs:
-        current = ""
-        for ch in paragraph:
+    def text_width(value: str) -> int:
+        bbox = dummy.textbbox((0, 0), value, font=font)
+        return bbox[2] - bbox[0]
+
+    def tokens_for(paragraph: str) -> list[str]:
+        return re.findall(
+            r"\s+|[A-Za-z0-9][A-Za-z0-9._+:/%#?=&~×-]*|.",
+            paragraph,
+            flags=re.S,
+        )
+
+    def append_long_token(token: str, current: str):
+        for ch in token:
             candidate = current + ch
-            bbox = dummy.textbbox((0, 0), candidate, font=font)
-            if bbox[2] <= max_width or not current:
+            if text_width(candidate) <= max_width or not current:
                 current = candidate
             else:
                 lines.append(current.rstrip())
-                current = ch.lstrip() if ch == " " else ch
+                current = ch
+        return current
+
+    for paragraph in paragraphs:
+        current = ""
+        for token in tokens_for(paragraph):
+            if token.isspace() and not current:
+                continue
+            candidate = current + token
+            if text_width(candidate) <= max_width or not current:
+                current = candidate
+            else:
+                lines.append(current.rstrip())
+                token = token.lstrip()
+                if not token:
+                    current = ""
+                elif text_width(token) <= max_width:
+                    current = token
+                else:
+                    current = append_long_token(token, "")
+            if current and text_width(current) > max_width:
+                current = append_long_token(current, "")
         if current:
             lines.append(current.rstrip())
     return lines or [text]
 
 
-def fit_font_and_lines(text: str, box_width: int, box_height: int, vertical: bool):
+def fit_font_and_lines(
+    text: str,
+    box_width: int,
+    box_height: int,
+    vertical: bool,
+    max_font_size: int | None = None,
+):
     if vertical:
         max_size = max(14, min(box_width, box_height // 2))
         return max_size, [text]
 
     low, high = 10, max(12, min(80, box_height))
+    if max_font_size is not None:
+        high = max(low, min(high, max_font_size))
     best = (10, wrap_text(text, ImageFont.truetype(FONT_PATH, 10), box_width))
     while low <= high:
         mid = (low + high) // 2
@@ -725,6 +835,25 @@ def fit_font_and_lines(text: str, box_width: int, box_height: int, vertical: boo
         else:
             high = mid - 1
     return best
+
+
+def source_line_count(text: str) -> int:
+    return max(1, normalize_text(text).count("\n") + 1)
+
+
+def target_font_size_for_block(block, dpi: int, vertical: bool) -> int | None:
+    if vertical:
+        return None
+    scale = dpi / 72.0
+    block_height_px = max(1.0, (block["yMax"] - block["yMin"]) * scale)
+    source_line_height = block_height_px / source_line_count(block.get("text", ""))
+    return max(10, int(round(source_line_height / 1.25 * SOURCE_FONT_SCALE)))
+
+
+def target_font_size_points_for_block(block, *, max_size: float = 30.0) -> float:
+    block_height_pt = max(1.0, block["yMax"] - block["yMin"])
+    source_line_height = block_height_pt / source_line_count(block.get("text", ""))
+    return max(6.0, min(max_size, source_line_height / 1.25 * SOURCE_FONT_SCALE))
 
 
 def draw_vertical(draw_img: Image.Image, text: str, box, fill_bg, fill_text):
@@ -790,6 +919,12 @@ def overlap_area(box_a, box_b):
     return (x1 - x0) * (y1 - y0)
 
 
+def horizontal_overlap(box_a, box_b):
+    x0 = max(box_a[0], box_b[0])
+    x1 = min(box_a[2], box_b[2])
+    return max(0, x1 - x0)
+
+
 def avoid_protected_boxes(box, protected_boxes):
     x0, y0, x1, y1 = box
     for protected in protected_boxes or []:
@@ -812,9 +947,96 @@ def avoid_protected_boxes(box, protected_boxes):
     return x0, y0, x1, y1
 
 
-def draw_block(draw_img: Image.Image, block, translation: str, dpi: int, protected_boxes=None):
-    box = block_to_px_box(block, dpi, draw_img.width, draw_img.height, pad=2)
-    box = avoid_protected_boxes(box, protected_boxes)
+def translation_for_block(block, translations):
+    translated = translations.get(block["id"])
+    if translated:
+        return translated
+    if is_trivial_keep(block["text"]):
+        return ""
+    return block["text"]
+
+
+def text_required_height(text: str, width: int, font_size: int) -> int:
+    font = ImageFont.truetype(FONT_PATH, font_size)
+    lines = wrap_text(text, font, width)
+    ascent, descent = font.getmetrics()
+    line_height = int((ascent + descent) * 1.25)
+    return line_height * max(1, len(lines)) + 4
+
+
+def boxes_horizontally_conflict(box_a, box_b) -> bool:
+    overlap = horizontal_overlap(box_a, box_b)
+    min_width = max(1, min(box_a[2] - box_a[0], box_b[2] - box_b[0]))
+    return overlap >= min_width * 0.2
+
+
+def build_render_boxes(blocks, translations, dpi: int, page_width: int, page_height: int, protected_boxes):
+    base_boxes = {}
+    for block in blocks:
+        if should_preserve_as_image(block):
+            continue
+        if is_page_number(block["text"]):
+            continue
+        translation = translation_for_block(block, translations)
+        if not translation:
+            continue
+        box = block_to_px_box(block, dpi, page_width, page_height, pad=2)
+        box = avoid_protected_boxes(box, protected_boxes)
+        if box is not None:
+            base_boxes[block["id"]] = box
+
+    render_boxes = dict(base_boxes)
+    occupied = list(base_boxes.items())
+    protected_occupied = [(f"protected-{idx}", box) for idx, box in enumerate(protected_boxes or [])]
+    for block in blocks:
+        box = base_boxes.get(block["id"])
+        if box is None:
+            continue
+        translation = translation_for_block(block, translations)
+        x0, y0, x1, y1 = box
+        width = max(10, x1 - x0 - 4)
+        vertical = (y1 - y0) > (x1 - x0) * 3 and len(translation) > 4
+        target_font_size = target_font_size_for_block(block, dpi, vertical)
+        if target_font_size is None:
+            continue
+        required_height = text_required_height(translation, width, target_font_size)
+        current_height = y1 - y0
+        if required_height <= current_height:
+            continue
+
+        top_limit = TEXT_BOX_MARGIN_PX
+        bottom_limit = page_height - TEXT_BOX_MARGIN_PX
+        for other_id, other_box in occupied + protected_occupied:
+            if other_id == block["id"]:
+                continue
+            if not boxes_horizontally_conflict(box, other_box):
+                continue
+            if other_box[3] <= y0:
+                top_limit = max(top_limit, other_box[3] + TEXT_BOX_MARGIN_PX)
+            elif other_box[1] >= y1:
+                bottom_limit = min(bottom_limit, other_box[1] - TEXT_BOX_MARGIN_PX)
+
+        remaining = required_height - current_height
+        grow_down = max(0, min(remaining, bottom_limit - y1))
+        y1 += grow_down
+        remaining -= grow_down
+        grow_up = max(0, min(remaining, y0 - top_limit))
+        y0 -= grow_up
+        render_boxes[block["id"]] = (x0, y0, x1, y1)
+    return render_boxes
+
+
+def draw_block(
+    draw_img: Image.Image,
+    block,
+    translation: str,
+    dpi: int,
+    protected_boxes=None,
+    render_box=None,
+):
+    box = render_box or block_to_px_box(block, dpi, draw_img.width, draw_img.height, pad=2)
+    if render_box is None:
+        box = avoid_protected_boxes(box, protected_boxes)
     if box is None:
         return
     x0, y0, x1, y1 = box
@@ -830,7 +1052,14 @@ def draw_block(draw_img: Image.Image, block, translation: str, dpi: int, protect
         draw_vertical(draw_img, translation, box, bg, (32, 32, 32, 255))
         return
 
-    font_size, lines = fit_font_and_lines(translation, width, height, vertical=False)
+    target_font_size = target_font_size_for_block(block, dpi, vertical=False)
+    font_size, lines = fit_font_and_lines(
+        translation,
+        width,
+        height,
+        vertical=False,
+        max_font_size=target_font_size,
+    )
     font = ImageFont.truetype(FONT_PATH, font_size)
     ascent, descent = font.getmetrics()
     line_height = int((ascent + descent) * 1.25)
@@ -854,22 +1083,324 @@ def render_pages(pages, translations, dpi: int, job_paths):
             for block in blocks
             if should_preserve_as_image(block)
         ]
+        render_boxes = build_render_boxes(blocks, translations, dpi, img.width, img.height, protected_boxes)
         for block in blocks:
             if should_preserve_as_image(block):
                 continue
             if is_page_number(block["text"]):
                 continue
-            translated = translations.get(block["id"])
+            translated = translation_for_block(block, translations)
             if not translated:
-                if is_trivial_keep(block["text"]):
-                    continue
-                translated = block["text"]
-            draw_block(img, block, translated, dpi)
+                continue
+            draw_block(
+                img,
+                block,
+                translated,
+                dpi,
+                protected_boxes=protected_boxes,
+                render_box=render_boxes.get(block["id"]),
+            )
         for box in protected_boxes:
             x0, y0, x1, y1 = box
             if x1 > x0 and y1 > y0:
                 img.alpha_composite(source_img.crop(box), (x0, y0))
         img.save(out)
+
+
+def load_fitz():
+    if str(VENDOR_ROOT) not in sys.path:
+        sys.path.insert(0, str(VENDOR_ROOT))
+    try:
+        import fitz
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Vector PDF rendering requires PyMuPDF. "
+            "Install it with: python3 -m pip install --target vendor pymupdf"
+        ) from exc
+    return fitz
+
+
+def vector_text_color(block) -> tuple[float, float, float]:
+    text = block.get("text", "")
+    if text.startswith("DeepSeek Scales") or text.startswith("NVIDIA ") or text.startswith("Figure "):
+        return VECTOR_ACCENT_COLOR if text.startswith("DeepSeek Scales") else VECTOR_BODY_COLOR
+    return VECTOR_BODY_COLOR
+
+
+def expanded_rect_for_text(fitz, block, page_rect):
+    pad_x = 1.5
+    pad_y = 1.5
+    return fitz.Rect(
+        max(page_rect.x0, block["xMin"] - pad_x),
+        max(page_rect.y0, block["yMin"] - pad_y),
+        min(page_rect.x1, block["xMax"] + pad_x),
+        min(page_rect.y1, block["yMax"] + pad_y),
+    )
+
+
+def insert_vector_textbox(page, fitz, rect, text: str, font_size: float, color):
+    if not text.strip() or rect.is_empty:
+        return
+    size = font_size
+    while size >= 5.0:
+        lines = wrap_mixed_pdf_text(fitz, text, rect.width, size)
+        line_height = size * 1.22
+        if len(lines) * line_height <= rect.height:
+            draw_mixed_pdf_lines(page, fitz, rect, lines, size, line_height, color)
+            return
+        size -= 0.5
+    lines = wrap_mixed_pdf_text(fitz, text, rect.width, 5.0)
+    draw_mixed_pdf_lines(page, fitz, rect, lines, 5.0, 5.0 * 1.15, color)
+
+
+def pdf_token_font(token: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9._+:/%#?=&~×,;()'\" -]+", token):
+        return "helv"
+    return VECTOR_FONT
+
+
+def pdf_text_width(fitz, text: str, font_size: float) -> float:
+    if not text:
+        return 0.0
+    total = 0.0
+    for token in split_pdf_text_tokens(text):
+        total += fitz.get_text_length(token, fontname=pdf_token_font(token), fontsize=font_size)
+    return total
+
+
+def split_pdf_text_tokens(text: str) -> list[str]:
+    return re.findall(
+        r"\s+|[A-Za-z0-9][A-Za-z0-9._+:/%#?=&~×,;()'\"-]*|[^\sA-Za-z0-9]+",
+        text,
+        flags=re.S,
+    )
+
+
+LINE_START_FORBIDDEN_PUNCTUATION = set("，。、；：？！）】》”’」』,.!?;:%)]}")
+
+
+def append_split_token(fitz, lines, current, current_width, token: str, max_width: float, font_size: float):
+    for ch in token:
+        ch_width = pdf_text_width(fitz, ch, font_size)
+        if current and current_width + ch_width > max_width:
+            if ch in LINE_START_FORBIDDEN_PUNCTUATION:
+                current.append(ch)
+                current_width += ch_width
+                continue
+            lines.append(current)
+            current = []
+            current_width = 0.0
+        current.append(ch)
+        current_width += ch_width
+    return current, current_width
+
+
+def wrap_mixed_pdf_text(fitz, text: str, max_width: float, font_size: float):
+    lines = []
+    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+    for paragraph_idx, paragraph in enumerate(paragraphs):
+        current = []
+        current_width = 0.0
+        for token in split_pdf_text_tokens(paragraph):
+            if token.isspace():
+                token = " "
+                if not current:
+                    continue
+            token_width = pdf_text_width(fitz, token, font_size)
+            if token_width > max_width and token.strip():
+                current, current_width = append_split_token(
+                    fitz,
+                    lines,
+                    current,
+                    current_width,
+                    token,
+                    max_width,
+                    font_size,
+                )
+                continue
+            if current and current_width + token_width > max_width:
+                if token and token[0] in LINE_START_FORBIDDEN_PUNCTUATION:
+                    punctuation = token[0]
+                    current.append(punctuation)
+                    current_width += pdf_text_width(fitz, punctuation, font_size)
+                    token = token[1:]
+                    if not token:
+                        continue
+                    token_width = pdf_text_width(fitz, token, font_size)
+                else:
+                    lines.append(current)
+                    current = []
+                    current_width = 0.0
+                    if token.isspace():
+                        continue
+                    token = token.lstrip()
+                    token_width = pdf_text_width(fitz, token, font_size)
+            if current and current_width + token_width > max_width:
+                lines.append(current)
+                current = []
+                current_width = 0.0
+                if token.isspace():
+                    continue
+                token = token.lstrip()
+                token_width = pdf_text_width(fitz, token, font_size)
+            current.append(token)
+            current_width += token_width
+        if current:
+            lines.append(current)
+        if paragraph_idx != len(paragraphs) - 1:
+            lines.append([])
+    return lines
+
+
+def merge_pdf_line_tokens(line: list[str]) -> list[str]:
+    merged = []
+    for token in line:
+        if not token:
+            continue
+        if merged and pdf_token_font(merged[-1]) == pdf_token_font(token):
+            merged[-1] += token
+        else:
+            merged.append(token)
+    return merged
+
+
+def draw_mixed_pdf_lines(page, fitz, rect, lines, font_size: float, line_height: float, color):
+    y = rect.y0 + font_size
+    for line in lines:
+        if y > rect.y1:
+            return
+        x = rect.x0
+        for token in merge_pdf_line_tokens(line):
+            if not token:
+                continue
+            fontname = pdf_token_font(token)
+            page.insert_text(
+                (x, y),
+                token,
+                fontsize=font_size,
+                fontname=fontname,
+                color=color,
+            )
+            x += fitz.get_text_length(token, fontname=fontname, fontsize=font_size)
+        y += line_height
+
+
+def preserve_images_on_page(src_page, out_page, fitz, dpi: int):
+    matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+    page_area = max(1.0, src_page.rect.get_area())
+    for info in src_page.get_image_info(xrefs=True):
+        bbox = fitz.Rect(info["bbox"])
+        if bbox.is_empty:
+            continue
+        if bbox.get_area() / page_area >= FULL_PAGE_IMAGE_AREA_FRACTION:
+            continue
+        if bbox.x0 <= 2 and bbox.width <= EDGE_ICON_MAX_SIZE_PT and bbox.height <= EDGE_ICON_MAX_SIZE_PT:
+            continue
+        image_stream = None
+        xref = info.get("xref") or 0
+        if xref:
+            try:
+                image_stream = src_page.parent.extract_image(xref).get("image")
+            except Exception:  # noqa: BLE001
+                image_stream = None
+        if image_stream:
+            out_page.insert_image(bbox, stream=image_stream, keep_proportion=False)
+        else:
+            pix = src_page.get_pixmap(matrix=matrix, clip=bbox, alpha=False)
+            out_page.insert_image(bbox, pixmap=pix, keep_proportion=False)
+
+
+def preserve_drawings_on_page(src_page, out_page):
+    for drawing in src_page.get_drawings():
+        rect = drawing.get("rect")
+        if rect is None:
+            continue
+        color = drawing.get("color") or (0, 0, 0)
+        width = drawing.get("width") or 0.5
+        fill = drawing.get("fill")
+        if fill is not None:
+            out_page.draw_rect(rect, color=color, fill=fill, width=width)
+        else:
+            out_page.draw_rect(rect, color=color, width=width)
+
+
+def block_area_pt(block) -> float:
+    return max(0.0, block["xMax"] - block["xMin"]) * max(0.0, block["yMax"] - block["yMin"])
+
+
+def block_overlap_area_pt(a, b) -> float:
+    x0 = max(a["xMin"], b["xMin"])
+    y0 = max(a["yMin"], b["yMin"])
+    x1 = min(a["xMax"], b["xMax"])
+    y1 = min(a["yMax"], b["yMax"])
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    return (x1 - x0) * (y1 - y0)
+
+
+def filter_nested_vector_blocks(blocks, translations):
+    text_blocks = [
+        block
+        for block in blocks
+        if not should_preserve_as_image(block)
+        and not is_page_number(block["text"])
+        and translation_for_block(block, translations)
+    ]
+    skipped = set()
+    for block in text_blocks:
+        block_area = block_area_pt(block)
+        if block_area <= 0:
+            continue
+        block_text_len = len(block.get("text", ""))
+        for other in text_blocks:
+            if other["id"] == block["id"]:
+                continue
+            other_area = block_area_pt(other)
+            if other_area <= block_area * 2.5:
+                continue
+            if len(other.get("text", "")) <= block_text_len * 3:
+                continue
+            if block_overlap_area_pt(block, other) / block_area >= 0.85:
+                skipped.add(block["id"])
+                break
+    return [block for block in blocks if block["id"] not in skipped]
+
+
+def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translations, pdf_size_pt, dpi: int):
+    fitz = load_fitz()
+    src_doc = fitz.open(pdf_path)
+    out_doc = fitz.open()
+    total_pages = len(selected_pages)
+    for output_idx, (page_num, blocks) in enumerate(selected_pages, start=1):
+        if output_idx == 1 or output_idx % 50 == 0 or output_idx == total_pages:
+            print(
+                f"vector render {output_idx}/{total_pages} source_page={page_num}",
+                file=sys.stderr,
+                flush=True,
+            )
+        src_page = src_doc[page_num - 1]
+        page_rect = src_page.rect
+        out_page = out_doc.new_page(width=page_rect.width, height=page_rect.height)
+        out_page.draw_rect(page_rect, color=None, fill=(1, 1, 1))
+        preserve_images_on_page(src_page, out_page, fitz, dpi)
+        preserve_drawings_on_page(src_page, out_page)
+
+        for block in filter_nested_vector_blocks(blocks, translations):
+            if should_preserve_as_image(block):
+                continue
+            if is_page_number(block["text"]):
+                continue
+            translated = translation_for_block(block, translations)
+            if not translated:
+                continue
+            rect = expanded_rect_for_text(fitz, block, page_rect)
+            font_size = target_font_size_points_for_block(block)
+            insert_vector_textbox(out_page, fitz, rect, translated, font_size, vector_text_color(block))
+
+    pdf_output.parent.mkdir(parents=True, exist_ok=True)
+    out_doc.save(pdf_output, garbage=4, deflate=True, clean=True)
+    out_doc.close()
+    src_doc.close()
 
 
 def get_pdf_page_size(pdf_path: Path):
@@ -925,12 +1456,22 @@ def main():
     parser.add_argument("--job-name", default="")
     parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--reasoning-effort", default="low")
+    parser.add_argument("--force-ocr", action="store_true")
+    parser.add_argument("--render-mode", choices=["vector", "raster"], default="vector")
     args = parser.parse_args()
 
     pdf_path = Path(args.pdf)
     job_paths = build_job_paths(pdf_path, args.job_name or None)
     pdf_size_pt = get_pdf_page_size(pdf_path)
-    all_pages = load_or_build_source_pages(pdf_path, args.dpi, job_paths, pdf_size_pt)
+    all_pages = load_or_build_source_pages(
+        pdf_path,
+        args.dpi,
+        job_paths,
+        pdf_size_pt,
+        args.page_start,
+        args.page_end,
+        force_ocr=args.force_ocr,
+    )
     page_end = args.page_end or len(all_pages)
     selected_pages = [
         (idx, page)
@@ -944,13 +1485,23 @@ def main():
         model=args.model,
         reasoning_effort=args.reasoning_effort,
     )
-    render_pages(selected_pages, translations, args.dpi, job_paths)
-    write_latex(
-        Path(args.pdf_output),
-        [idx for idx, _ in selected_pages],
-        pdf_size_pt,
-        job_paths,
-    )
+    if args.render_mode == "raster":
+        render_pages(selected_pages, translations, args.dpi, job_paths)
+        write_latex(
+            Path(args.pdf_output),
+            [idx for idx, _ in selected_pages],
+            pdf_size_pt,
+            job_paths,
+        )
+    else:
+        write_vector_pdf(
+            pdf_path,
+            Path(args.pdf_output),
+            selected_pages,
+            translations,
+            pdf_size_pt,
+            args.dpi,
+        )
 
 
 if __name__ == "__main__":
