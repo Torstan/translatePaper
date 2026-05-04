@@ -1366,6 +1366,82 @@ def filter_nested_vector_blocks(blocks, translations):
     return [block for block in blocks if block["id"] not in skipped]
 
 
+def normalize_outline_match_text(text: str) -> str:
+    text = normalize_text(text)
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"([A-Za-z0-9])- +([A-Za-z0-9])", r"\1-\2", text)
+    return text.strip()
+
+
+def clean_outline_title(text: str) -> str:
+    text = normalize_translation(text)
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", text)
+    text = re.sub(r"^(第\s*\d+\s*章)(?=\S)", r"\1 ", text)
+    return text.strip()
+
+
+def translated_outline_title_map(selected_pages, translations):
+    title_map = {}
+    page_title_map = {}
+    for page_num, blocks in selected_pages:
+        for block in blocks:
+            translated = translations.get(block["id"])
+            if not translated:
+                continue
+            source_title = normalize_outline_match_text(block["text"])
+            if not source_title:
+                continue
+            translated_title = clean_outline_title(translated)
+            title_map.setdefault(source_title, translated_title)
+            page_title_map.setdefault(page_num, {})[source_title] = translated_title
+            chapter_match = re.match(r"Chapter\s+(\d+)\.\s+(.+)", source_title)
+            if chapter_match:
+                short_title = f"{chapter_match.group(1)}. {chapter_match.group(2)}"
+                title_map.setdefault(short_title, translated_title)
+                page_title_map.setdefault(page_num, {})[short_title] = translated_title
+    return title_map, page_title_map
+
+
+def translate_outline_title(title: str, page_num: int, title_map, page_title_map) -> str:
+    key = normalize_outline_match_text(title)
+    if key in title_map:
+        return title_map[key]
+    for source_title, translated_title in page_title_map.get(page_num, {}).items():
+        if key == source_title or key in source_title or source_title in key:
+            return translated_title
+    return title
+
+
+def build_translated_toc(toc, selected_pages, translations):
+    title_map, page_title_map = translated_outline_title_map(selected_pages, translations)
+    return [
+        [level, translate_outline_title(title, page_num, title_map, page_title_map), page_num]
+        for level, title, page_num in toc
+    ]
+
+
+def copy_outline(src_doc, out_doc, selected_pages, translations):
+    toc = src_doc.get_toc(simple=True)
+    if not toc:
+        return
+
+    selected_page_numbers = [page_num for page_num, _ in selected_pages]
+    if selected_page_numbers == list(range(1, src_doc.page_count + 1)):
+        out_doc.set_toc(build_translated_toc(toc, selected_pages, translations))
+        return
+
+    page_map = {page_num: idx for idx, page_num in enumerate(selected_page_numbers, start=1)}
+    title_map, page_title_map = translated_outline_title_map(selected_pages, translations)
+    partial_toc = [
+        [1, translate_outline_title(title, page_num, title_map, page_title_map), page_map[page_num]]
+        for _level, title, page_num in toc
+        if page_num in page_map
+    ]
+    if partial_toc:
+        out_doc.set_toc(partial_toc)
+
+
 def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translations, pdf_size_pt, dpi: int):
     fitz = load_fitz()
     src_doc = fitz.open(pdf_path)
@@ -1397,6 +1473,7 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
             font_size = target_font_size_points_for_block(block)
             insert_vector_textbox(out_page, fitz, rect, translated, font_size, vector_text_color(block))
 
+    copy_outline(src_doc, out_doc, selected_pages, translations)
     pdf_output.parent.mkdir(parents=True, exist_ok=True)
     out_doc.save(pdf_output, garbage=4, deflate=True, clean=True)
     out_doc.close()
