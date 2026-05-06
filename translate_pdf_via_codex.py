@@ -3,6 +3,7 @@
 import argparse
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -19,7 +20,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 TOOL_ROOT = Path(__file__).resolve().parent
-TMP_ROOT = TOOL_ROOT / "work"
+TMP_ROOT = Path(os.environ.get("TRANSLATE_PDF_WORK_DIR", TOOL_ROOT / "work"))
 VENDOR_ROOT = TOOL_ROOT / "vendor"
 FONT_PATH = "/usr/share/fonts/truetype/arphic/uming.ttc"
 SOURCE_FONT_SCALE = 0.94
@@ -32,6 +33,8 @@ VECTOR_BODY_COLOR = (0, 0, 0)
 VECTOR_ACCENT_COLOR = (0.58, 0.0, 0.06)
 FULL_PAGE_IMAGE_AREA_FRACTION = 0.70
 EDGE_ICON_MAX_SIZE_PT = 40.0
+HEURISTIC_HEADING_MAX_CHARS = 120
+HEURISTIC_HEADING_BOTTOM_MARGIN_PT = 70.0
 
 
 def slugify(text: str) -> str:
@@ -54,6 +57,11 @@ def build_job_paths(pdf_path: Path, job_name: str | None):
         "tex_path": job_dir / "claudeCodeChinese.tex",
         "pdf_path": job_dir / "claudeCodeChinese.pdf",
     }
+
+
+def set_work_dir(work_dir: Path):
+    global TMP_ROOT
+    TMP_ROOT = work_dir
 
 
 def run(cmd, *, input_text=None, cwd=TOOL_ROOT, check=True):
@@ -525,6 +533,9 @@ def load_or_build_source_pages(
     force_ocr: bool = False,
 ):
     source_pages_path = job_paths["source_pages_path"]
+    if source_pages_path.exists() and not force_ocr:
+        return load_source_pages(job_paths)
+
     ensure_assets(pdf_path, dpi, job_paths, page_start, page_end)
     if source_pages_path.exists():
         return load_source_pages(job_paths)
@@ -632,7 +643,6 @@ def make_prompt(batch):
 def translate_batches(batches, job_paths, *, model: str = "gpt-5.5", reasoning_effort: str = "low"):
     schema_path = job_paths["schema_path"]
     translations_path = job_paths["translations_path"]
-    write_schema(schema_path)
     translations = {}
     valid_ids = {item["id"] for batch in batches for item in batch}
     if translations_path.exists():
@@ -648,6 +658,7 @@ def translate_batches(batches, job_paths, *, model: str = "gpt-5.5", reasoning_e
         todo = [item for item in batch if item["id"] not in translations]
         if not todo:
             continue
+        write_schema(schema_path)
 
         prompt = make_prompt(todo)
         prompt_path = job_paths["job_dir"] / f"batch-{idx:02d}.prompt.txt"
@@ -1153,6 +1164,34 @@ def insert_vector_textbox(page, fitz, rect, text: str, font_size: float, color):
     draw_mixed_pdf_lines(page, fitz, rect, lines, 5.0, 5.0 * 1.15, color)
 
 
+def is_vertical_vector_block(block, text: str) -> bool:
+    return (block["yMax"] - block["yMin"]) > (block["xMax"] - block["xMin"]) * 3 and len(text) > 4
+
+
+def insert_vertical_vector_text(page, fitz, rect, text: str, font_size: float, color):
+    if not text.strip() or rect.is_empty:
+        return
+
+    fontname = VECTOR_FONT if re.search(r"[^\x00-\x7f]", text) else "helv"
+    size = min(font_size, max(5.0, rect.width * 0.85), 30.0)
+    while size >= 5.0:
+        text_length = fitz.get_text_length(text, fontname=fontname, fontsize=size)
+        if text_length <= rect.height:
+            break
+        size -= 0.5
+
+    x = rect.x0 + min(rect.width - 1.0, size * 0.9)
+    y = rect.y1 - 1.0
+    page.insert_text(
+        (x, y),
+        text,
+        fontsize=size,
+        fontname=fontname,
+        color=color,
+        rotate=90,
+    )
+
+
 def pdf_token_font(token: str) -> str:
     if re.fullmatch(r"[A-Za-z0-9._+:/%#?=&~×,;()'\" -]+", token):
         return "helv"
@@ -1421,9 +1460,124 @@ def build_translated_toc(toc, selected_pages, translations):
     ]
 
 
+def same_heading_line(block, other) -> bool:
+    vertical_overlap = min(block["yMax"], other["yMax"]) - max(block["yMin"], other["yMin"])
+    min_height = max(1.0, min(block["yMax"] - block["yMin"], other["yMax"] - other["yMin"]))
+    return vertical_overlap / min_height >= 0.45 and other["xMin"] >= block["xMax"]
+
+
+def short_heading_text(text: str) -> str:
+    first_line = normalize_text(text).split("\n", 1)[0].strip()
+    if not first_line or len(first_line) > HEURISTIC_HEADING_MAX_CHARS:
+        return ""
+    if first_line.count(".") > 2 and not re.match(r"^\d+(?:\.\d+)*\.?\s+", first_line):
+        return ""
+    return first_line
+
+
+def starts_like_source_heading(text: str) -> bool:
+    return bool(re.match(r"[A-Z]", text.strip()))
+
+
+def heuristic_heading_from_block(block):
+    text = short_heading_text(block.get("text", ""))
+    if not text:
+        return None
+
+    if re.fullmatch(r"(?i)abstract|acknowledg(?:e)?ments?|references|bibliography", text):
+        return 1, text
+    if re.match(r"(?i)^appendix(?:\s|$)", text):
+        return 1, text
+
+    match = re.match(r"^(\d+(?:\.\d+)*)(?:\.)?\s+(.+)$", text)
+    if not match:
+        return None
+    title = match.group(2).strip()
+    if not title or not starts_like_source_heading(title) or title.endswith("."):
+        return None
+    if re.match(r"(?i)question:", title):
+        return None
+    return min(4, match.group(1).count(".") + 1), text
+
+
+def translated_heading_title(blocks, translations) -> str:
+    pieces = []
+    for block in blocks:
+        translated = translations.get(block["id"])
+        pieces.append(clean_outline_title(translated or short_heading_text(block.get("text", ""))))
+    return clean_outline_title(" ".join(piece for piece in pieces if piece))
+
+
+def build_heuristic_toc(selected_pages, translations):
+    toc = []
+    seen = set()
+    for output_page_num, (_source_page_num, blocks) in enumerate(selected_pages, start=1):
+        if not blocks:
+            continue
+        page_bottom = max(block["yMax"] for block in blocks)
+        sorted_blocks = sorted(
+            blocks,
+            key=lambda item: (item.get("block_index", 0), item["yMin"], item["xMin"]),
+        )
+        skip_ids = set()
+        for idx, block in enumerate(sorted_blocks):
+            if block["id"] in skip_ids or should_preserve_as_image(block):
+                continue
+            if block["yMin"] > page_bottom - HEURISTIC_HEADING_BOTTOM_MARGIN_PT:
+                continue
+
+            numbered = re.fullmatch(r"\d+(?:\.\d+)*\.?", short_heading_text(block.get("text", "")))
+            if numbered:
+                number_text = numbered.group(0).rstrip(".")
+                number_parts = [int(part) for part in number_text.split(".") if part.isdigit()]
+                if not number_parts or number_parts[0] > 20 or any(part > 20 for part in number_parts[1:]):
+                    continue
+                for other in sorted_blocks[idx + 1 : idx + 5]:
+                    if should_preserve_as_image(other):
+                        continue
+                    if not same_heading_line(block, other):
+                        continue
+                    other_text = short_heading_text(other.get("text", ""))
+                    if not other_text or not starts_like_source_heading(other_text) or other_text.endswith("."):
+                        continue
+                    level = min(4, number_text.count(".") + 1)
+                    title = translated_heading_title([block, other], translations)
+                    key = (level, output_page_num, normalize_outline_match_text(title))
+                    if title and key not in seen:
+                        toc.append([level, title, output_page_num])
+                        seen.add(key)
+                    skip_ids.add(other["id"])
+                    break
+                continue
+
+            heading = heuristic_heading_from_block(block)
+            if not heading:
+                continue
+            level, _source_title = heading
+            title = translated_heading_title([block], translations)
+            key = (level, output_page_num, normalize_outline_match_text(title))
+            if title and key not in seen:
+                toc.append([level, title, output_page_num])
+                seen.add(key)
+
+    normalized = []
+    previous_level = 0
+    for level, title, page_num in toc:
+        if previous_level == 0:
+            level = 1
+        elif level > previous_level + 1:
+            level = previous_level + 1
+        normalized.append([level, title, page_num])
+        previous_level = level
+    return normalized
+
+
 def copy_outline(src_doc, out_doc, selected_pages, translations):
     toc = src_doc.get_toc(simple=True)
     if not toc:
+        heuristic_toc = build_heuristic_toc(selected_pages, translations)
+        if heuristic_toc:
+            out_doc.set_toc(heuristic_toc)
         return
 
     selected_page_numbers = [page_num for page_num, _ in selected_pages]
@@ -1471,7 +1625,10 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
                 continue
             rect = expanded_rect_for_text(fitz, block, page_rect)
             font_size = target_font_size_points_for_block(block)
-            insert_vector_textbox(out_page, fitz, rect, translated, font_size, vector_text_color(block))
+            if is_vertical_vector_block(block, translated):
+                insert_vertical_vector_text(out_page, fitz, rect, translated, font_size, vector_text_color(block))
+            else:
+                insert_vector_textbox(out_page, fitz, rect, translated, font_size, vector_text_color(block))
 
     copy_outline(src_doc, out_doc, selected_pages, translations)
     pdf_output.parent.mkdir(parents=True, exist_ok=True)
@@ -1531,11 +1688,13 @@ def main():
     parser.add_argument("--page-start", type=int, default=1)
     parser.add_argument("--page-end", type=int, default=0)
     parser.add_argument("--job-name", default="")
+    parser.add_argument("--work-dir", default=str(TMP_ROOT))
     parser.add_argument("--model", default="gpt-5.5")
     parser.add_argument("--reasoning-effort", default="low")
     parser.add_argument("--force-ocr", action="store_true")
     parser.add_argument("--render-mode", choices=["vector", "raster"], default="vector")
     args = parser.parse_args()
+    set_work_dir(Path(args.work_dir))
 
     pdf_path = Path(args.pdf)
     job_paths = build_job_paths(pdf_path, args.job_name or None)

@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import time
@@ -12,13 +13,21 @@ from pathlib import Path
 
 
 TOOL_ROOT = Path(__file__).resolve().parent
-TMP_DIR = TOOL_ROOT / "work"
+TMP_DIR = Path(os.environ.get("TRANSLATE_PDF_WORK_DIR", TOOL_ROOT / "work"))
 SUMMARY_JSON = TMP_DIR / "parallel_translation_summary.json"
 SUMMARY_MD = TMP_DIR / "parallel_translation_summary.md"
 
 sys.path.insert(0, str(TOOL_ROOT))
 import backtranslate_check as qa  # noqa: E402
 import translate_pdf_via_codex as pipeline  # noqa: E402
+
+
+def set_work_dir(work_dir: Path):
+    global TMP_DIR, SUMMARY_JSON, SUMMARY_MD
+    TMP_DIR = work_dir
+    SUMMARY_JSON = TMP_DIR / "parallel_translation_summary.json"
+    SUMMARY_MD = TMP_DIR / "parallel_translation_summary.md"
+    pipeline.set_work_dir(work_dir)
 
 
 @dataclass(frozen=True)
@@ -164,6 +173,7 @@ def run_parallel_translation(batches: list[PageBatch], translations: dict[str, s
     if not todo:
         return translations
 
+    pipeline.write_schema(job_paths["schema_path"])
     with ThreadPoolExecutor(max_workers=args.page_workers) as executor:
         futures = [
             executor.submit(run_translation_batch, batch, job_paths, args)
@@ -243,7 +253,6 @@ def translate_one_pdf(pdf_path: Path, output_dir: Path, args) -> dict:
 
     batches = build_page_batches(selected_pages, args.batch_chars)
     valid_ids = {item["id"] for batch in batches for item in batch.items}
-    pipeline.write_schema(job_paths["schema_path"])
     translations = load_cached_translations(
         job_paths["translations_path"],
         valid_ids,
@@ -326,6 +335,7 @@ def main():
     )
     parser.add_argument("--source-dir", required=True)
     parser.add_argument("--target-dir", required=True)
+    parser.add_argument("--work-dir", default=str(TMP_DIR))
     parser.add_argument("--include", action="append", default=[])
     parser.add_argument("--suffix", default="-Chinese")
     parser.add_argument("--dpi", type=int, default=200)
@@ -350,6 +360,7 @@ def main():
     parser.add_argument("--continue-on-error", action="store_true")
     parser.set_defaults(qa=True)
     args = parser.parse_args()
+    set_work_dir(Path(args.work_dir))
 
     source_dir = Path(args.source_dir)
     output_dir = Path(args.target_dir)
