@@ -106,5 +106,30 @@ class CoverageValidationTests(unittest.TestCase):
         self.assertEqual(errors, [])
 
 
+class BBoxLineParserTests(unittest.TestCase):
+    def test_parse_bbox_lines_extracts_words_and_coordinates(self):
+        html = """<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <body>
+    <doc>
+      <page width="623.000000" height="801.000000">
+        <block xMin="131.4" yMin="234.6" xMax="184.5" yMax="244.6">
+          <line xMin="131.4" yMin="234.6" xMax="184.5" yMax="244.6">
+            <word xMin="131.4" yMin="234.6" xMax="184.5" yMax="244.6">REFERENCES</word>
+          </line>
+        </block>
+      </page>
+    </doc>
+  </body>
+</html>
+"""
+        lines = pdf.parse_bbox_lines_from_text(html)
+
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["page"], 1)
+        self.assertEqual(lines[0]["text"], "REFERENCES")
+        self.assertEqual(lines[0]["bbox"], (131.4, 234.6, 184.5, 244.6))
+
+
 if __name__ == "__main__":
     unittest.main()

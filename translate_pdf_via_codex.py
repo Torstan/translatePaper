@@ -170,6 +170,45 @@ def parse_bbox(bbox_path: Path):
     return pages
 
 
+def parse_bbox_lines_from_text(raw_text: str) -> list[dict]:
+    raw_text = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", "", raw_text)
+    root = ET.fromstring(raw_text)
+    ns = {"x": "http://www.w3.org/1999/xhtml"}
+    page_nodes = root.findall(".//page")
+    if not page_nodes:
+        page_nodes = root.findall(".//x:page", ns)
+    lines = []
+    for page_idx, page in enumerate(page_nodes, start=1):
+        line_nodes = page.findall(".//line")
+        if not line_nodes:
+            line_nodes = page.findall(".//x:line", ns)
+        for line in line_nodes:
+            word_nodes = line.findall("./word")
+            if not word_nodes:
+                word_nodes = line.findall("./x:word", ns)
+            words = [word.text or "" for word in word_nodes]
+            text = normalize_text(" ".join(words))
+            if not text:
+                continue
+            lines.append(
+                {
+                    "page": page_idx,
+                    "text": text,
+                    "bbox": (
+                        float(line.attrib["xMin"]),
+                        float(line.attrib["yMin"]),
+                        float(line.attrib["xMax"]),
+                        float(line.attrib["yMax"]),
+                    ),
+                }
+            )
+    return lines
+
+
+def parse_bbox_lines(bbox_path: Path) -> list[dict]:
+    return parse_bbox_lines_from_text(bbox_path.read_text(encoding="utf-8", errors="replace"))
+
+
 def load_source_pages(job_paths) -> list[list[dict]]:
     source_pages_path = job_paths["source_pages_path"]
     if source_pages_path.exists():
@@ -1936,10 +1975,14 @@ def validate_plan_coverage(page_num: int, blocks, plan: PageRenderPlan) -> list[
     return errors
 
 
-def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translations, pdf_size_pt, dpi: int):
+def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translations, pdf_size_pt, dpi: int, job_paths=None):
     fitz = load_fitz()
     src_doc = fitz.open(pdf_path)
     out_doc = fitz.open()
+    bbox_lines_by_page = {}
+    if job_paths and job_paths.get("bbox_path") and job_paths["bbox_path"].exists():
+        for line in parse_bbox_lines(job_paths["bbox_path"]):
+            bbox_lines_by_page.setdefault(line["page"], []).append(line)
     total_pages = len(selected_pages)
     for output_idx, (page_num, blocks) in enumerate(selected_pages, start=1):
         if output_idx == 1 or output_idx % 50 == 0 or output_idx == total_pages:
@@ -1955,7 +1998,13 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
         preserve_images_on_page(src_page, out_page, fitz, dpi)
         preserve_drawings_on_page(src_page, out_page)
 
-        plan = build_page_render_plan(page_num, blocks, translations, (page_rect.width, page_rect.height), bbox_lines=None)
+        plan = build_page_render_plan(
+            page_num,
+            blocks,
+            translations,
+            (page_rect.width, page_rect.height),
+            bbox_lines=bbox_lines_by_page.get(page_num),
+        )
         coverage_errors = validate_plan_coverage(page_num, blocks, plan)
         if coverage_errors:
             raise RuntimeError("\n".join(coverage_errors[:20]))
@@ -2082,6 +2131,7 @@ def main():
             translations,
             pdf_size_pt,
             args.dpi,
+            job_paths=job_paths,
         )
 
 
