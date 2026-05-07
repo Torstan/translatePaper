@@ -1758,6 +1758,30 @@ def starts_reference_item(text: str) -> bool:
     return bool(re.match(r"^\s*\d{1,3}\.\s*[A-Z][A-Za-z-]+,", normalize_text(text)))
 
 
+def contains_reference_item(text: str) -> bool:
+    return bool(re.search(r"(?m)(?:^|\n)\s*\d{1,3}\.\s*[A-Z][A-Za-z-]+,", normalize_text(text)))
+
+
+def reference_block_ids(blocks) -> set[str]:
+    first_reference_y = None
+    sorted_blocks = sorted(blocks, key=lambda item: (item["yMin"], item["xMin"]))
+    for block in sorted_blocks:
+        text = normalize_text(block.get("text", ""))
+        if is_reference_heading(text) or starts_reference_item(text) or contains_reference_item(text):
+            first_reference_y = block["yMin"]
+            break
+    if first_reference_y is None:
+        return set()
+    ids = set()
+    for block in sorted_blocks:
+        text = normalize_text(block.get("text", ""))
+        if not text or is_page_number(text):
+            continue
+        if block["yMin"] >= first_reference_y:
+            ids.add(block["id"])
+    return ids
+
+
 def is_heading_text(text: str) -> bool:
     first = normalize_text(text).split("\n", 1)[0].strip()
     if is_reference_heading(first):
@@ -1791,9 +1815,10 @@ def is_formula_or_code_block(text: str) -> bool:
 def build_visual_regions(blocks) -> list[dict]:
     regions = []
     consumed = set()
+    references = reference_block_ids(blocks)
     sorted_blocks = sorted(blocks, key=lambda item: (item["yMin"], item["xMin"]))
     for block in sorted_blocks:
-        if block["id"] in consumed:
+        if block["id"] in consumed or block["id"] in references:
             continue
         text = normalize_text(block.get("text", ""))
         if not text:
@@ -1835,10 +1860,15 @@ def build_visual_regions(blocks) -> list[dict]:
 def classify_blocks(blocks, visual_regions) -> dict[str, str]:
     classes = {}
     visual_ids = {source_id for region in visual_regions for source_id in region["source_ids"]}
+    references = reference_block_ids(blocks)
     in_references = False
     for block in sorted(blocks, key=lambda item: (item["yMin"], item["xMin"])):
         text = normalize_text(block.get("text", ""))
         if not text:
+            continue
+        if block["id"] in references:
+            classes[block["id"]] = "reference"
+            in_references = True
             continue
         if block["id"] in visual_ids:
             if is_formula_or_code_block(text):
