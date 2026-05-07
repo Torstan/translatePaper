@@ -13,6 +13,7 @@ import textwrap
 import time
 import xml.etree.ElementTree as ET
 from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
 
@@ -227,6 +228,8 @@ def is_formula_like(text: str) -> bool:
         return True
     symbol_count = len(re.findall(r"[=+\-*/_{}()[\]<>≤≥∑Σβ]", compact))
     word_count = len(re.findall(r"[A-Za-z]{3,}", stripped))
+    if word_count >= 3 and re.search(r"\bis\b", stripped, flags=re.I) and symbol_count <= 4:
+        return False
     return len(compact) >= 8 and symbol_count >= 3 and word_count <= 3
 
 
@@ -1423,6 +1426,34 @@ def block_overlap_area_pt(a, b) -> float:
     return (x1 - x0) * (y1 - y0)
 
 
+@dataclass
+class RenderItem:
+    kind: str
+    source_ids: list[str]
+    bbox: tuple[float, float, float, float]
+    text: str = ""
+    font_size: float | None = None
+    color: tuple[float, float, float] = VECTOR_BODY_COLOR
+    fallback_reason: str = ""
+
+
+@dataclass
+class CoverageEntry:
+    block_id: str
+    classification: str
+    render_kind: str
+    rendered: bool
+    fallback_reason: str = ""
+
+
+@dataclass
+class PageRenderPlan:
+    page_num: int
+    items: list[RenderItem] = field(default_factory=list)
+    ledger: list[CoverageEntry] = field(default_factory=list)
+    protected_boxes: list[tuple[float, float, float, float]] = field(default_factory=list)
+
+
 def filter_nested_vector_blocks(blocks, translations):
     text_blocks = [
         block
@@ -1640,6 +1671,243 @@ def copy_outline(src_doc, out_doc, selected_pages, translations):
     ]
     if partial_toc:
         out_doc.set_toc(partial_toc)
+
+
+def block_bbox(block) -> tuple[float, float, float, float]:
+    return (block["xMin"], block["yMin"], block["xMax"], block["yMax"])
+
+
+def bbox_union(boxes) -> tuple[float, float, float, float]:
+    return (
+        min(box[0] for box in boxes),
+        min(box[1] for box in boxes),
+        max(box[2] for box in boxes),
+        max(box[3] for box in boxes),
+    )
+
+
+def bbox_intersects(a, b) -> bool:
+    return min(a[2], b[2]) > max(a[0], b[0]) and min(a[3], b[3]) > max(a[1], b[1])
+
+
+def bbox_center(box) -> tuple[float, float]:
+    return ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
+
+
+def bbox_contains_point(box, point) -> bool:
+    return box[0] <= point[0] <= box[2] and box[1] <= point[1] <= box[3]
+
+
+def expanded_bbox(box, pad_x: float = 0.0, pad_y: float = 0.0):
+    return (box[0] - pad_x, box[1] - pad_y, box[2] + pad_x, box[3] + pad_y)
+
+
+def is_reference_heading(text: str) -> bool:
+    return bool(re.fullmatch(r"(?i)references|bibliography", normalize_text(text)))
+
+
+def starts_reference_item(text: str) -> bool:
+    return bool(re.match(r"^\s*\d{1,3}\.\s*[A-Z][A-Za-z-]+,", normalize_text(text)))
+
+
+def is_heading_text(text: str) -> bool:
+    first = normalize_text(text).split("\n", 1)[0].strip()
+    if is_reference_heading(first):
+        return False
+    if re.match(r"^\d+(?:\.\d+)*\.?\s+[A-Z][A-Za-z0-9 /&-]+$", first):
+        return True
+    if re.fullmatch(r"[A-Z][A-Z0-9 /&-]{3,80}", first) and len(first.split()) <= 8:
+        return True
+    return False
+
+
+def is_title_block(block) -> bool:
+    text = normalize_text(block.get("text", ""))
+    return block.get("page") == 1 and block["yMin"] < 90 and len(text) <= 120 and "\n" not in text
+
+
+def is_formula_or_code_block(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+    if is_formula_like(normalized):
+        return True
+    symbol_count = len(re.findall(r"[=^∀∃<>≤≥∧∨()[\],]", normalized))
+    latin_count = len(re.findall(r"[A-Za-z]", normalized))
+    word_count = len(re.findall(r"[A-Za-z]{2,}", normalized))
+    if word_count >= 4 and re.search(r"\bis\b", normalized, flags=re.I) and symbol_count < 8:
+        return False
+    return symbol_count >= 3 and latin_count <= max(30, len(normalized) * 0.8)
+
+
+def build_visual_regions(blocks) -> list[dict]:
+    regions = []
+    consumed = set()
+    sorted_blocks = sorted(blocks, key=lambda item: (item["yMin"], item["xMin"]))
+    for block in sorted_blocks:
+        if block["id"] in consumed:
+            continue
+        text = normalize_text(block.get("text", ""))
+        if not text:
+            continue
+        is_visual_seed = should_preserve_as_image(block) or is_visual_caption(text) or is_formula_or_code_block(text)
+        if not is_visual_seed:
+            continue
+        seed_box = block_bbox(block)
+        if is_visual_caption(text):
+            search = (seed_box[0] - 40.0, seed_box[1] - 60.0, seed_box[2] + 40.0, seed_box[3] + 16.0)
+        elif is_formula_or_code_block(text):
+            search = expanded_bbox(seed_box, pad_x=35.0, pad_y=18.0)
+        else:
+            search = expanded_bbox(seed_box, pad_x=10.0, pad_y=8.0)
+        group = []
+        for other in sorted_blocks:
+            other_text = normalize_text(other.get("text", ""))
+            if not other_text or other["id"] in consumed:
+                continue
+            other_box = block_bbox(other)
+            if bbox_intersects(search, other_box) and bbox_contains_point(search, bbox_center(other_box)):
+                short_fragment = len(other_text) <= 140
+                visual_text = (
+                    is_visual_caption(other_text)
+                    or is_formula_or_code_block(other_text)
+                    or should_preserve_as_image(other)
+                )
+                if short_fragment or visual_text:
+                    group.append(other)
+        if not group:
+            group = [block]
+        group_ids = {item["id"] for item in group}
+        consumed.update(group_ids)
+        region_box = bbox_union([block_bbox(item) for item in group])
+        regions.append({"source_ids": [item["id"] for item in group], "bbox": region_box})
+    return regions
+
+
+def classify_blocks(blocks, visual_regions) -> dict[str, str]:
+    classes = {}
+    visual_ids = {source_id for region in visual_regions for source_id in region["source_ids"]}
+    in_references = False
+    for block in sorted(blocks, key=lambda item: (item["yMin"], item["xMin"])):
+        text = normalize_text(block.get("text", ""))
+        if not text:
+            continue
+        if block["id"] in visual_ids:
+            if is_formula_or_code_block(text):
+                classes[block["id"]] = "formula_region"
+            else:
+                classes[block["id"]] = "figure_region"
+            continue
+        if is_page_number(text):
+            classes[block["id"]] = "page_number"
+            continue
+        if is_reference_heading(text) or in_references or starts_reference_item(text):
+            classes[block["id"]] = "reference"
+            in_references = True
+            continue
+        if is_heading_text(text):
+            classes[block["id"]] = "heading"
+            continue
+        if is_title_block(block):
+            classes[block["id"]] = "title"
+            continue
+        classes[block["id"]] = "body"
+    return classes
+
+
+def build_page_render_plan(page_num: int, blocks, translations, page_size, bbox_lines=None) -> PageRenderPlan:
+    plan = PageRenderPlan(page_num=page_num)
+    visual_regions = build_visual_regions(blocks)
+    classes = classify_blocks(blocks, visual_regions)
+    visual_ids = {source_id for region in visual_regions for source_id in region["source_ids"]}
+
+    for region in visual_regions:
+        plan.items.append(
+            RenderItem(
+                kind="original_image_clip",
+                source_ids=region["source_ids"],
+                bbox=region["bbox"],
+                fallback_reason="visual_region",
+            )
+        )
+        plan.protected_boxes.append(region["bbox"])
+        for source_id in region["source_ids"]:
+            plan.ledger.append(
+                CoverageEntry(
+                    source_id,
+                    classes.get(source_id, "figure_region"),
+                    "original_image_clip",
+                    True,
+                    "visual_region",
+                )
+            )
+
+    for block in blocks:
+        text = normalize_text(block.get("text", ""))
+        if not text or block["id"] in visual_ids:
+            continue
+        classification = classes.get(block["id"], "unknown")
+        bbox = block_bbox(block)
+        if classification == "page_number":
+            plan.ledger.append(CoverageEntry(block["id"], classification, "skip_explicitly", True))
+            continue
+        if classification == "reference":
+            plan.items.append(
+                RenderItem(
+                    "original_selectable_text",
+                    [block["id"]],
+                    bbox,
+                    text=text,
+                    fallback_reason="reference_original",
+                )
+            )
+            plan.ledger.append(
+                CoverageEntry(
+                    block["id"],
+                    classification,
+                    "original_selectable_text",
+                    True,
+                    "reference_original",
+                )
+            )
+            continue
+        if classification in {"body", "heading", "title"}:
+            translated = translation_for_block(block, translations)
+            if translated and block["id"] in translations:
+                plan.items.append(
+                    RenderItem(
+                        "translated_text",
+                        [block["id"]],
+                        bbox,
+                        text=translated,
+                        font_size=target_font_size_points_for_block(block),
+                    )
+                )
+                plan.ledger.append(CoverageEntry(block["id"], classification, "translated_text", True))
+            else:
+                plan.items.append(
+                    RenderItem(
+                        "original_selectable_text",
+                        [block["id"]],
+                        bbox,
+                        text=text,
+                        fallback_reason="missing_translation",
+                    )
+                )
+                plan.ledger.append(
+                    CoverageEntry(
+                        block["id"],
+                        classification,
+                        "original_selectable_text",
+                        True,
+                        "missing_translation",
+                    )
+                )
+            continue
+        plan.items.append(RenderItem("original_image_clip", [block["id"]], bbox, fallback_reason="unknown"))
+        plan.protected_boxes.append(bbox)
+        plan.ledger.append(CoverageEntry(block["id"], classification, "original_image_clip", True, "unknown"))
+    return plan
 
 
 def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translations, pdf_size_pt, dpi: int):
