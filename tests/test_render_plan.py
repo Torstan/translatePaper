@@ -82,5 +82,29 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertIn("p015b0008", image_ids)
 
 
+class CoverageValidationTests(unittest.TestCase):
+    def test_validate_coverage_fails_for_missing_block(self):
+        blocks = [
+            block("p002b0001", 2, "A source paragraph.", y0=100, y1=120),
+            block("p002b0002", 2, "Another source paragraph.", y0=130, y1=150),
+        ]
+        plan = pdf.PageRenderPlan(page_num=2)
+        plan.ledger.append(pdf.CoverageEntry("p002b0001", "body", "translated_text", True))
+
+        errors = pdf.validate_plan_coverage(2, blocks, plan)
+
+        self.assertIn("p002b0002", "\n".join(errors))
+
+    def test_validate_coverage_allows_page_number_skip(self):
+        blocks = [
+            block("p002b0001", 2, "127", y0=760, y1=770),
+        ]
+        plan = pdf.build_page_render_plan(2, blocks, {}, page_size=(623, 801), bbox_lines=None)
+
+        errors = pdf.validate_plan_coverage(2, blocks, plan)
+
+        self.assertEqual(errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

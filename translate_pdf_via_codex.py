@@ -1910,6 +1910,32 @@ def build_page_render_plan(page_num: int, blocks, translations, page_size, bbox_
     return plan
 
 
+ALLOWED_SKIP_CLASSES = {"page_number", "header_footer"}
+
+
+def nontrivial_block(block) -> bool:
+    text = normalize_text(block.get("text", ""))
+    return bool(text) and not is_trivial_keep(text)
+
+
+def validate_plan_coverage(page_num: int, blocks, plan: PageRenderPlan) -> list[str]:
+    errors = []
+    ledger_by_id = {entry.block_id: entry for entry in plan.ledger}
+    for block in blocks:
+        if not nontrivial_block(block):
+            continue
+        entry = ledger_by_id.get(block["id"])
+        if entry is None:
+            errors.append(f"page {page_num} block {block['id']} has no coverage entry")
+            continue
+        if not entry.rendered:
+            errors.append(f"page {page_num} block {block['id']} is marked unrendered")
+            continue
+        if entry.render_kind == "skip_explicitly" and entry.classification not in ALLOWED_SKIP_CLASSES:
+            errors.append(f"page {page_num} block {block['id']} has illegal skip class {entry.classification}")
+    return errors
+
+
 def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translations, pdf_size_pt, dpi: int):
     fitz = load_fitz()
     src_doc = fitz.open(pdf_path)
@@ -1928,6 +1954,11 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
         out_page.draw_rect(page_rect, color=None, fill=(1, 1, 1))
         preserve_images_on_page(src_page, out_page, fitz, dpi)
         preserve_drawings_on_page(src_page, out_page)
+
+        plan = build_page_render_plan(page_num, blocks, translations, (page_rect.width, page_rect.height), bbox_lines=None)
+        coverage_errors = validate_plan_coverage(page_num, blocks, plan)
+        if coverage_errors:
+            raise RuntimeError("\n".join(coverage_errors[:20]))
 
         for block in filter_nested_vector_blocks(blocks, translations):
             if should_preserve_as_image(block):
