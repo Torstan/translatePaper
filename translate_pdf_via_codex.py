@@ -1437,6 +1437,15 @@ def preserve_images_on_page(src_page, out_page, fitz, dpi: int):
             out_page.insert_image(bbox, pixmap=pix, keep_proportion=False)
 
 
+def insert_source_clip(src_page, out_page, fitz, bbox, dpi: int):
+    rect = fitz.Rect(bbox)
+    if rect.is_empty:
+        return
+    matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+    pix = src_page.get_pixmap(matrix=matrix, clip=rect, alpha=False)
+    out_page.insert_image(rect, pixmap=pix, keep_proportion=False)
+
+
 def preserve_drawings_on_page(src_page, out_page):
     for drawing in src_page.get_drawings():
         rect = drawing.get("rect")
@@ -1975,6 +1984,50 @@ def validate_plan_coverage(page_num: int, blocks, plan: PageRenderPlan) -> list[
     return errors
 
 
+def bbox_area(box) -> float:
+    return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
+
+
+def bbox_overlap_area(a, b) -> float:
+    x0 = max(a[0], b[0])
+    y0 = max(a[1], b[1])
+    x1 = min(a[2], b[2])
+    y1 = min(a[3], b[3])
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    return (x1 - x0) * (y1 - y0)
+
+
+def validate_plan_layout(plan: PageRenderPlan, page_size) -> list[str]:
+    errors = []
+    width, height = page_size
+    protected = [item for item in plan.items if item.kind == "original_image_clip"]
+    for item in plan.items:
+        x0, y0, x1, y1 = item.bbox
+        if x0 < -0.5 or y0 < -0.5 or x1 > width + 0.5 or y1 > height + 0.5:
+            errors.append(f"page {plan.page_num} item {item.source_ids} outside page bounds")
+        if item.kind != "translated_text":
+            continue
+        for protected_item in protected:
+            overlap = bbox_overlap_area(item.bbox, protected_item.bbox)
+            if overlap > min(bbox_area(item.bbox), bbox_area(protected_item.bbox)) * 0.05:
+                errors.append(f"page {plan.page_num} text {item.source_ids} overlaps protected {protected_item.source_ids}")
+    return errors
+
+
+def render_plan_item(out_page, src_page, fitz, item: RenderItem, dpi: int):
+    rect = fitz.Rect(item.bbox)
+    if item.kind == "translated_text":
+        insert_vector_textbox(out_page, fitz, rect, item.text, item.font_size or 7.0, item.color)
+        return
+    if item.kind == "original_selectable_text":
+        insert_vector_textbox(out_page, fitz, rect, item.text, item.font_size or 6.5, VECTOR_BODY_COLOR)
+        return
+    if item.kind == "original_image_clip":
+        insert_source_clip(src_page, out_page, fitz, item.bbox, dpi)
+        return
+
+
 def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translations, pdf_size_pt, dpi: int, job_paths=None):
     fitz = load_fitz()
     src_doc = fitz.open(pdf_path)
@@ -2008,21 +2061,11 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
         coverage_errors = validate_plan_coverage(page_num, blocks, plan)
         if coverage_errors:
             raise RuntimeError("\n".join(coverage_errors[:20]))
-
-        for block in filter_nested_vector_blocks(blocks, translations):
-            if should_preserve_as_image(block):
-                continue
-            if is_page_number(block["text"]):
-                continue
-            translated = translation_for_block(block, translations)
-            if not translated:
-                continue
-            rect = expanded_rect_for_text(fitz, block, page_rect)
-            font_size = target_font_size_points_for_block(block)
-            if is_vertical_vector_block(block, translated):
-                insert_vertical_vector_text(out_page, fitz, rect, translated, font_size, vector_text_color(block))
-            else:
-                insert_vector_textbox(out_page, fitz, rect, translated, font_size, vector_text_color(block))
+        layout_errors = validate_plan_layout(plan, (page_rect.width, page_rect.height))
+        if layout_errors:
+            raise RuntimeError("\n".join(layout_errors[:20]))
+        for item in plan.items:
+            render_plan_item(out_page, src_page, fitz, item, dpi)
 
     copy_outline(src_doc, out_doc, selected_pages, translations)
     pdf_output.parent.mkdir(parents=True, exist_ok=True)

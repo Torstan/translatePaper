@@ -131,5 +131,25 @@ class BBoxLineParserTests(unittest.TestCase):
         self.assertEqual(lines[0]["bbox"], (131.4, 234.6, 184.5, 244.6))
 
 
+class LayoutValidationTests(unittest.TestCase):
+    def test_overlap_validation_detects_body_over_image_clip(self):
+        plan = pdf.PageRenderPlan(page_num=3)
+        plan.items.append(pdf.RenderItem("original_image_clip", ["fig"], (100, 100, 300, 200)))
+        plan.items.append(pdf.RenderItem("translated_text", ["body"], (150, 120, 350, 220), text="正文"))
+
+        errors = pdf.validate_plan_layout(plan, page_size=(623, 801))
+
+        self.assertTrue(any("overlaps protected" in error for error in errors))
+
+    def test_overlap_validation_allows_nonoverlapping_items(self):
+        plan = pdf.PageRenderPlan(page_num=3)
+        plan.items.append(pdf.RenderItem("original_image_clip", ["fig"], (100, 100, 300, 200)))
+        plan.items.append(pdf.RenderItem("translated_text", ["body"], (100, 220, 350, 260), text="正文"))
+
+        errors = pdf.validate_plan_layout(plan, page_size=(623, 801))
+
+        self.assertEqual(errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()
