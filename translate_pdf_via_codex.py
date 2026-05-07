@@ -731,6 +731,40 @@ def normalize_translation(text: str) -> str:
     return text
 
 
+TERMINAL_PUNCTUATION = set("。！？；：.!?;:）】》”’」』")
+NON_TERMINAL_PUNCTUATION = set("，、,")
+
+
+def line_needs_terminal_punctuation(line: str) -> bool:
+    stripped = line.strip()
+    if len(stripped) < 12:
+        return False
+    if stripped[-1] in TERMINAL_PUNCTUATION or stripped[-1] in NON_TERMINAL_PUNCTUATION:
+        return False
+    if re.search(r"\n", stripped):
+        return False
+    if re.fullmatch(r"[A-Za-z0-9_.,:;()[\]{}<>=+\-*/&| \t]+", stripped):
+        return False
+    return True
+
+
+def terminal_punctuation_for_line(line: str) -> str:
+    if re.search(r"(表述为|如下|如下所示|定义为|记为|形式为)$", line.strip()):
+        return "："
+    return "。"
+
+
+def repair_translation_punctuation(text: str) -> str:
+    lines = text.split("\n")
+    repaired = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and line_needs_terminal_punctuation(stripped):
+            line = line.rstrip() + terminal_punctuation_for_line(stripped)
+        repaired.append(line)
+    return "\n".join(repaired)
+
+
 def page_image_path(page_num: int, job_paths) -> Path:
     return job_paths["pages_dir"] / f"page-{page_num:03d}.png"
 
@@ -961,7 +995,7 @@ def avoid_protected_boxes(box, protected_boxes):
 def translation_for_block(block, translations):
     translated = translations.get(block["id"])
     if translated:
-        return translated
+        return repair_translation_punctuation(translated)
     if is_trivial_keep(block["text"]):
         return ""
     return block["text"]
@@ -1193,7 +1227,7 @@ def insert_vertical_vector_text(page, fitz, rect, text: str, font_size: float, c
 
 
 def pdf_token_font(token: str) -> str:
-    if re.fullmatch(r"[A-Za-z0-9._+:/%#?=&~×,;()'\" -]+", token):
+    if re.fullmatch(r"[A-Za-z0-9._+:/%#?=&~×,;()[\]'\" -]+", token):
         return "helv"
     return VECTOR_FONT
 
@@ -1201,89 +1235,83 @@ def pdf_token_font(token: str) -> str:
 def pdf_text_width(fitz, text: str, font_size: float) -> float:
     if not text:
         return 0.0
-    total = 0.0
-    for token in split_pdf_text_tokens(text):
-        total += fitz.get_text_length(token, fontname=pdf_token_font(token), fontsize=font_size)
-    return total
+    return sum(
+        fitz.get_text_length(token, fontname=pdf_token_font(token), fontsize=font_size)
+        for token in drawable_pdf_line_tokens([text])
+    )
 
 
 def split_pdf_text_tokens(text: str) -> list[str]:
     return re.findall(
-        r"\s+|[A-Za-z0-9][A-Za-z0-9._+:/%#?=&~×,;()'\"-]*|[^\sA-Za-z0-9]+",
+        r"\s+|[A-Za-z0-9][A-Za-z0-9._+:/%#?=&~×,;()'\"-]*|[!-/:-@\[-`{-~]+|[\u4e00-\u9fff]+|[^\sA-Za-z0-9\u4e00-\u9fff]",
         text,
         flags=re.S,
     )
 
 
-LINE_START_FORBIDDEN_PUNCTUATION = set("，。、；：？！）】》”’」』,.!?;:%)]}")
+def token_list_width(fitz, tokens: list[str], font_size: float) -> float:
+    return sum(
+        fitz.get_text_length(token, fontname=pdf_token_font(token), fontsize=font_size)
+        for token in drawable_pdf_line_tokens(tokens)
+    )
 
 
-def append_split_token(fitz, lines, current, current_width, token: str, max_width: float, font_size: float):
-    for ch in token:
-        ch_width = pdf_text_width(fitz, ch, font_size)
-        if current and current_width + ch_width > max_width:
-            if ch in LINE_START_FORBIDDEN_PUNCTUATION:
-                current.append(ch)
-                current_width += ch_width
-                continue
-            lines.append(current)
-            current = []
-            current_width = 0.0
-        current.append(ch)
-        current_width += ch_width
-    return current, current_width
+def strip_trailing_space_tokens(tokens: list[str]) -> list[str]:
+    while tokens and tokens[-1].isspace():
+        tokens = tokens[:-1]
+    return tokens
+
+
+def break_current_line(lines, current):
+    lines.append(strip_trailing_space_tokens(current))
+    return []
+
+
+def split_pdf_wrap_units(paragraph: str) -> list[str]:
+    units = []
+    split_latin_tokens = bool(re.search(r"[\u4e00-\u9fff]", paragraph))
+    for token in split_pdf_text_tokens(paragraph):
+        if token.isspace():
+            units.append(" ")
+        elif split_latin_tokens and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+:/%#?=&~×,;()'\"-]*", token):
+            units.extend(token)
+        else:
+            units.append(token)
+    return units
+
+
+def small_overflow_tolerance(max_width: float, font_size: float) -> float:
+    return max(font_size * 1.1, max_width * 0.02)
 
 
 def wrap_mixed_pdf_text(fitz, text: str, max_width: float, font_size: float):
     lines = []
     paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+    allowed_width = max_width + small_overflow_tolerance(max_width, font_size)
     for paragraph_idx, paragraph in enumerate(paragraphs):
         current = []
-        current_width = 0.0
-        for token in split_pdf_text_tokens(paragraph):
+        units = split_pdf_wrap_units(paragraph)
+        idx = 0
+        while idx < len(units):
+            token = units[idx]
             if token.isspace():
                 token = " "
                 if not current:
+                    idx += 1
                     continue
-            token_width = pdf_text_width(fitz, token, font_size)
-            if token_width > max_width and token.strip():
-                current, current_width = append_split_token(
-                    fitz,
+            candidate_width = token_list_width(fitz, current + [token], font_size)
+            if current and candidate_width > allowed_width:
+                current = break_current_line(
                     lines,
                     current,
-                    current_width,
-                    token,
-                    max_width,
-                    font_size,
                 )
-                continue
-            if current and current_width + token_width > max_width:
-                if token and token[0] in LINE_START_FORBIDDEN_PUNCTUATION:
-                    punctuation = token[0]
-                    current.append(punctuation)
-                    current_width += pdf_text_width(fitz, punctuation, font_size)
-                    token = token[1:]
-                    if not token:
-                        continue
-                    token_width = pdf_text_width(fitz, token, font_size)
-                else:
-                    lines.append(current)
-                    current = []
-                    current_width = 0.0
-                    if token.isspace():
-                        continue
-                    token = token.lstrip()
-                    token_width = pdf_text_width(fitz, token, font_size)
-            if current and current_width + token_width > max_width:
-                lines.append(current)
-                current = []
-                current_width = 0.0
                 if token.isspace():
+                    idx += 1
                     continue
-                token = token.lstrip()
-                token_width = pdf_text_width(fitz, token, font_size)
+                else:
+                    continue
             current.append(token)
-            current_width += token_width
+            idx += 1
         if current:
             lines.append(current)
         if paragraph_idx != len(paragraphs) - 1:
@@ -1296,11 +1324,29 @@ def merge_pdf_line_tokens(line: list[str]) -> list[str]:
     for token in line:
         if not token:
             continue
-        if merged and pdf_token_font(merged[-1]) == pdf_token_font(token):
-            merged[-1] += token
-        else:
-            merged.append(token)
+        for part in split_pdf_text_tokens(token):
+            if not part:
+                continue
+            if merged and pdf_token_font(merged[-1]) == pdf_token_font(part):
+                merged[-1] += part
+            else:
+                merged.append(part)
     return merged
+
+
+def clean_pdf_draw_tokens(tokens: list[str]) -> list[str]:
+    cleaned = []
+    for token in tokens:
+        if token.isspace() and cleaned and cleaned[-1].isspace():
+            continue
+        if token:
+            cleaned.append(token)
+    return cleaned
+
+
+def drawable_pdf_line_tokens(line: list[str]) -> list[str]:
+    merged = merge_pdf_line_tokens(line)
+    return clean_pdf_draw_tokens(merged)
 
 
 def draw_mixed_pdf_lines(page, fitz, rect, lines, font_size: float, line_height: float, color):
@@ -1309,7 +1355,7 @@ def draw_mixed_pdf_lines(page, fitz, rect, lines, font_size: float, line_height:
         if y > rect.y1:
             return
         x = rect.x0
-        for token in merge_pdf_line_tokens(line):
+        for token in drawable_pdf_line_tokens(line):
             if not token:
                 continue
             fontname = pdf_token_font(token)
@@ -1632,7 +1678,7 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
 
     copy_outline(src_doc, out_doc, selected_pages, translations)
     pdf_output.parent.mkdir(parents=True, exist_ok=True)
-    out_doc.save(pdf_output, garbage=4, deflate=True, clean=True)
+    out_doc.save(pdf_output, garbage=4, deflate=True)
     out_doc.close()
     src_doc.close()
 
