@@ -23,6 +23,20 @@ def block(block_id, page, text, x0=100, y0=100, x1=400, y1=120, preserve_image=F
 
 
 class RenderPlanClassificationTests(unittest.TestCase):
+    def test_large_unfilled_drawing_rect_is_not_preserved_as_border(self):
+        class Rect:
+            width = 120.0
+            height = 80.0
+
+        self.assertFalse(pdf.should_preserve_drawing_rect(Rect(), None))
+
+    def test_thin_drawing_rect_is_preserved_as_line(self):
+        class Rect:
+            width = 400.0
+            height = 0.5
+
+        self.assertTrue(pdf.should_preserve_drawing_rect(Rect(), None))
+
     def test_classifies_heading_body_page_number_and_reference(self):
         blocks = [
             block("p001b0001", 1, "1. INTRODUCTION", y0=80, y1=92),
@@ -70,6 +84,282 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertEqual(visual_items[0].source_ids, ["p003b0001", "p003b0002", "p003b0003"])
         self.assertEqual(len(body_items), 1)
         self.assertEqual(body_items[0].source_ids, ["p003b0004"])
+
+    def test_table_caption_with_hyphenated_number_preserves_table_region_as_image(self):
+        blocks = [
+            block("p596b0001", 596, "Table 10-3. Comparison of three implementations.", x0=77, y0=80, x1=524, y1=115),
+            block("p596b0002", 596, "Metric", x0=84, y0=224, x1=129, y1=241),
+            block("p596b0003", 596, "L2 throughput", x0=84, y0=485, x1=171, y1=502),
+            block("p596b0004", 596, "155 GB/s (+94%\nversus naive)", x0=307, y0=485, x1=409, y1=520),
+            block(
+                "p596b0005",
+                596,
+                "The table is followed by a normal prose paragraph that should remain translated.",
+                x0=77,
+                y0=540,
+                x1=523,
+                y1=612,
+            ),
+        ]
+
+        plan = pdf.build_page_render_plan(
+            596,
+            blocks,
+            {"p596b0005": "表格后的正文。"},
+            page_size=(612, 792),
+            bbox_lines=None,
+        )
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+        translated_ids = {source_id for item in plan.items if item.kind == "translated_text" for source_id in item.source_ids}
+
+        self.assertIn("p596b0001", image_ids)
+        self.assertIn("p596b0004", image_ids)
+        self.assertIn("p596b0005", translated_ids)
+        self.assertNotIn("p596b0005", image_ids)
+
+    def test_wrapped_inline_table_reference_remains_translated_body(self):
+        blocks = [
+            block(
+                "p201b0001",
+                201,
+                "This indicates that the GPUs were more fully utilized, as shown in\nTable 4-2.",
+                x0=77,
+                y0=80,
+                x1=501,
+                y1=146,
+            ),
+            block("p201b0002", 201, "Table 4-2. Key GPU performance metrics.", x0=77, y0=166, x1=483, y1=219),
+            block("p201b0003", 201, "Metric", x0=84, y0=236, x1=129, y1=253),
+        ]
+
+        plan = pdf.build_page_render_plan(
+            201,
+            blocks,
+            {"p201b0001": "正文引用表 4-2。"},
+            page_size=(612, 792),
+            bbox_lines=None,
+        )
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+        translated_ids = {source_id for item in plan.items if item.kind == "translated_text" for source_id in item.source_ids}
+
+        self.assertIn("p201b0001", translated_ids)
+        self.assertNotIn("p201b0001", image_ids)
+
+    def test_wide_single_line_table_header_stays_in_table_image(self):
+        blocks = [
+            block("p201b0002", 201, "Table 4-2. Key GPU performance metrics.", x0=77, y0=166, x1=483, y1=219),
+            block("p201b0003", 201, "Metric", x0=84, y0=236, x1=129, y1=253),
+            block("p201b0004", 201, "Before (no overlap) After (with overlap)", x0=219, y0=236, x1=509, y1=253),
+            block("p201b0005", 201, "SM busy", x0=84, y0=270, x1=138, y1=287),
+        ]
+
+        plan = pdf.build_page_render_plan(201, blocks, {}, page_size=(612, 792), bbox_lines=None)
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+
+        self.assertIn("p201b0004", image_ids)
+
+    def test_narrow_multiline_uppercase_table_cell_stays_in_table_image(self):
+        blocks = [
+            block("p223b0001", 223, "Table 4-4. Root-cause categorization.", x0=77, y0=80, x1=530, y1=115),
+            block("p223b0002", 223, "Component", x0=84, y0=150, x1=168, y1=167),
+            block("p223b0010", 223, "GPU HBM3\nmemory", x0=84, y0=218, x1=160, y1=252),
+            block("p223b0011", 223, "GPU", x0=206, y0=218, x1=236, y1=234),
+        ]
+
+        plan = pdf.build_page_render_plan(223, blocks, {}, page_size=(612, 792), bbox_lines=None)
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+
+        self.assertIn("p223b0010", image_ids)
+
+    def test_tall_narrow_table_note_cell_stays_in_table_image(self):
+        blocks = [
+            block("p313b0001", 313, "Table 6-3. SM-resident resource limits.", x0=77, y0=80, x1=414, y1=97),
+            block("p313b0002", 313, "Resource", x0=84, y0=132, x1=148, y1=149),
+            block(
+                "p313b0012",
+                313,
+                "Using smaller blocks (e.g., 256\nthreads) allows more blocks to\nreside on the SM, which can\nincrease occupancy.",
+                x0=307,
+                y0=410,
+                x1=515,
+                y1=552,
+            ),
+        ]
+
+        plan = pdf.build_page_render_plan(313, blocks, {}, page_size=(612, 792), bbox_lines=None)
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+
+        self.assertIn("p313b0012", image_ids)
+
+    def test_following_section_heading_after_table_remains_translated(self):
+        blocks = [
+            block("p314b0002", 314, "Table 6-4. CUDA grid limits", x0=77, y0=166, x1=247, y1=183),
+            block("p314b0003", 314, "Grid dimension", x0=84, y0=200, x1=195, y1=217),
+            block("p314b0013", 314, "Up to 128 kernels can execute\nconcurrently on one device.", x0=336, y0=362, x1=518, y1=433),
+            block(
+                "p314b0015",
+                314,
+                "CUDA GPU Backward and Forward Compatibility Model",
+                x0=77,
+                y0=600,
+                x1=522,
+                y1=619,
+            ),
+        ]
+
+        plan = pdf.build_page_render_plan(
+            314,
+            blocks,
+            {"p314b0015": "CUDA GPU 后向与前向兼容性模型"},
+            page_size=(612, 792),
+            bbox_lines=None,
+        )
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+        translated_ids = {source_id for item in plan.items if item.kind == "translated_text" for source_id in item.source_ids}
+
+        self.assertIn("p314b0015", translated_ids)
+        self.assertNotIn("p314b0015", image_ids)
+
+    def test_wide_indented_table_description_cell_stays_in_table_image(self):
+        blocks = [
+            block("p955b0001", 955, "Table 14-1. Logging options for torch.compile", x0=77, y0=80, x1=424, y1=97),
+            block("p955b0002", 955, "Setting", x0=84, y0=132, x1=135, y1=149),
+            block("p955b0016", 955, "Dumps the Python code for each FX graph that\nTorchDynamo produces", x0=200, y0=340, x1=484, y1=375),
+        ]
+
+        plan = pdf.build_page_render_plan(955, blocks, {}, page_size=(612, 792), bbox_lines=None)
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+
+        self.assertIn("p955b0016", image_ids)
+
+    def test_left_aligned_body_stops_table_region_before_next_heading(self):
+        blocks = [
+            block("p1171b0001", 1171, "Table 17-1. High-level routing strategies.", x0=77, y0=80, x1=519, y1=115),
+            block("p1171b0002", 1171, "Routing\nstrategy", x0=84, y0=132, x1=143, y1=167),
+            block("p1171b0011", 1171, "Routes to the worker whose KV cache best matches\nthe request", x0=212, y0=285, x1=523, y1=320),
+            block(
+                "p1171b0012",
+                1171,
+                "The disaggregated router runs for each new request on the decode worker.",
+                x0=77,
+                y0=352,
+                x1=518,
+                y1=406,
+            ),
+            block("p1171b0013", 1171, "Routing factors", x0=77, y0=423, x1=188, y1=440),
+        ]
+
+        plan = pdf.build_page_render_plan(
+            1171,
+            blocks,
+            {
+                "p1171b0012": "正文段落。",
+                "p1171b0013": "路由因素",
+            },
+            page_size=(612, 792),
+            bbox_lines=None,
+        )
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+        translated_ids = {source_id for item in plan.items if item.kind == "translated_text" for source_id in item.source_ids}
+
+        self.assertIn("p1171b0011", image_ids)
+        self.assertIn("p1171b0012", translated_ids)
+        self.assertIn("p1171b0013", translated_ids)
+        self.assertNotIn("p1171b0012", image_ids)
+        self.assertNotIn("p1171b0013", image_ids)
+
+    def test_short_numeric_metric_cells_are_preserved_as_image(self):
+        blocks = [
+            block("p650b0021", 650, "1.7 B", x0=189, y0=412, x1=222, y1=429),
+            block("p650b0022", 650, "1.05 B (–38%\nversus naive)", x0=294, y0=412, x1=378, y1=447),
+            block("p650b0023", 650, "~1.00 B (–\n4.76% versus\ntwo-stage)", x0=399, y0=412, x1=480, y1=465),
+        ]
+
+        plan = pdf.build_page_render_plan(650, blocks, {}, page_size=(612, 792), bbox_lines=None)
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+
+        self.assertIn("p650b0021", image_ids)
+        self.assertIn("p650b0022", image_ids)
+        self.assertIn("p650b0023", image_ids)
+
+    def test_visual_clip_is_capped_after_preceding_text(self):
+        blocks = [
+            block("p650b0019", 650, "Previous translated text", x0=504, y0=324, x1=539, y1=395),
+            block("p650b0024", 650, "~0.98", x0=504, y0=412, x1=539, y1=465),
+        ]
+        classes = {"p650b0019": "body", "p650b0024": "formula_region"}
+        visual_ids = {"p650b0024"}
+
+        capped = pdf.cap_visual_bbox_after_preceding_text(
+            (504, 412, 539, 465),
+            (455, 387, 536, 489),
+            blocks,
+            classes,
+            visual_ids,
+        )
+
+        self.assertEqual(capped[1], 395)
+
+    def test_fragmented_narrow_table_cell_is_preserved_as_image(self):
+        blocks = [
+            block("p650b0019", 650, "Exce\noverl\nunder\nblock", x0=504, y0=324, x1=539, y1=395),
+        ]
+
+        plan = pdf.build_page_render_plan(650, blocks, {}, page_size=(612, 792), bbox_lines=None)
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+
+        self.assertIn("p650b0019", image_ids)
+
+    def test_fragmented_table_cell_preserves_adjacent_row_cells(self):
+        blocks = [
+            block("p802b0021", 802, "Web UIs for standard\ntrace formats, advanced\nfiltering", x0=294, y0=666, x1=437, y1=719),
+            block("p802b0022", 802, "Inspect trace\nwithout\nspecialized", x0=463, y0=666, x1=539, y1=719),
+        ]
+
+        plan = pdf.build_page_render_plan(802, blocks, {}, page_size=(612, 792), bbox_lines=None)
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+
+        self.assertIn("p802b0021", image_ids)
+        self.assertIn("p802b0022", image_ids)
+
+    def test_table_header_above_visual_row_is_preserved_as_image(self):
+        blocks = [
+            block("p332b0004", 332, "Latency", x0=399, y0=99, x1=456, y1=116),
+            block("p332b0006", 332, "the constant\ncache and\nbroadcast\nbehavior", x0=399, y0=125, x1=477, y1=286),
+            block("p332b0009", 332, "126 MB total", x0=294, y0=303, x1=375, y1=320),
+        ]
+
+        plan = pdf.build_page_render_plan(332, blocks, {}, page_size=(612, 792), bbox_lines=None)
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+
+        self.assertIn("p332b0004", image_ids)
+
+    def test_numeric_metric_headings_do_not_absorb_intervening_prose(self):
+        blocks = [
+            block("p822b0003", 822, "Excess Python overhead (45% in py::forward)", x0=77, y0=240, x1=383, y1=258),
+            block(
+                "p822b0004",
+                822,
+                "Use PyTorch's JIT compiler to eliminate interpreter overhead.",
+                x0=99,
+                y0=267,
+                x1=529,
+                y1=322,
+            ),
+            block("p822b0005", 822, "Large matmul hotspot (20.5% in aten::matmul)", x0=77, y0=339, x1=398, y1=357),
+        ]
+
+        plan = pdf.build_page_render_plan(822, blocks, {"p822b0004": "使用 JIT 编译器。"}, page_size=(612, 792), bbox_lines=None)
+        image_items = [item for item in plan.items if item.kind == "original_image_clip"]
+
+        self.assertFalse(any({"p822b0003", "p822b0005"} <= set(item.source_ids) for item in image_items))
+
+    def test_index_entry_with_percent_is_not_numeric_metric_cell(self):
+        self.assertFalse(
+            pdf.is_numeric_metric_cell(
+                "– GPUs near 100% utilized, Performance Monitoring and\nUtilization in Practice"
+            )
+        )
 
     def test_missing_input_event_enumeration_uses_heuristic_translation(self):
         blocks = [
@@ -193,6 +483,44 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertTrue(errors)
         self.assertIn("blank source image clip", errors[0])
 
+    def test_image_only_page_preserves_full_source_page(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            image_path = Path(tmp_dir) / "cover.png"
+            image = Image.new("RGB", (100, 100), "white")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((20, 20, 80, 80), fill="black")
+            image.save(image_path)
+
+            plan = pdf.build_page_render_plan(
+                1,
+                [],
+                {},
+                page_size=(100, 100),
+                bbox_lines=[],
+                source_image_path=image_path,
+            )
+
+        self.assertEqual(len(plan.items), 1)
+        self.assertEqual(plan.items[0].kind, "original_image_clip")
+        self.assertEqual(plan.items[0].bbox, (0.0, 0.0, 100.0, 100.0))
+        self.assertEqual(plan.items[0].fallback_reason, "image_only_page")
+
+    def test_blank_page_without_text_does_not_create_image_clip(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            image_path = Path(tmp_dir) / "blank.png"
+            Image.new("RGB", (100, 100), "white").save(image_path)
+
+            plan = pdf.build_page_render_plan(
+                1,
+                [],
+                {},
+                page_size=(100, 100),
+                bbox_lines=[],
+                source_image_path=image_path,
+            )
+
+        self.assertEqual(plan.items, [])
+
     def test_short_pseudocode_and_line_numbers_are_preserved_as_one_visual_region(self):
         blocks = [
             block("p022b0004", 22, "2\n3", x0=90, y0=100, x1=102, y1=132),
@@ -214,6 +542,176 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertIn("p022b0004", image_ids)
         self.assertIn("p022b0009", image_ids)
         self.assertNotIn("p022b0009", translated_ids)
+
+    def test_profiler_command_output_is_preserved_as_image(self):
+        blocks = [
+            block(
+                "p821b0007",
+                821,
+                "# Samples Command\nShared Object\n# ........ ........ ...................\n45.0% python\n/src/train.py\n20.5% python\nlibnccl.so",
+                x0=92,
+                y0=538,
+                x1=362,
+                y1=672,
+            )
+        ]
+
+        plan = pdf.build_page_render_plan(821, blocks, {}, page_size=(612, 792), bbox_lines=None)
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+
+        self.assertIn("p821b0007", image_ids)
+
+    def test_python_import_block_is_preserved_as_image(self):
+        blocks = [
+            block(
+                "p112b0001",
+                112,
+                "import os\n"
+                "import re\n"
+                "import glob\n"
+                "import subprocess\n"
+                "import psutil\n"
+                "import ctypes\n"
+                "import torch\n"
+                "import torch.distributed as dist\n"
+                "from torch.nn.parallel import DistributedDataParallel as DDP",
+                x0=92,
+                y0=72,
+                x1=497,
+                y1=219,
+            )
+        ]
+
+        plan = pdf.build_page_render_plan(112, blocks, {}, page_size=(612, 792), bbox_lines=None)
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+
+        self.assertIn("p112b0001", image_ids)
+
+    def test_shell_command_block_is_preserved_as_image(self):
+        blocks = [
+            block(
+                "p111b0003",
+                111,
+                "numactl --cpunodebind=1 --membind=1 \\\npython train.py --gpu 4",
+                x0=92,
+                y0=214,
+                x1=342,
+                y1=240,
+            )
+        ]
+
+        plan = pdf.build_page_render_plan(111, blocks, {}, page_size=(612, 792), bbox_lines=None)
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+
+        self.assertIn("p111b0003", image_ids)
+
+    def test_cuda_call_fragment_is_preserved_as_image(self):
+        blocks = [
+            block(
+                "p690b0003",
+                690,
+                "TILE_SIZE + chunk) + lane_id,\n"
+                "sizeof(float4),\n"
+                "pipe_lc);\n"
+                "cuda::memcpy_async(\n"
+                "cta,\n"
+                "reinterpret_cast<float4*>(B0 + chunk) + lane_id,",
+                x0=119,
+                y0=99,
+                x1=524,
+                y1=192,
+            )
+        ]
+
+        plan = pdf.build_page_render_plan(690, blocks, {}, page_size=(612, 792), bbox_lines=None)
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+
+        self.assertIn("p690b0003", image_ids)
+
+    def test_partially_translated_quote_is_not_replaced_by_original(self):
+        source = (
+            "NVIDIA's rapid roadmap suggests that this is just the beginning. The Grace\n"
+            "Blackwell architecture will evolve into Vera Rubin and Feynman and\n"
+            "beyond. As NVIDIA's CEO, Jensen Huang, describes, \"AI is advancing at\n"
+            "light speed, and companies are racing to build AI factories that can scale to\n"
+            "meet the processing demands of reasoning AI and inference time scaling.\""
+        )
+        translated = (
+            "NVIDIA 快速推进的路线图表明，这仅仅是开始。Grace Blackwell 架构将演进为 "
+            "Vera Rubin、Feynman 以及更后续的架构。正如 NVIDIA 首席执行官 Jensen Huang 所描述的："
+            "\"AI is advancing at light speed, and companies are racing to build AI factories "
+            "that can scale to meet the processing demands of reasoning AI and inference time scaling.\""
+        )
+        blocks = [block("p095b0006", 95, source, x0=77, y0=605, x1=531, y1=696)]
+
+        plan = pdf.build_page_render_plan(95, blocks, {"p095b0006": translated}, page_size=(612, 792), bbox_lines=None)
+
+        self.assertEqual(plan.items[0].kind, "translated_text")
+        self.assertIn("快速推进的路线图", plan.items[0].text)
+
+    def test_non_prose_identifiers_do_not_require_chinese_translation(self):
+        self.assertFalse(pdf.source_requires_chinese_translation("Copyright © 2026 Flux Capacitor, LLC. All rights reserved."))
+        self.assertFalse(pdf.source_requires_chinese_translation("https://oreilly.com/about/contact.html"))
+        self.assertFalse(pdf.source_requires_chinese_translation("NVIDIA Blackwell “Dual-Die” GPU"))
+
+    def test_yaml_config_block_is_preserved_as_image(self):
+        blocks = [
+            block(
+                "p1179b0006",
+                1179,
+                "model: ...\nsplit_policy:\nprompt_length_threshold: 256\nprefix_cache_weight: 10.0\nenable_hotspot_prevention: true\ncache:\nreuse_prefix: true",
+                x0=92,
+                y0=467,
+                x1=322,
+                y1=709,
+            )
+        ]
+
+        plan = pdf.build_page_render_plan(1179, blocks, {}, page_size=(612, 792), bbox_lines=None)
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+
+        self.assertIn("p1179b0006", image_ids)
+
+    def test_split_assignment_columns_are_preserved_as_one_code_image_region(self):
+        blocks = [
+            block("p241b0001", 241, "srcDesc.devId\nsrcDesc.seg", x0=119, y0=72, x1=207, y1=98),
+            block("p241b0002", 241, "= deviceId;\n= VRAM_SEG;", x0=241, y0=72, x1=315, y1=98),
+            block(
+                "p241b0003",
+                241,
+                "// 5) Register memory with each agent and trim to xfer\n"
+                "descriptors\n"
+                "auto srcRegs = agentSrc.registerMem(srcList);\n"
+                "auto dstRegs = agentDst.registerMem(dstList);",
+                x0=92,
+                y0=130,
+                x1=484,
+                y1=184,
+            ),
+            block("p241b0004", 241, "auto srcXfer = srcRegs.trim();\nused for xfer\nauto dstXfer = dstRegs.trim();", x0=92, y0=198, x1=322, y1=238),
+            block("p241b0005", 241, "// metadata-free descriptors", x0=335, y0=198, x1=524, y1=212),
+            block("p241b0006", 241, "Following body text.", x0=119, y0=270, x1=480, y1=300),
+        ]
+
+        plan = pdf.build_page_render_plan(
+            241,
+            blocks,
+            {"p241b0006": "后续正文。"},
+            page_size=(612, 792),
+            bbox_lines=None,
+        )
+        image_items = [item for item in plan.items if item.kind == "original_image_clip"]
+        image_ids = {source_id for item in image_items for source_id in item.source_ids}
+        translated_ids = {source_id for item in plan.items if item.kind == "translated_text" for source_id in item.source_ids}
+
+        self.assertIn("p241b0001", image_ids)
+        self.assertIn("p241b0002", image_ids)
+        self.assertIn("p241b0003", image_ids)
+        self.assertIn("p241b0004", image_ids)
+        self.assertIn("p241b0005", image_ids)
+        self.assertNotIn("p241b0001", translated_ids)
+        self.assertNotIn("p241b0003", translated_ids)
+        self.assertEqual(pdf.validate_plan_layout(plan, (612, 792)), [])
 
 
 class TranslationNormalizationTests(unittest.TestCase):
@@ -473,6 +971,21 @@ class GlobalStyleTests(unittest.TestCase):
         fit = pdf.fitted_text_spacing([["第一段"], [], ["第二段"]], 10.0, 31.0, style)
 
         self.assertEqual(fit, (1.0, 0.0))
+
+    def test_style_fit_allows_sub_point_floating_roundoff_at_boundary(self):
+        style = pdf.TextStyle(
+            font_size=9.2,
+            line_height_factor=1.22,
+            paragraph_spacing=2.0,
+            min_line_height_factor=1.08,
+            min_paragraph_spacing=0.0,
+        )
+        lines = [["line"] for _ in range(7)]
+        required = pdf.text_height_for_lines(lines, 9.2, 1.08, 0.0)
+
+        fit = pdf.fitted_text_spacing(lines, 9.2, required - 1e-12, style)
+
+        self.assertEqual(fit, (1.08, 2.0))
 
 
 class BodyFlowLayoutTests(unittest.TestCase):

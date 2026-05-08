@@ -71,10 +71,14 @@ def load_cached_translations(path: Path, valid_ids: set[str], *, retranslate: bo
 def build_page_batches(selected_pages, max_chars: int) -> list[PageBatch]:
     batches = []
     for page_num, page_blocks in selected_pages:
+        visual_regions = pipeline.build_visual_regions(page_blocks)
+        classes = pipeline.classify_blocks(page_blocks, visual_regions)
         current = []
         current_chars = 0
         chunk_idx = 1
         for block in page_blocks:
+            if classes.get(block["id"]) not in {"body", "heading", "title"}:
+                continue
             if pipeline.should_preserve_as_image(block):
                 continue
             if pipeline.is_trivial_keep(block["text"]):
@@ -91,6 +95,17 @@ def build_page_batches(selected_pages, max_chars: int) -> list[PageBatch]:
         if current:
             batches.append(PageBatch(page_num=page_num, chunk_idx=chunk_idx, items=current))
     return batches
+
+
+def write_deterministic_quality_report(issues: list[str], job_dir: Path):
+    (job_dir / "deterministic_quality_report.json").write_text(
+        json.dumps({"issue_count": len(issues), "issues": issues}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    lines = ["# Deterministic PDF Quality Report", "", f"- issue_count: {len(issues)}", ""]
+    for issue in issues[:100]:
+        lines.append(f"- {issue}")
+    (job_dir / "deterministic_quality_report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def validate_translation_payload(payload, expected_ids: set[str]):
@@ -189,12 +204,26 @@ def run_parallel_translation(batches: list[PageBatch], translations: dict[str, s
     return translations
 
 
-def run_qa_for_job(pages, translations: dict[str, str], job_paths, args) -> dict:
+def run_qa_for_job(selected_pages, translations: dict[str, str], job_paths, page_size, args) -> dict:
+    pages = [page for _, page in selected_pages]
     original_map = {
         block["id"]: block["text"]
         for page in pages
         for block in page
     }
+    deterministic_issues = pipeline.validate_document_quality(
+        selected_pages,
+        translations,
+        page_size,
+        job_paths=job_paths,
+    )
+    write_deterministic_quality_report(deterministic_issues, job_paths["job_dir"])
+    if deterministic_issues and args.strict_qa:
+        raise RuntimeError(
+            f"deterministic QA found {len(deterministic_issues)} issue(s); "
+            f"see {job_paths['job_dir'] / 'deterministic_quality_report.md'}"
+        )
+
     items = qa.choose_items_for_qa(original_map, translations, args.qa_mode, args.qa_sample_size)
     sampled_translations = {item["id"]: item["translation"] for item in items}
     backtranslations = qa.run_backtranslation(
@@ -210,6 +239,8 @@ def run_qa_for_job(pages, translations: dict[str, str], job_paths, args) -> dict
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     qa.write_markdown(report, job_paths["job_dir"] / "backtranslate_report.md")
     return {
+        "deterministic_issue_count": len(deterministic_issues),
+        "deterministic_issues": deterministic_issues[:10],
         "checked_blocks": len(report),
         "worst_score": report[0]["score"] if report else None,
         "worst_items": report[:5],
@@ -277,6 +308,7 @@ def translate_one_pdf(pdf_path: Path, output_dir: Path, args) -> dict:
             translations,
             pdf_size_pt,
             args.dpi,
+            job_paths=job_paths,
         )
 
     result = {
@@ -290,9 +322,10 @@ def translate_one_pdf(pdf_path: Path, output_dir: Path, args) -> dict:
     }
     if args.qa:
         result["qa"] = run_qa_for_job(
-            [page for _, page in selected_pages],
+            selected_pages,
             translations,
             job_paths,
+            pdf_size_pt,
             args,
         )
     return result
@@ -321,6 +354,9 @@ def write_summary(results: list[dict]):
         if item.get("status") == "failed":
             lines.append(f"- error: {item.get('error', '')}")
         if item.get("qa"):
+            lines.append(f"- deterministic_issue_count: {item['qa'].get('deterministic_issue_count', 0)}")
+            for issue in item["qa"].get("deterministic_issues", [])[:5]:
+                lines.append(f"- deterministic_issue: {issue}")
             lines.append(f"- checked_blocks: {item['qa']['checked_blocks']}")
             lines.append(f"- worst_score: {item['qa']['worst_score']}")
             for worst in item["qa"]["worst_items"]:
@@ -357,6 +393,7 @@ def main():
     parser.add_argument("--qa-mode", choices=["all", "sample"], default="sample")
     parser.add_argument("--qa-sample-size", type=int, default=100)
     parser.add_argument("--qa-batch-chars", type=int, default=7000)
+    parser.add_argument("--strict-qa", action="store_true")
     parser.add_argument("--continue-on-error", action="store_true")
     parser.set_defaults(qa=True)
     args = parser.parse_args()

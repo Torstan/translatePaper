@@ -58,6 +58,8 @@ SOURCE_PARAGRAPH_FLOW_MAX_GAP_PT = 26.0
 BODY_FLOW_TOP_MAX_GAP_PT = 14.0
 BODY_FLOW_INTERNAL_SLACK_WARN_PT = 24.0
 BODY_FLOW_VISIBLE_GAP_WARN_PT = 32.0
+TEXT_FIT_EPSILON_PT = 0.01
+IMAGE_ONLY_PAGE_MIN_DARK_PIXELS = 32
 
 
 @dataclass(frozen=True)
@@ -367,19 +369,45 @@ def is_trivial_keep(text: str) -> bool:
     return False
 
 
+VISUAL_CAPTION_NUMBER_PATTERN = r"\d+[0-9il]*(?:[-‐‑‒–—.]\d+[0-9il]*)?"
+
+
+def is_table_caption_line(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", normalize_text(text).strip().lower())
+    return bool(re.match(rf"^table{VISUAL_CAPTION_NUMBER_PATTERN}[:.]", normalized))
+
+
+def is_visual_caption_line(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", normalize_text(text).strip().lower())
+    return bool(re.match(rf"^(fig\.?|figure|table){VISUAL_CAPTION_NUMBER_PATTERN}[:.]", normalized))
+
+
+def is_table_caption(text: str) -> bool:
+    first_line = normalize_text(text).split("\n", 1)[0].strip()
+    return is_table_caption_line(first_line)
+
+
 def is_visual_caption(text: str) -> bool:
     first_line = normalize_text(text).split("\n", 1)[0].strip()
-    normalized = re.sub(r"\s+", "", first_line.lower())
-    return bool(re.match(r"^(fig\.?|figure|table)\d+[0-9il]*[:.]", normalized))
+    return is_visual_caption_line(first_line)
 
 
 def contains_visual_caption(text: str) -> bool:
     normalized = normalize_text(text).lower()
-    compact = re.sub(r"\s+", "", normalized)
-    return bool(
-        re.search(r"fig\.?\d+[0-9il]*[:.]", compact)
-        or re.search(r"(?m)^\s*(figure|table)\s*\d+[0-9il]*[:.]", normalized)
-    )
+    lines = [line.strip() for line in normalized.split("\n") if line.strip()]
+    for idx, line in enumerate(lines):
+        if not is_visual_caption_line(line):
+            continue
+        if idx == 0:
+            return True
+        prefix = " ".join(lines[:idx])
+        if len(re.findall(r"[A-Za-z]{3,}", prefix)) >= 8:
+            continue
+        if re.search(r"[.!?][\"')\]）】”’]*", prefix):
+            continue
+        return True
+    return False
+
 
 
 def is_formula_like(text: str) -> bool:
@@ -407,11 +435,58 @@ def is_standalone_equation_label(text: str) -> bool:
     return bool(re.fullmatch(r"\(\d{1,2}\)", re.sub(r"\s+", "", normalize_text(text))))
 
 
+def is_numeric_metric_cell(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized or cjk_char_count(normalized) > 0:
+        return False
+    if len(normalized) > 120 or not re.search(r"\d", normalized):
+        return False
+    words = latin_words(normalized)
+    if len(words) > 8 or english_function_word_count(normalized) >= 2:
+        return False
+    if is_prose_row_text(normalized):
+        return False
+    if re.search(r"[.!?][\"')\]）】”’]*\s+[A-Z][a-z]", normalized):
+        return False
+    unit_pattern = r"(?i)\b\d+(?:\.\d+)?\s*(?:[KMGTPE]?i?B|GB/s|MB/s|KB/s|TB/s|ms|ns|us|µs|s|%)\b"
+    return bool(
+        "%"
+        in normalized
+        or normalized.strip().startswith("~")
+        or re.search(unit_pattern, normalized)
+        or re.search(r"\d+(?:\.\d+)?\s*[x×]", normalized, flags=re.I)
+    )
+
+
+def is_fragmented_narrow_table_cell(block) -> bool:
+    text = normalize_text(block.get("text", ""))
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if len(lines) < 3 or cjk_char_count(text) > 0:
+        return False
+    width = block.get("xMax", 0) - block.get("xMin", 0)
+    height = block.get("yMax", 0) - block.get("yMin", 0)
+    if width > 95.0 or height < 42.0:
+        return False
+    if any(len(line) > 18 for line in lines):
+        return False
+    if sum(1 for line in lines if " " in line) > 1:
+        return False
+    joined = " ".join(lines)
+    if re.search(r"[.!?。！？]", joined):
+        return False
+    return bool(re.search(r"[A-Za-z0-9]", joined))
+
+
 def should_preserve_as_image(block) -> bool:
     if block.get("preserve_image"):
         return True
     text = block.get("text", "")
-    return is_visual_caption(text) or is_formula_like(text)
+    return (
+        is_visual_caption(text)
+        or is_formula_like(text)
+        or is_numeric_metric_cell(text)
+        or is_fragmented_narrow_table_cell(block)
+    )
 
 
 def should_use_ocr(pages) -> bool:
@@ -1748,6 +1823,12 @@ def horizontal_overlap(box_a, box_b):
     return max(0, x1 - x0)
 
 
+def vertical_overlap(box_a, box_b):
+    y0 = max(box_a[1], box_b[1])
+    y1 = min(box_a[3], box_b[3])
+    return max(0, y1 - y0)
+
+
 def avoid_protected_boxes(box, protected_boxes):
     x0, y0, x1, y1 = box
     for protected in protected_boxes or []:
@@ -1989,7 +2070,7 @@ def fitted_text_spacing(lines, font_size: float, rect_height: float, style: Text
 
     for paragraph_spacing in paragraph_spacing_candidates:
         for line_factor in line_factor_candidates:
-            if text_height_for_lines(lines, font_size, line_factor, paragraph_spacing) <= rect_height:
+            if text_height_for_lines(lines, font_size, line_factor, paragraph_spacing) <= rect_height + TEXT_FIT_EPSILON_PT:
                 return line_factor, paragraph_spacing
     return None
 
@@ -2315,14 +2396,24 @@ def insert_source_image_clip(out_page, fitz, source_image_path: Path, page_rect,
     return True
 
 
+def should_preserve_drawing_rect(rect, fill) -> bool:
+    if rect is None:
+        return False
+    if fill is not None:
+        return True
+    return rect.width <= 2.0 or rect.height <= 2.0
+
+
 def preserve_drawings_on_page(src_page, out_page):
     for drawing in src_page.get_drawings():
         rect = drawing.get("rect")
         if rect is None:
             continue
+        fill = drawing.get("fill")
+        if not should_preserve_drawing_rect(rect, fill):
+            continue
         color = drawing.get("color") or (0, 0, 0)
         width = drawing.get("width") or 0.5
-        fill = drawing.get("fill")
         if fill is not None:
             out_page.draw_rect(rect, color=color, fill=fill, width=width)
         else:
@@ -3069,6 +3160,28 @@ def cap_visual_bbox_before_following_text(region_bbox, visual_bbox, blocks, clas
         if horizontal_overlap(capped, block_box) < min(capped[2] - capped[0], block_box[2] - block_box[0]) * 0.15:
             continue
         capped = (capped[0], capped[1], capped[2], max(capped[1], block_box[1] - 2.0))
+    return capped
+
+
+def cap_visual_bbox_after_preceding_text(region_bbox, visual_bbox, blocks, classes, visual_ids):
+    capped = visual_bbox
+    for block in blocks:
+        if block["id"] in visual_ids:
+            continue
+        classification = classes.get(block["id"], "unknown")
+        if classification not in NORMAL_TRANSLATED_CLASSES:
+            continue
+        text = normalize_text(block.get("text", ""))
+        if not text:
+            continue
+        block_box = block_bbox(block)
+        if block_box[3] > region_bbox[1] + 1.0:
+            continue
+        if block_box[3] <= capped[1]:
+            continue
+        if horizontal_overlap(capped, block_box) < min(capped[2] - capped[0], block_box[2] - block_box[0]) * 0.15:
+            continue
+        capped = (capped[0], min(capped[3], block_box[3]), capped[2], capped[3])
     return capped
 
 
@@ -3942,39 +4055,104 @@ def is_formula_or_code_block(text: str) -> bool:
     return symbol_count >= 3 and latin_count <= max(30, len(normalized) * 0.8)
 
 
+def is_code_like_line(line: str) -> bool:
+    line = line.strip()
+    if not line:
+        return False
+    compact = re.sub(r"\s+", "", line.lower())
+    if re.match(r"^import\s+[A-Za-z_][\w.]*(?:\s+as\s+[A-Za-z_]\w*)?$", line):
+        return True
+    if re.match(r"^from\s+[A-Za-z_][\w.]*\s+import\s+.+", line):
+        return True
+    if re.match(r"^[A-Za-z_][\w.-]*(?:\s+--?[A-Za-z0-9][\w-]*(?:[=\s]\S+)*)+\s*\\?$", line):
+        return True
+    if re.match(r"^--?[A-Za-z0-9][\w-]*(?:[=\s]\S+)*\s*\\?$", line):
+        return True
+    if re.search(r"\b(?:python|numactl|ncu|nsys|pip|conda|torchrun)\b", line) and "--" in line:
+        return True
+    if re.search(r"\b(?:reinterpret_cast|static_cast|sizeof|cuda::|std::|__global__|__launch_bounds__)\b", line):
+        return True
+    if re.search(r"[A-Za-z_][\w:<>]*\s*\([^)]*$", line):
+        return True
+    if line.endswith((",", ";", "\\")) and re.search(r"[()<>*_:]", line):
+        return True
+    if any(
+        marker in compact
+        for marker in (
+            ":=",
+            "returns(",
+            "return(",
+            "create(",
+            "endif",
+            "endfor",
+            "endwhile",
+            "enddecide",
+            "universal(",
+            "decide(",
+            "foreachprocess",
+            "mine:",
+            "inv:",
+            "new:",
+            "before:",
+            "after:",
+        )
+    ):
+        return True
+    if line.startswith("//"):
+        return True
+    if re.search(r"(;|::|->|<<|>>|#include|\{\}|\{|\})", line):
+        return True
+    if re.search(r"[A-Za-z_][\w.>\-]*\s*=\s*[^=]", line):
+        return True
+    if re.match(r"^(if|then|else|while|return|end|do)\b", line.lower()):
+        return True
+    if re.match(r"^for\b.+\bdo\b", line.lower()) or re.search(r"\b(if|while|for|switch)\s*\(", line):
+        return True
+    if re.match(r"^(auto|const|static|std::|nixl_[A-Za-z_]+)\b", line):
+        return True
+    return bool(re.fullmatch(r"[A-Za-z_][\w.>\-]*(?:\([^)]*\))?;?", line) and re.search(r"[._:]", line))
+
+
+def is_profiler_output_block(text: str) -> bool:
+    normalized = normalize_text(text)
+    lines = [line.strip() for line in normalized.split("\n") if line.strip()]
+    if len(lines) < 5:
+        return False
+    lowered = [line.lower() for line in lines]
+    has_header = any("samples" in line and "command" in line for line in lowered) or any(
+        "shared object" in line for line in lowered
+    )
+    dotted_lines = sum(1 for line in lines if re.fullmatch(r"[#.\s]{8,}", line))
+    percent_rows = sum(1 for line in lines if re.search(r"\d+(?:\.\d+)?%", line))
+    path_or_library_rows = sum(1 for line in lines if "/" in line or re.search(r"\.so(?:\.\d+)?\b", line))
+    return has_header and (dotted_lines >= 1 or percent_rows >= 2) and (percent_rows + path_or_library_rows) >= 3
+
+
+def is_yaml_config_block(text: str) -> bool:
+    normalized = normalize_text(text)
+    lines = [line.strip() for line in normalized.split("\n") if line.strip()]
+    if len(lines) < 5:
+        return False
+    key_lines = sum(1 for line in lines if re.match(r"^[A-Za-z_][A-Za-z0-9_.-]*\s*:", line))
+    value_lines = sum(
+        1
+        for line in lines
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_.-]*\s*:\s*(?:[A-Za-z0-9_.-]+|true|false|\.\.\.|\{.*)?$", line)
+    )
+    prose_lines = sum(1 for line in lines if len(latin_words(line)) >= 6 and english_function_word_count(line) >= 1)
+    return key_lines >= max(4, math.ceil(len(lines) * 0.55)) and value_lines >= 3 and prose_lines <= 1
+
+
 def is_code_listing_block(text: str) -> bool:
     normalized = normalize_text(text)
+    if is_profiler_output_block(normalized) or is_yaml_config_block(normalized):
+        return True
     lines = [line.strip() for line in normalized.split("\n") if line.strip()]
     if len(lines) < 2:
         return False
     code_markers = 0
     for line in lines:
-        compact = re.sub(r"\s+", "", line.lower())
-        if any(
-            marker in compact
-            for marker in (
-                ":=",
-                "returns(",
-                "return(",
-                "create(",
-                "endif",
-                "endfor",
-                "endwhile",
-                "enddecide",
-                "universal(",
-                "decide(",
-                "foreachprocess",
-                "mine:",
-                "inv:",
-                "new:",
-                "before:",
-                "after:",
-            )
-        ):
-            code_markers += 1
-        elif re.match(r"^(if|then|else|while|return|end)\b", line.lower()):
-            code_markers += 1
-        elif re.match(r"^for\b.+\bdo\b", line.lower()):
+        if is_code_like_line(line):
             code_markers += 1
     prose_like = 0
     for line in lines:
@@ -3996,6 +4174,10 @@ def is_code_row_text(text: str) -> bool:
     lines = [line.strip() for line in normalized.split("\n") if line.strip()]
     if len(lines) > 2:
         return False
+    if lines and all(re.match(r"^(?:[A-Za-z_][\w.:>\-]*\s*)?=\s*[^=].*;?$", line) for line in lines):
+        return True
+    if lines and all(is_code_like_line(line) for line in lines):
+        return True
     compact = re.sub(r"\s+", "", normalized.lower())
     return (
         any(
@@ -4049,6 +4231,105 @@ def is_prose_row_text(text: str) -> bool:
     )
 
 
+def is_table_body_candidate(seed_box, candidate_box, text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+    width = candidate_box[2] - candidate_box[0]
+    height = candidate_box[3] - candidate_box[1]
+    seed_width = max(1.0, seed_box[2] - seed_box[0])
+    wide_row = width >= max(240.0, seed_width * 0.65)
+    far_below_caption = candidate_box[1] > seed_box[3] + 220.0
+    indented_from_caption = candidate_box[0] > seed_box[0] + 40.0
+    sentence_count = len(re.findall(r"[.!?][\"')\]）】”’]*", normalized))
+
+    if wide_row and is_heading_text(normalized):
+        return False
+    if wide_row and indented_from_caption:
+        return len(normalized) <= 800
+    if wide_row and far_below_caption and is_prose_row_text(normalized):
+        return False
+    if wide_row and (sentence_count >= 2 or height >= 30.0 or (is_prose_row_text(normalized) and len(normalized) > 110)):
+        return False
+    if is_formula_or_code_block(normalized) or is_code_row_text(normalized) or is_code_line_number_block(normalized):
+        return True
+    if should_preserve_as_image({"text": normalized}):
+        return True
+    if not wide_row:
+        return len(normalized) <= 520
+    return len(normalized) <= 220 and height <= 120.0
+
+
+def is_table_region_terminator(seed_box, candidate_box, text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+    if candidate_box[1] <= seed_box[3] + 12.0:
+        return False
+    left_aligned = candidate_box[0] <= seed_box[0] + 16.0
+    if not left_aligned:
+        return False
+    width = candidate_box[2] - candidate_box[0]
+    height = candidate_box[3] - candidate_box[1]
+    seed_width = max(1.0, seed_box[2] - seed_box[0])
+    wide_row = width >= max(240.0, seed_width * 0.65)
+    if not wide_row:
+        return False
+    sentence_count = len(re.findall(r"[.!?][\"')\]）】”’]*", normalized))
+    return is_prose_row_text(normalized) and (height >= 30.0 or sentence_count >= 1 or len(normalized) >= 80)
+
+
+def is_adjacent_visual_table_row_cell(seed_box, candidate_box, text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return False
+    min_height = max(1.0, min(seed_box[3] - seed_box[1], candidate_box[3] - candidate_box[1]))
+    if vertical_overlap(seed_box, candidate_box) < min_height * 0.45:
+        return False
+    horizontal_gap = max(0.0, max(seed_box[0], candidate_box[0]) - min(seed_box[2], candidate_box[2]))
+    if horizontal_gap > 170.0:
+        return False
+    if candidate_box[2] - candidate_box[0] > 360.0:
+        return False
+    if is_table_region_terminator(seed_box, candidate_box, normalized):
+        return False
+    return len(normalized) <= 520
+
+
+def has_intervening_wide_prose_block(seed_box, candidate_box, blocks, excluded_ids: set[str]) -> bool:
+    if vertical_overlap(seed_box, candidate_box) > 0:
+        return False
+    top = min(seed_box[3], candidate_box[3])
+    bottom = max(seed_box[1], candidate_box[1])
+    if bottom <= top:
+        return False
+    for block in blocks:
+        if block["id"] in excluded_ids:
+            continue
+        text = normalize_text(block.get("text", ""))
+        if not text:
+            continue
+        box = block_bbox(block)
+        wide_text = box[2] - box[0] >= 240.0 and len(text) >= 40
+        if not (is_prose_row_text(text) or wide_text):
+            continue
+        center_y = (box[1] + box[3]) / 2.0
+        if top <= center_y <= bottom and box[2] - box[0] >= 240.0:
+            return True
+    return False
+
+
+def is_nearby_table_header_cell(region_box, candidate_box, text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized or len(normalized) > 100 or is_prose_row_text(normalized):
+        return False
+    if candidate_box[3] < region_box[1] - 48.0 or candidate_box[3] > region_box[1] + 6.0:
+        return False
+    if candidate_box[3] - candidate_box[1] > 56.0:
+        return False
+    return horizontal_overlap(region_box, candidate_box) >= 8.0
+
+
 def is_code_line_number_block(text: str) -> bool:
     lines = [line.strip() for line in normalize_text(text).split("\n") if line.strip()]
     return bool(lines) and len(lines) <= 20 and all(re.fullmatch(r"\d{1,3}", line) for line in lines)
@@ -4060,6 +4341,7 @@ def is_visual_row_text(text: str) -> bool:
         is_visual_caption(normalized)
         or contains_visual_caption(normalized)
         or is_formula_or_code_block(normalized)
+        or is_numeric_metric_cell(normalized)
         or is_code_row_text(normalized)
         or is_code_line_number_block(normalized)
     )
@@ -4211,6 +4493,28 @@ def is_body_enumeration_line(text: str) -> bool:
     return bool(re.match(r"^\(\d+\)\s+[A-Za-z][A-Za-z0-9() ]+\bis\b", normalized))
 
 
+def merge_adjacent_code_visual_regions(regions: list[dict]) -> list[dict]:
+    if len(regions) < 2:
+        return regions
+    merged: list[dict] = []
+    for region in sorted(regions, key=lambda item: (item["bbox"][1], item["bbox"][0])):
+        if (
+            merged
+            and merged[-1].get("has_code_seed")
+            and region.get("has_code_seed")
+            and region["bbox"][1] <= merged[-1]["bbox"][3] + 4.0
+            and horizontal_overlap(merged[-1]["bbox"], region["bbox"]) >= 20.0
+        ):
+            previous = merged[-1]
+            seen = set(previous["source_ids"])
+            previous["source_ids"].extend(source_id for source_id in region["source_ids"] if source_id not in seen)
+            previous["bbox"] = bbox_union([previous["bbox"], region["bbox"]])
+            previous["has_code_seed"] = True
+            continue
+        merged.append(dict(region))
+    return merged
+
+
 def build_visual_regions(blocks) -> list[dict]:
     regions = []
     consumed = set()
@@ -4227,14 +4531,20 @@ def build_visual_regions(blocks) -> list[dict]:
             and not is_standalone_equation_label(text)
         ) and not is_body_enumeration_line(text)
         has_caption = is_visual_caption(text) or contains_visual_caption(text)
+        row_cell_seed = is_numeric_metric_cell(text) or is_fragmented_narrow_table_cell(block)
         code_seed = is_code_listing_block(text) or is_code_row_text(text)
         formula_seed = (is_formula_or_code_block(text) or is_code_row_text(text)) and not is_standalone_equation_label(text)
         is_visual_seed = explicit_image or has_caption or formula_seed
         if not is_visual_seed:
             continue
         seed_box = block_bbox(block)
-        if has_caption:
+        table_seed = is_table_caption(text)
+        if table_seed:
+            search = (seed_box[0] - 260.0, seed_box[1] - 20.0, seed_box[2] + 260.0, seed_box[3] + 640.0)
+        elif has_caption:
             search = (seed_box[0] - 180.0, seed_box[1] - 60.0, seed_box[2] + 180.0, seed_box[3] + 28.0)
+        elif row_cell_seed:
+            search = expanded_bbox(seed_box, pad_x=520.0, pad_y=110.0)
         elif code_seed:
             search = expanded_bbox(seed_box, pad_x=130.0, pad_y=28.0)
         elif is_formula_or_code_block(text):
@@ -4252,6 +4562,24 @@ def build_visual_regions(blocks) -> list[dict]:
                 continue
             other_box = block_bbox(other)
             if bbox_intersects(search, other_box) and bbox_contains_point(search, bbox_center(other_box)):
+                if row_cell_seed and other["id"] != block["id"] and has_intervening_wide_prose_block(
+                    seed_box,
+                    other_box,
+                    sorted_blocks,
+                    {block["id"], other["id"]},
+                ):
+                    continue
+                if row_cell_seed and is_adjacent_visual_table_row_cell(seed_box, other_box, other_text):
+                    group.append(other)
+                    continue
+                if table_seed:
+                    if other["id"] != block["id"]:
+                        if is_table_region_terminator(seed_box, other_box, other_text):
+                            break
+                        if not is_table_body_candidate(seed_box, other_box, other_text):
+                            continue
+                    group.append(other)
+                    continue
                 short_fragment = len(other_text) <= 140
                 visual_text = (
                     is_visual_caption(other_text)
@@ -4261,10 +4589,28 @@ def build_visual_regions(blocks) -> list[dict]:
                     or (should_preserve_as_image(other) and not is_body_enumeration_line(other_text))
                 )
                 code_line_number = code_seed and is_code_line_number_block(other_text)
-                if visual_text or code_line_number or (short_fragment and not formula_seed):
+                if visual_text or code_line_number or (short_fragment and (code_seed or not formula_seed)):
                     group.append(other)
         if not group:
             group = [block]
+        if row_cell_seed:
+            region_box = bbox_union([block_bbox(item) for item in group])
+            group_ids = {item["id"] for item in group}
+            for other in sorted_blocks:
+                if other["id"] in consumed or other["id"] in group_ids:
+                    continue
+                other_text = normalize_text(other.get("text", ""))
+                if not other_text:
+                    continue
+                other_box = block_bbox(other)
+                if is_adjacent_visual_table_row_cell(region_box, other_box, other_text):
+                    group.append(other)
+                    group_ids.add(other["id"])
+                    continue
+                if is_nearby_table_header_cell(region_box, other_box, other_text):
+                    group.append(other)
+                    group_ids.add(other["id"])
+            group.sort(key=lambda item: (item["yMin"], item["xMin"]))
         group_ids = {item["id"] for item in group}
         consumed.update(group_ids)
         region_box = bbox_union([block_bbox(item) for item in group])
@@ -4275,7 +4621,7 @@ def build_visual_regions(blocks) -> list[dict]:
                 "has_code_seed": code_seed,
             }
         )
-    return regions
+    return merge_adjacent_code_visual_regions(regions)
 
 
 def classify_blocks(blocks, visual_regions) -> dict[str, str]:
@@ -4329,6 +4675,20 @@ def build_page_render_plan(
     source_image_path: Path | None = None,
 ) -> PageRenderPlan:
     plan = PageRenderPlan(page_num=page_num)
+    if not blocks and source_image_path:
+        full_page_bbox = (0.0, 0.0, float(page_size[0]), float(page_size[1]))
+        dark_pixels = source_image_dark_pixel_count(source_image_path, full_page_bbox, page_size)
+        if dark_pixels is not None and dark_pixels >= IMAGE_ONLY_PAGE_MIN_DARK_PIXELS:
+            plan.items.append(
+                RenderItem(
+                    kind="original_image_clip",
+                    source_ids=[],
+                    bbox=full_page_bbox,
+                    fallback_reason="image_only_page",
+                )
+            )
+            plan.protected_boxes.append(full_page_bbox)
+            return plan
     visual_regions = build_visual_regions(blocks)
     classes = classify_blocks(blocks, visual_regions)
     block_by_id = {block["id"]: block for block in blocks}
@@ -4384,13 +4744,28 @@ def build_page_render_plan(
             page_num=page_num,
             source_image_path=source_image_path,
             use_pixel_bounds=True,
-            pixel_search_pad_x=FORMULA_CLIP_PIXEL_SEARCH_PAD_X_PT if formula_only else VISUAL_CLIP_PIXEL_SEARCH_PAD_X_PT,
+            pixel_search_pad_x=(
+                FORMULA_CLIP_PIXEL_SEARCH_PAD_X_PT
+                if formula_only
+                else 4.0
+                if region.get("has_code_seed")
+                else VISUAL_CLIP_PIXEL_SEARCH_PAD_X_PT
+            ),
             pixel_search_pad_y=(
                 FORMULA_CLIP_PIXEL_SEARCH_PAD_Y_PT
                 if formula_only or mixed_visual_body
+                else 2.0
+                if region.get("has_code_seed")
                 else VISUAL_CLIP_PIXEL_SEARCH_PAD_Y_PT
             ),
-            pixel_final_pad=0.75 if formula_only else VISUAL_CLIP_PIXEL_FINAL_PAD_PT,
+            pixel_final_pad=0.75 if formula_only or region.get("has_code_seed") else VISUAL_CLIP_PIXEL_FINAL_PAD_PT,
+        )
+        region_bbox = cap_visual_bbox_after_preceding_text(
+            visual_source_bbox,
+            region_bbox,
+            blocks,
+            classes,
+            visual_ids,
         )
         if not formula_only:
             region_bbox = cap_visual_bbox_before_following_text(
@@ -4717,8 +5092,29 @@ def english_function_word_count(text: str) -> int:
     return sum(1 for word in latin_words(text) if word.lower() in ENGLISH_FUNCTION_WORDS)
 
 
+def is_non_prose_identifier_text(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized:
+        return True
+    if re.fullmatch(r"https?://\S+", normalized, flags=re.I):
+        return True
+    if normalized.startswith(("©", "Copyright ")) or "all rights reserved" in normalized.lower():
+        return True
+    if is_formula_or_code_block(normalized) or is_code_row_text(normalized):
+        return True
+    words = latin_words(normalized)
+    if not words:
+        return False
+    if len(normalized) <= 90 and english_function_word_count(normalized) == 0:
+        if not re.search(r"[.!?]\s+[A-Z]", normalized):
+            return True
+    return False
+
+
 def source_requires_chinese_translation(text: str) -> bool:
     cleaned = strip_journal_footer_lines(text)
+    if is_non_prose_identifier_text(cleaned):
+        return False
     words = latin_words(cleaned)
     if len(words) < 4:
         return False
@@ -4744,6 +5140,10 @@ def translation_appears_untranslated(source_text: str, translated_text: str) -> 
     words = latin_words(translated)
     function_words = sum(1 for word in words if word.lower() in ENGLISH_FUNCTION_WORDS)
     latin_chars = sum(len(word) for word in words)
+    if chinese_chars >= 20:
+        return False
+    if chinese_chars >= 8 and chinese_chars >= latin_chars * 0.35:
+        return False
     if chinese_chars == 0 and len(words) >= 3:
         return True
     if function_words >= 3 and chinese_chars < 5:
@@ -5772,7 +6172,9 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
         out_page = out_doc.new_page(width=page_rect.width, height=page_rect.height)
         out_page.draw_rect(page_rect, color=None, fill=(1, 1, 1))
         preserve_images_on_page(src_page, out_page, fitz, dpi)
-        preserve_drawings_on_page(src_page, out_page)
+        # Source drawings can depend on PDF clipping paths that PyMuPDF does not
+        # preserve through get_drawings(); visual regions are copied from page
+        # images instead, which keeps table/formula lines without drawing artifacts.
 
         plan = build_page_render_plan(
             page_num,
