@@ -1,5 +1,8 @@
 import unittest
+import tempfile
+from pathlib import Path
 
+from PIL import Image, ImageDraw
 import translate_pdf_via_codex as pdf
 
 
@@ -38,6 +41,19 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertEqual(classes["p001b0004"], "reference")
         self.assertEqual(classes["p001b0005"], "reference")
 
+    def test_decorated_ocr_page_number_is_skipped_without_skipping_enumeration(self):
+        blocks = [
+            block("p006b0001", 6, "¥ · 129", x0=135, y0=42, x1=180, y1=54),
+            block("p006b0002", 6, "(1)", x0=135, y0=100, x1=150, y1=112),
+            block("p006b0003", 6, "A normal body line.", x0=160, y0=100, x1=300, y1=112),
+        ]
+
+        plan = pdf.build_page_render_plan(6, blocks, {"p006b0003": "一行正文。"}, page_size=(623, 801), bbox_lines=None)
+        classes = {entry.block_id: entry.classification for entry in plan.ledger}
+
+        self.assertEqual(classes["p006b0001"], "page_number")
+        self.assertNotEqual(classes["p006b0002"], "page_number")
+
     def test_visual_caption_region_becomes_single_image_clip(self):
         blocks = [
             block("p003b0001", 3, "Fig. 1. Impossibility and universality hierarchy.", x0=180, y0=70, x1=420, y1=195),
@@ -55,7 +71,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertEqual(len(body_items), 1)
         self.assertEqual(body_items[0].source_ids, ["p003b0004"])
 
-    def test_untranslated_body_uses_original_text_fallback(self):
+    def test_missing_input_event_enumeration_uses_heuristic_translation(self):
         blocks = [
             block("p004b0005", 4, "(2) In(A) is a set of input events,", x0=135, y0=207, x1=282, y1=216),
         ]
@@ -64,9 +80,9 @@ class RenderPlanClassificationTests(unittest.TestCase):
         item = plan.items[0]
         entry = plan.ledger[0]
 
-        self.assertEqual(item.kind, "original_selectable_text")
-        self.assertEqual(item.text, "(2) In(A) is a set of input events,")
-        self.assertEqual(entry.fallback_reason, "missing_translation")
+        self.assertEqual(item.kind, "translated_text")
+        self.assertIn("输入事件集合", item.text)
+        self.assertEqual(entry.fallback_reason, "heuristic_translation")
 
     def test_formula_after_assertion_is_preserved_as_image_clip(self):
         blocks = [
@@ -80,6 +96,504 @@ class RenderPlanClassificationTests(unittest.TestCase):
 
         self.assertIn("p015b0007", image_ids)
         self.assertIn("p015b0008", image_ids)
+
+    def test_body_block_with_embedded_numeric_subsection_is_split_and_styled(self):
+        blocks = [
+            block(
+                "p012b0006",
+                12,
+                "processes.\n3.3 Queues, Stacks, Lists, etc.",
+                x0=126,
+                y0=472,
+                x1=487,
+                y1=503,
+            ),
+            block(
+                "p012b0007",
+                12,
+                "Consider a FIFO queue with two operations:",
+                x0=127,
+                y0=506,
+                x1=487,
+                y1=532,
+            ),
+        ]
+        bbox_lines = [
+            {"page": 12, "text": "processes.", "bbox": (127.92, 474.83, 166.30, 482.16)},
+            {"page": 12, "text": "3.3", "bbox": (128.88, 495.00, 139.75, 502.32)},
+            {"page": 12, "text": "Queues, Stacks, Lists, etc.", "bbox": (148.08, 494.48, 264.00, 502.47)},
+            {"page": 12, "text": "Consider a FIFO queue with two operations:", "bbox": (128.88, 510.59, 314.21, 517.92)},
+        ]
+        translations = {
+            "p012b0006": "进程的系统中，不可能构造这些对象。\n3.3 队列、栈、列表等。",
+            "p012b0007": "考虑一个具有两个操作的 FIFO 队列：",
+        }
+
+        plan = pdf.build_page_render_plan(
+            12,
+            blocks,
+            translations,
+            page_size=(623, 801),
+            bbox_lines=bbox_lines,
+        )
+        subheadings = [
+            item
+            for item in plan.items
+            if item.kind == "translated_text" and item.style_name == "subheading"
+        ]
+        body_text = "\n".join(
+            item.text
+            for item in plan.items
+            if item.kind == "translated_text" and item.style_name == "body"
+        )
+
+        self.assertEqual(len(subheadings), 1)
+        self.assertIn("3.3 队列、栈、列表等", subheadings[0].text)
+        self.assertEqual(subheadings[0].font_size, pdf.DOCUMENT_STYLES["subheading"].font_size)
+        self.assertNotIn("3.3 队列、栈、列表等", body_text)
+
+    def test_quality_check_reports_body_text_with_embedded_numeric_heading(self):
+        plan = pdf.PageRenderPlan(
+            page_num=12,
+            items=[
+                pdf.RenderItem(
+                    "translated_text",
+                    ["p012b0006"],
+                    (126, 472, 487, 503),
+                    text="进程的系统中，不可能构造这些对象。\n3.3 队列、栈、列表等。",
+                    font_size=pdf.BODY_FONT_SIZE,
+                    style_name="body",
+                )
+            ],
+        )
+
+        errors = pdf.validate_plan_embedded_heading_policy(plan)
+
+        self.assertTrue(errors)
+        self.assertIn("embedded heading", errors[0])
+
+    def test_quality_check_reports_blank_source_image_clip(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            image_path = Path(tmp_dir) / "blank.png"
+            Image.new("RGB", (100, 100), "white").save(image_path)
+            plan = pdf.PageRenderPlan(
+                page_num=21,
+                items=[
+                    pdf.RenderItem(
+                        "original_image_clip",
+                        ["p021b0005"],
+                        (10, 10, 90, 30),
+                        fallback_reason="visual_region",
+                    )
+                ],
+            )
+
+            errors = pdf.validate_plan_image_clip_content(plan, image_path, (100, 100))
+
+        self.assertTrue(errors)
+        self.assertIn("blank source image clip", errors[0])
+
+    def test_short_pseudocode_and_line_numbers_are_preserved_as_one_visual_region(self):
+        blocks = [
+            block("p022b0004", 22, "2\n3", x0=90, y0=100, x1=102, y1=132),
+            block("p022b0009", 22, "if help.seq = 0\nthen prefer:=help", x0=120, y0=100, x1=260, y1=132),
+            block("p022b0015", 22, "Normal proof text follows.", x0=120, y0=160, x1=480, y1=190),
+        ]
+
+        plan = pdf.build_page_render_plan(
+            22,
+            blocks,
+            {"p022b0015": "后续证明正文。"},
+            page_size=(623, 801),
+            bbox_lines=None,
+        )
+        image_items = [item for item in plan.items if item.kind == "original_image_clip"]
+        image_ids = {source_id for item in image_items for source_id in item.source_ids}
+        translated_ids = {source_id for item in plan.items if item.kind == "translated_text" for source_id in item.source_ids}
+
+        self.assertIn("p022b0004", image_ids)
+        self.assertIn("p022b0009", image_ids)
+        self.assertNotIn("p022b0009", translated_ids)
+
+
+class TranslationNormalizationTests(unittest.TestCase):
+    def test_soft_linebreaks_are_reflowed_before_punctuation_repair(self):
+        raw = (
+            "引理1给出了在一个操作进行期间可被穿接的单元数量的上界。现在我们给出一系列引理，表明当\n"
+            "P 完成对 head 数组的扫描时，announce[P] 要么已被穿接，要么 head[P]\n"
+            "位于距链表末端不超过 n+1 个单元的位置。\n"
+            "引理 2。以下断言是不变的："
+        )
+
+        cleaned = pdf.prepare_render_translation(raw)
+
+        self.assertIn("表明当 P 完成", cleaned)
+        self.assertIn("head[P] 位于", cleaned)
+        self.assertIn("\n引理 2。以下断言是不变的：", cleaned)
+        self.assertNotIn("表明当。", cleaned)
+
+    def test_introductory_line_break_is_preserved_as_paragraph_boundary(self):
+        raw = (
+            "无等待同步的基本问题可以表述为\n"
+            "给定两个并发对象 X 和 Y，是否存在用 Y 对 X 的无等待实现？"
+        )
+
+        cleaned = pdf.prepare_render_translation(raw)
+
+        self.assertIn("可以表述为：\n给定两个并发对象", cleaned)
+        self.assertNotIn("可以表述为给定", cleaned)
+
+    def test_visual_prefix_stripping_only_applies_to_leading_visual_lines(self):
+        raw = (
+            "令 max(head) 为所有 head 条目的最大序列号。\n"
+            "图 14 展示了记录 v: T := e 的更新。\n"
+            "非正式地说，随后继续证明。"
+        )
+
+        self.assertEqual(pdf.translation_tail_after_visual_prefix(raw), "")
+
+    def test_visual_prefix_stripping_keeps_body_after_leading_code(self):
+        raw = (
+            "decide(input:值)返回(值)\n"
+            "first := compare&swap(r,↓,input)\n"
+            "endif\n"
+            "另一个经典原语是 compare&swap，如图 8 所示。"
+        )
+
+        tail = pdf.translation_tail_after_visual_prefix(raw)
+
+        self.assertIn("另一个经典原语", tail)
+        self.assertNotIn("first :=", tail)
+
+
+class CrossPageSentencePostprocessTests(unittest.TestCase):
+    def test_cross_page_boundary_detection_uses_bbox_margin_context(self):
+        selected_pages = [
+            (
+                1,
+                [
+                    block(
+                        "p001b0001",
+                        1,
+                        "In other words, the history appears sequential to each process, and",
+                        x0=130,
+                        y0=590,
+                        x1=486,
+                        y1=602,
+                    )
+                ],
+            ),
+            (
+                2,
+                [
+                    block(
+                        "p002b0001",
+                        2,
+                        "Wait-Free Synchronization\nof operations. Equivalently, each operation appears instantaneously.",
+                        x0=130,
+                        y0=46,
+                        x1=486,
+                        y1=90,
+                    )
+                ],
+            ),
+        ]
+        bbox_lines_by_page = {
+            1: [
+                {"page": 1, "text": "In other words, the history appears sequential to each process, and", "bbox": (130, 594, 486, 602)},
+                {"page": 1, "text": "respects the real-time precedence ordering", "bbox": (300, 606, 486, 614)},
+            ],
+            2: [
+                {"page": 2, "text": "Wait-Free Synchronization", "bbox": (330, 48, 430, 56)},
+                {"page": 2, "text": "of operations. Equivalently, each operation appears instantaneously.", "bbox": (130, 74, 486, 82)},
+            ],
+        }
+
+        candidates = pdf.detect_cross_page_sentence_splits(selected_pages, bbox_lines_by_page=bbox_lines_by_page)
+
+        self.assertEqual(len(candidates), 1)
+        self.assertIn("respects the real-time precedence ordering of operations.", candidates[0]["source_sentence"])
+        self.assertNotIn("Wait-Free Synchronization", candidates[0]["source_sentence"])
+
+    def test_cross_page_split_sentence_uses_complete_sentence_repair_without_duplicate_prefix(self):
+        selected_pages = [
+            (
+                1,
+                [
+                    block(
+                        "p001b0001",
+                        1,
+                        "In other words, the history appears sequential to each process, and",
+                        x0=130,
+                        y0=590,
+                        x1=486,
+                        y1=602,
+                    )
+                ],
+            ),
+            (
+                2,
+                [
+                    block(
+                        "p002b0001",
+                        2,
+                        "of operations. Equivalently, each operation appears to take effect instantaneously.",
+                        x0=130,
+                        y0=50,
+                        x1=486,
+                        y1=90,
+                    )
+                ],
+            ),
+        ]
+        translations = {
+            "p001b0001": "换言之，对于每个进程，该历史看起来是顺序的，并且",
+            "p002b0001": "的操作。等价地，每个操作都表现为瞬时生效。",
+        }
+        repairs = {
+            "p001b0001->p002b0001": {
+                "translation": "换言之，对于每个进程，该历史看起来是顺序的，并且尊重操作的实时先后顺序。",
+                "next_prefix_translation": "的操作。",
+            }
+        }
+
+        repaired = pdf.postprocess_cross_page_sentence_splits(
+            selected_pages,
+            translations,
+            boundary_repairs=repairs,
+        )
+
+        self.assertEqual(
+            repaired["p001b0001"],
+            "换言之，对于每个进程，该历史看起来是顺序的，并且尊重操作的实时先后顺序。",
+        )
+        self.assertEqual(repaired["p002b0001"], "等价地，每个操作都表现为瞬时生效。")
+        self.assertNotIn("并且。", pdf.prepare_render_translation(repaired["p001b0001"]))
+
+    def test_cross_page_prefix_removal_handles_running_header_translation(self):
+        selected_pages = [
+            (
+                1,
+                [
+                    block(
+                        "p001b0001",
+                        1,
+                        "In other words, the history appears sequential to each process, and",
+                        x0=130,
+                        y0=590,
+                        x1=486,
+                        y1=602,
+                    )
+                ],
+            ),
+            (
+                2,
+                [
+                    block(
+                        "p002b0001",
+                        2,
+                        "Wait-FreeSynchronization\nof operations. Equivalently, each operation appears to take effect instantaneously.",
+                        x0=130,
+                        y0=46,
+                        x1=486,
+                        y1=90,
+                    )
+                ],
+            ),
+        ]
+        translations = {
+            "p001b0001": "换言之，对于每个进程，该历史看起来是顺序的，并且",
+            "p002b0001": "无等待同步\n的操作。等价地，每个操作都表现为瞬时生效。",
+        }
+        repairs = {
+            "p001b0001->p002b0001": {
+                "translation": "换言之，对于每个进程，该历史看起来是顺序的，并且尊重操作的实时先后顺序。",
+                "next_prefix_translation": "的操作。",
+            }
+        }
+
+        repaired = pdf.postprocess_cross_page_sentence_splits(
+            selected_pages,
+            translations,
+            boundary_repairs=repairs,
+        )
+
+        self.assertEqual(repaired["p002b0001"], "无等待同步\n等价地，每个操作都表现为瞬时生效。")
+
+
+class GlobalStyleTests(unittest.TestCase):
+    def test_translated_items_use_global_document_styles(self):
+        blocks = [
+            block("p001b0001", 1, "Wait-Free Synchronization", y0=60, y1=78),
+            block("p001b0002", 1, "1. INTRODUCTION", y0=100, y1=112),
+            block("p001b0003", 1, "This paper gives a wait-free implementation.", y0=130, y1=160),
+        ]
+        translations = {
+            "p001b0001": "无等待同步",
+            "p001b0002": "1. 引言",
+            "p001b0003": "本文给出了一个无等待实现。",
+        }
+
+        plan = pdf.build_page_render_plan(1, blocks, translations, page_size=(623, 801), bbox_lines=None)
+        items = {item.source_ids[0]: item for item in plan.items if item.kind == "translated_text"}
+
+        self.assertEqual(items["p001b0001"].style_name, "title")
+        self.assertEqual(items["p001b0002"].style_name, "heading")
+        self.assertEqual(items["p001b0003"].style_name, "body")
+        self.assertEqual(items["p001b0003"].font_size, pdf.DOCUMENT_STYLES["body"].font_size)
+
+    def test_vector_textbox_does_not_shrink_when_style_is_fixed(self):
+        fitz = pdf.load_fitz()
+        doc = fitz.open()
+        page = doc.new_page(width=100, height=100)
+
+        ok = pdf.insert_vector_textbox(
+            page,
+            fitz,
+            fitz.Rect(10, 10, 40, 18),
+            "这是一个很长很长的译文，不能通过缩小字号塞进框里。",
+            pdf.DOCUMENT_STYLES["body"].font_size,
+            pdf.VECTOR_BODY_COLOR,
+            line_height_factor=pdf.DOCUMENT_STYLES["body"].line_height_factor,
+            allow_shrink=False,
+        )
+        doc.close()
+
+        self.assertFalse(ok)
+
+    def test_style_fit_can_compact_spacing_without_changing_font_size(self):
+        style = pdf.TextStyle(
+            font_size=10.0,
+            line_height_factor=1.0,
+            paragraph_spacing=5.0,
+            min_line_height_factor=1.0,
+            min_paragraph_spacing=0.0,
+        )
+
+        fit = pdf.fitted_text_spacing([["第一段"], [], ["第二段"]], 10.0, 31.0, style)
+
+        self.assertEqual(fit, (1.0, 0.0))
+
+
+class BodyFlowLayoutTests(unittest.TestCase):
+    def test_adjacent_body_blocks_share_a_flow_box_when_one_translation_overflows(self):
+        blocks = [
+            block("p013b0006", 13, "First body paragraph.", x0=120, y0=100, x1=480, y1=180),
+            block("p013b0007", 13, "Second body paragraph.", x0=120, y0=182, x1=480, y1=220),
+        ]
+        translations = {
+            "p013b0006": "第一段正文。" * 8,
+            "p013b0007": "第二段正文。" * 24,
+        }
+
+        plan = pdf.build_page_render_plan(13, blocks, translations, page_size=(623, 801), bbox_lines=None)
+        body_items = [item for item in plan.items if item.kind == "translated_text" and item.style_name == "body"]
+
+        self.assertEqual(len(body_items), 1)
+        self.assertEqual(body_items[0].source_ids, ["p013b0006", "p013b0007"])
+        self.assertEqual(pdf.validate_plan_text_fit(plan), [])
+
+    def test_body_flow_expands_into_safe_whitespace_instead_of_changing_font_size(self):
+        blocks = [
+            block("p014b0001", 14, "First body paragraph.", x0=120, y0=120, x1=480, y1=145),
+            block("p014b0002", 14, "Second body paragraph.", x0=120, y0=147, x1=480, y1=170),
+            block("p014b0003", 14, "Fig. 9. Later visual.", x0=120, y0=260, x1=480, y1=285, preserve_image=True),
+        ]
+        translations = {
+            "p014b0001": "第一段正文内容" * 16,
+            "p014b0002": "第二段正文内容" * 16,
+        }
+
+        plan = pdf.build_page_render_plan(14, blocks, translations, page_size=(623, 801), bbox_lines=None)
+        body_items = [item for item in plan.items if item.kind == "translated_text" and item.style_name == "body"]
+
+        self.assertEqual(len(body_items), 1)
+        self.assertGreater(body_items[0].bbox[3] - body_items[0].bbox[1], 50.0)
+        self.assertEqual(body_items[0].font_size, pdf.DOCUMENT_STYLES["body"].font_size)
+        self.assertEqual(pdf.validate_plan_text_fit(plan), [])
+
+    def test_body_flow_rebalances_excessive_internal_slack_and_mid_page_gap(self):
+        blocks = [
+            block("p017b0001", 17, "Fig. 8. Protected algorithm.", x0=135, y0=70, x1=500, y1=145, preserve_image=True),
+            block("p017b0002", 17, "First proof paragraph.", x0=135, y0=160, x1=495, y1=360),
+            block("p017b0003", 17, "Second proof paragraph.", x0=136, y0=420, x1=496, y1=642),
+        ]
+        translations = {
+            "p017b0002": "第一段证明正文。" * 18,
+            "p017b0003": "第二段证明正文。" * 22,
+        }
+
+        plan = pdf.build_page_render_plan(17, blocks, translations, page_size=(623, 801), bbox_lines=None)
+        body_items = [
+            item
+            for item in sorted(plan.items, key=lambda candidate: candidate.bbox[1])
+            if item.kind == "translated_text" and item.style_name == "body"
+        ]
+        fitz = pdf.load_fitz()
+
+        self.assertEqual(len(body_items), 2)
+        for item in body_items:
+            style = pdf.text_style(item.style_name)
+            lines = pdf.wrap_mixed_pdf_text(fitz, item.text, item.bbox[2] - item.bbox[0], item.font_size)
+            preferred = pdf.text_height_for_lines(lines, item.font_size, style.line_height_factor, style.paragraph_spacing)
+            available = item.bbox[3] - item.bbox[1]
+            self.assertLessEqual(available - preferred, 7.0)
+        first = body_items[0]
+        first_style = pdf.text_style(first.style_name)
+        first_lines = pdf.wrap_mixed_pdf_text(fitz, first.text, first.bbox[2] - first.bbox[0], first.font_size)
+        first_preferred = pdf.text_height_for_lines(first_lines, first.font_size, first_style.line_height_factor, first_style.paragraph_spacing)
+        visible_gap = body_items[1].bbox[1] - (body_items[0].bbox[1] + first_preferred)
+
+        self.assertLessEqual(visible_gap, 19.0)
+
+    def test_text_flow_rebalances_gap_before_subheading(self):
+        blocks = [
+            block("p006b0002", 6, "Previous section body.", x0=135, y0=100, x1=495, y1=185),
+            block("p006b0003", 6, "2.3 IMPLEMENTATIONS", x0=135, y0=320, x1=260, y1=335),
+            block("p006b0004", 6, "Following section body.", x0=135, y0=360, x1=495, y1=450),
+        ]
+        translations = {
+            "p006b0002": "上一节正文。" * 16,
+            "p006b0003": "2.3 实现",
+            "p006b0004": "下一节正文。" * 18,
+        }
+
+        plan = pdf.build_page_render_plan(6, blocks, translations, page_size=(623, 801), bbox_lines=None)
+        flow_items = [
+            item
+            for item in sorted(plan.items, key=lambda candidate: candidate.bbox[1])
+            if item.kind == "translated_text" and item.style_name in {"body", "subheading"}
+        ]
+        fitz = pdf.load_fitz()
+        first = flow_items[0]
+        first_preferred = pdf.preferred_text_height_for_item(first, fitz)
+        gap_before_heading = flow_items[1].bbox[1] - (first.bbox[1] + first_preferred)
+
+        self.assertLessEqual(gap_before_heading, 22.0)
+
+    def test_body_flow_merge_does_not_cross_subheading_barrier(self):
+        blocks = [
+            block("p012b0001", 12, "Previous body.", x0=128, y0=470, x1=487, y1=490),
+            block("p012b0002", 12, "3.3 Queues, Stacks, Lists, etc.", x0=128, y0=495, x1=265, y1=503),
+            block("p012b0003", 12, "Following body.", x0=128, y0=506, x1=487, y1=532),
+        ]
+        translations = {
+            "p012b0001": "上一段正文。",
+            "p012b0002": "3.3 队列、栈、列表等。",
+            "p012b0003": "后续正文。" * 4,
+        }
+
+        plan = pdf.build_page_render_plan(12, blocks, translations, page_size=(623, 801), bbox_lines=None)
+        body_items = [
+            item
+            for item in sorted(plan.items, key=lambda candidate: candidate.bbox[1])
+            if item.kind == "translated_text" and item.style_name == "body"
+        ]
+        subheading = next(item for item in plan.items if item.kind == "translated_text" and item.style_name == "subheading")
+
+        self.assertEqual(len(body_items), 2)
+        self.assertLess(body_items[0].bbox[1], subheading.bbox[1])
+        self.assertLess(subheading.bbox[1], body_items[1].bbox[1])
 
 
 class CoverageValidationTests(unittest.TestCase):
@@ -149,6 +663,210 @@ class LayoutValidationTests(unittest.TestCase):
         errors = pdf.validate_plan_layout(plan, page_size=(623, 801))
 
         self.assertEqual(errors, [])
+
+
+class QualityValidationTests(unittest.TestCase):
+    def test_translation_quality_flags_body_image_fallback(self):
+        blocks = [
+            block("p018b0002", 18, "A normal body paragraph that should be translated.", y0=100, y1=160),
+        ]
+        plan = pdf.PageRenderPlan(page_num=18)
+        plan.items.append(
+            pdf.RenderItem(
+                "original_image_clip",
+                ["p018b0002"],
+                (100, 100, 400, 160),
+                fallback_reason="heading_overlap",
+            )
+        )
+        plan.ledger.append(
+            pdf.CoverageEntry("p018b0002", "body", "original_image_clip", True, "heading_overlap")
+        )
+
+        errors = pdf.validate_plan_translation_quality(
+            18,
+            blocks,
+            {"p018b0002": "这是一段应该以中文渲染的正文。"},
+            plan,
+        )
+
+        self.assertTrue(any("normal text block rendered as original image" in error for error in errors))
+
+    def test_translation_quality_flags_untranslated_english_body(self):
+        blocks = [
+            block("p018b0002", 18, "This paper presents a wait-free implementation.", y0=100, y1=160),
+        ]
+        translations = {"p018b0002": "This paper presents a wait-free implementation."}
+        plan = pdf.build_page_render_plan(18, blocks, translations, page_size=(623, 801), bbox_lines=None)
+
+        errors = pdf.validate_plan_translation_quality(18, blocks, translations, plan)
+        items = [item for item in plan.items if "p018b0002" in item.source_ids]
+
+        self.assertEqual(items[0].kind, "original_selectable_text")
+        self.assertEqual(items[0].fallback_reason, "untranslated_fallback_original")
+        self.assertTrue(any("missing Chinese translation" in error for error in errors))
+
+    def test_translation_quality_allows_reference_english(self):
+        blocks = [
+            block("p025b0005", 25, "REFERENCES", y0=230, y1=245),
+            block(
+                "p025b0006",
+                25,
+                "1. ANDERSON, J. H., AND GOUDA, M. G. The virtue of patience.",
+                y0=250,
+                y1=280,
+            ),
+        ]
+        plan = pdf.build_page_render_plan(25, blocks, {}, page_size=(623, 801), bbox_lines=None)
+
+        errors = pdf.validate_plan_translation_quality(25, blocks, {}, plan)
+
+        self.assertEqual(errors, [])
+
+    def test_text_overlap_quality_detects_overlapping_translated_items(self):
+        plan = pdf.PageRenderPlan(page_num=9)
+        plan.items.append(pdf.RenderItem("translated_text", ["p009b0008"], (100, 100, 400, 180), text="正文"))
+        plan.items.append(pdf.RenderItem("translated_text", ["p009b0009"], (120, 120, 260, 145), text="重叠正文"))
+
+        errors = pdf.validate_plan_text_overlaps(plan)
+
+        self.assertTrue(any("overlaps text" in error for error in errors))
+
+    def test_quality_flags_dead_space_inside_body_flow(self):
+        plan = pdf.PageRenderPlan(page_num=17)
+        plan.items.append(
+            pdf.RenderItem(
+                "translated_text",
+                ["p017b0002"],
+                (135, 150, 495, 360),
+                text="第一段证明正文。" * 12,
+                font_size=pdf.BODY_FONT_SIZE,
+                style_name="body",
+            )
+        )
+        plan.items.append(
+            pdf.RenderItem(
+                "translated_text",
+                ["p017b0003"],
+                (135, 430, 495, 640),
+                text="第二段证明正文。" * 12,
+                font_size=pdf.BODY_FONT_SIZE,
+                style_name="body",
+            )
+        )
+
+        errors = pdf.validate_plan_quality(17, [], {}, plan)
+
+        self.assertTrue(any("body flow has uneven vertical spacing" in error for error in errors))
+
+
+class SourceClipRenderingTests(unittest.TestCase):
+    def test_image_clip_prefers_cached_source_page_png(self):
+        fitz = pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_pdf = tmp_path / "source.pdf"
+            output_pdf = tmp_path / "out.pdf"
+            pages_dir = tmp_path / "pages"
+            pages_dir.mkdir()
+
+            src_doc = fitz.open()
+            src_page = src_doc.new_page(width=100, height=100)
+            src_page.draw_rect(fitz.Rect(10, 10, 40, 40), color=None, fill=(1, 0, 0))
+            src_doc.save(source_pdf)
+            src_doc.close()
+
+            image = Image.new("RGB", (100, 100), "white")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((10, 10, 40, 40), fill="black")
+            image.save(pages_dir / "page-001.png")
+
+            blocks = [
+                block(
+                    "p001b0001",
+                    1,
+                    "Fig. 1. Cached source clip.",
+                    x0=10,
+                    y0=10,
+                    x1=40,
+                    y1=40,
+                    preserve_image=True,
+                )
+            ]
+            pdf.write_vector_pdf(
+                source_pdf,
+                output_pdf,
+                [(1, blocks)],
+                {},
+                (100, 100),
+                72,
+                job_paths={"pages_dir": pages_dir},
+            )
+
+            out_doc = fitz.open(output_pdf)
+            pix = out_doc[0].get_pixmap(alpha=False)
+            rendered = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            out_doc.close()
+
+            self.assertLess(sum(rendered.getpixel((20, 20))), 40)
+
+    def test_overflowing_translated_text_fails_text_fit_instead_of_shrinking_or_image_fallback(self):
+        fitz = pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_pdf = tmp_path / "source.pdf"
+            output_pdf = tmp_path / "out.pdf"
+            pages_dir = tmp_path / "pages"
+            pages_dir.mkdir()
+
+            src_doc = fitz.open()
+            src_page = src_doc.new_page(width=100, height=100)
+            src_page.draw_rect(fitz.Rect(10, 10, 40, 20), color=None, fill=(1, 0, 0))
+            src_doc.save(source_pdf)
+            src_doc.close()
+
+            image = Image.new("RGB", (100, 100), "white")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((10, 10, 40, 20), fill="blue")
+            image.save(pages_dir / "page-001.png")
+
+            blocks = [block("p001b0001", 1, "A short source line.", x0=10, y0=10, x1=40, y1=20)]
+            with self.assertRaisesRegex(RuntimeError, "needs .* height"):
+                pdf.write_vector_pdf(
+                    source_pdf,
+                    output_pdf,
+                    [(1, blocks)],
+                    {"p001b0001": "这是一个很长很长的译文，应该无法放入这个非常矮的文本框中。" * 8},
+                    (100, 100),
+                    72,
+                    job_paths={"pages_dir": pages_dir},
+                )
+
+    def test_render_text_item_raises_instead_of_silent_image_fallback(self):
+        fitz = pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_image = tmp_path / "page-001.png"
+            Image.new("RGB", (100, 100), "black").save(source_image)
+
+            src_doc = fitz.open()
+            src_page = src_doc.new_page(width=100, height=100)
+            out_doc = fitz.open()
+            out_page = out_doc.new_page(width=100, height=100)
+            item = pdf.RenderItem(
+                "translated_text",
+                ["body"],
+                (10, 10, 40, 18),
+                text="这是一个很长很长的译文，渲染阶段不能偷偷贴回英文截图。" * 4,
+                font_size=pdf.DOCUMENT_STYLES["body"].font_size,
+                style_name="body",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "did not fit during render"):
+                pdf.render_plan_item(out_page, src_page, fitz, item, 72, source_image_path=source_image)
+
+            out_doc.close()
+            src_doc.close()
 
 
 if __name__ == "__main__":
