@@ -1,6 +1,6 @@
 # translatePaper
 
-Translates English PDF papers to Chinese PDFs. It extracts text, uses Codex CLI, and renders Chinese back to pages. Supports batch jobs, resume, and QA.
+Translates English PDF papers to Chinese PDFs. It extracts text, uses Codex CLI, and renders Chinese back to pages. Supports batch jobs, resume, and QA. It keeps the same page id.
 
 ## Scripts
 
