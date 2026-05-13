@@ -31,12 +31,25 @@ FORMULA_PAD_TOP_PX = 8
 FORMULA_PAD_BOTTOM_PX = 4
 TEXT_BOX_MARGIN_PX = 8
 VECTOR_FONT = "china-s"
+MATH_VECTOR_FONT = "MathF"
+MATH_VECTOR_FONT_PATHS = (
+    "/usr/share/fonts/opentype/stix-word/STIXMath-Regular.otf",
+    "/usr/share/fonts/truetype/noto/NotoSansMath-Regular.ttf",
+    "/usr/share/texmf/fonts/opentype/public/lm-math/latinmodern-math.otf",
+)
 VECTOR_BODY_COLOR = (0, 0, 0)
 VECTOR_ACCENT_COLOR = (0.58, 0.0, 0.06)
 FULL_PAGE_IMAGE_AREA_FRACTION = 0.70
 EDGE_ICON_MAX_SIZE_PT = 40.0
 HEURISTIC_HEADING_MAX_CHARS = 120
 HEURISTIC_HEADING_BOTTOM_MARGIN_PT = 70.0
+HEADING_NUMBER_TITLE_MAX_GAP_PT = 90.0
+IMAGE_ROW_GROUP_MIN_COUNT = 3
+IMAGE_ROW_GROUP_MIN_SPAN_PT = 180.0
+IMAGE_ROW_GROUP_CENTER_TOLERANCE_PT = 18.0
+IMAGE_ROW_CLIP_PAD_X_PT = 2.0
+IMAGE_ROW_CLIP_PAD_TOP_PT = 22.0
+IMAGE_ROW_CLIP_PAD_BOTTOM_PT = 6.0
 JOURNAL_FOOTER_TEXT = "ACM Transactions on Programming Languages and Systems, Vol. 11, No. 1, January 1991."
 JOURNAL_FOOTER_WIDTH_PT = 260.0
 JOURNAL_FOOTER_HEIGHT_PT = 8.0
@@ -60,6 +73,10 @@ BODY_FLOW_INTERNAL_SLACK_WARN_PT = 24.0
 BODY_FLOW_VISIBLE_GAP_WARN_PT = 32.0
 TEXT_FIT_EPSILON_PT = 0.01
 IMAGE_ONLY_PAGE_MIN_DARK_PIXELS = 32
+SHRINK_FIT_MIN_FONT_SIZE = 5.0
+EXPANDABLE_TEXT_STYLE_NAMES = {"body", "heading", "subheading", "title"}
+LARGE_PROSE_VISUAL_AVOID_AREA_PT = 12000.0
+LARGE_PROSE_VISUAL_AVOID_HEIGHT_PT = 58.0
 
 
 @dataclass(frozen=True)
@@ -374,12 +391,12 @@ VISUAL_CAPTION_NUMBER_PATTERN = r"\d+[0-9il]*(?:[-‐‑‒–—.]\d+[0-9il]*)?
 
 def is_table_caption_line(text: str) -> bool:
     normalized = re.sub(r"\s+", "", normalize_text(text).strip().lower())
-    return bool(re.match(rf"^table{VISUAL_CAPTION_NUMBER_PATTERN}[:.]", normalized))
+    return bool(re.match(rf"^table{VISUAL_CAPTION_NUMBER_PATTERN}[:.|]", normalized))
 
 
 def is_visual_caption_line(text: str) -> bool:
     normalized = re.sub(r"\s+", "", normalize_text(text).strip().lower())
-    return bool(re.match(rf"^(fig\.?|figure|table){VISUAL_CAPTION_NUMBER_PATTERN}[:.]", normalized))
+    return bool(re.match(rf"^(fig\.?|figure|table){VISUAL_CAPTION_NUMBER_PATTERN}[:.|]", normalized))
 
 
 def is_table_caption(text: str) -> bool:
@@ -805,6 +822,8 @@ def build_batches(pages, max_chars: int):
         visual_regions = build_visual_regions(page)
         classes = classify_blocks(page, visual_regions)
         for block in page:
+            if should_preserve_first_page_metadata_as_image(block):
+                continue
             if classes.get(block["id"]) not in {"body", "heading", "title"}:
                 continue
             if should_preserve_as_image(block):
@@ -2162,16 +2181,62 @@ def insert_vertical_vector_text(page, fitz, rect, text: str, font_size: float, c
 
 
 def pdf_token_font(token: str) -> str:
+    if pdf_token_uses_math_font(token):
+        return MATH_VECTOR_FONT
     if re.fullmatch(r"[A-Za-z0-9._+:/%#?=&~×,;()[\]'\" -]+", token):
         return "helv"
     return VECTOR_FONT
+
+
+def math_vector_font_path() -> str | None:
+    for path in MATH_VECTOR_FONT_PATHS:
+        if Path(path).exists():
+            return path
+    return None
+
+
+def pdf_token_uses_math_font(token: str) -> bool:
+    if not token or token.isspace() or cjk_char_count(token) > 0:
+        return False
+    return any(
+        0x1D400 <= ord(char) <= 0x1D7FF
+        or char in "∗†‡≤≥∑∏√∞≈≠⊕⊗∈∉∧∨∂∇"
+        for char in token
+    )
+
+
+_MATH_FITZ_FONT = None
+
+
+def math_fitz_font(fitz):
+    global _MATH_FITZ_FONT
+    if _MATH_FITZ_FONT is None:
+        path = math_vector_font_path()
+        if path is None:
+            return None
+        _MATH_FITZ_FONT = fitz.Font(fontfile=path)
+    return _MATH_FITZ_FONT
+
+
+def pdf_token_fontfile(token: str) -> str | None:
+    if pdf_token_uses_math_font(token):
+        return math_vector_font_path()
+    return None
+
+
+def pdf_token_width(fitz, token: str, font_size: float) -> float:
+    if pdf_token_uses_math_font(token):
+        font = math_fitz_font(fitz)
+        if font is not None:
+            return font.text_length(token, fontsize=font_size)
+    return fitz.get_text_length(token, fontname=pdf_token_font(token), fontsize=font_size)
 
 
 def pdf_text_width(fitz, text: str, font_size: float) -> float:
     if not text:
         return 0.0
     return sum(
-        fitz.get_text_length(token, fontname=pdf_token_font(token), fontsize=font_size)
+        pdf_token_width(fitz, token, font_size)
         for token in drawable_pdf_line_tokens([text])
     )
 
@@ -2186,7 +2251,7 @@ def split_pdf_text_tokens(text: str) -> list[str]:
 
 def token_list_width(fitz, tokens: list[str], font_size: float) -> float:
     return sum(
-        fitz.get_text_length(token, fontname=pdf_token_font(token), fontsize=font_size)
+        pdf_token_width(fitz, token, font_size)
         for token in drawable_pdf_line_tokens(tokens)
     )
 
@@ -2308,27 +2373,122 @@ def draw_mixed_pdf_lines(
             if not token:
                 continue
             fontname = pdf_token_font(token)
-            page.insert_text(
-                (x, y),
-                token,
-                fontsize=font_size,
-                fontname=fontname,
-                color=color,
-            )
-            x += fitz.get_text_length(token, fontname=fontname, fontsize=font_size) + letter_spacing
+            fontfile = pdf_token_fontfile(token)
+            if fontfile:
+                page.insert_text(
+                    (x, y),
+                    token,
+                    fontsize=font_size,
+                    fontname=fontname,
+                    fontfile=fontfile,
+                    color=color,
+                )
+            else:
+                page.insert_text(
+                    (x, y),
+                    token,
+                    fontsize=font_size,
+                    fontname=fontname,
+                    color=color,
+                )
+            x += pdf_token_width(fitz, token, font_size) + letter_spacing
         y += line_height
+
+
+def image_info_preserve_bbox(info, page_area: float):
+    bbox = tuple(info["bbox"])
+    x0, y0, x1, y1 = bbox
+    if x1 <= x0 or y1 <= y0:
+        return None
+    if ((x1 - x0) * (y1 - y0)) / page_area >= FULL_PAGE_IMAGE_AREA_FRACTION:
+        return None
+    if x0 <= 2 and (x1 - x0) <= EDGE_ICON_MAX_SIZE_PT and (y1 - y0) <= EDGE_ICON_MAX_SIZE_PT:
+        return None
+    return bbox
+
+
+def valid_image_insert_bbox(bbox) -> bool:
+    try:
+        x0, y0, x1, y1 = (float(value) for value in bbox)
+    except Exception:
+        return False
+    return all(math.isfinite(value) for value in (x0, y0, x1, y1)) and x1 > x0 and y1 > y0
+
+
+def grouped_image_row_clips(image_entries, page_size) -> list[dict]:
+    rows = []
+    for entry in sorted(image_entries, key=lambda item: (bbox_center(item["bbox"])[1], item["bbox"][0])):
+        center_y = bbox_center(entry["bbox"])[1]
+        target = None
+        for row in rows:
+            if abs(center_y - row["center_y"]) <= IMAGE_ROW_GROUP_CENTER_TOLERANCE_PT:
+                target = row
+                break
+        if target is None:
+            target = {"entries": [], "center_y": center_y}
+            rows.append(target)
+        target["entries"].append(entry)
+        target["center_y"] = median(bbox_center(item["bbox"])[1] for item in target["entries"])
+
+    clips = []
+    for row in rows:
+        entries = sorted(row["entries"], key=lambda item: item["bbox"][0])
+        if len(entries) < IMAGE_ROW_GROUP_MIN_COUNT:
+            continue
+        row_bbox = bbox_union([entry["bbox"] for entry in entries])
+        if row_bbox[2] - row_bbox[0] < IMAGE_ROW_GROUP_MIN_SPAN_PT:
+            continue
+        base = clamped_expanded_bbox(
+            row_bbox,
+            page_size,
+            pad_x=IMAGE_ROW_CLIP_PAD_X_PT,
+            pad_y=0.0,
+        )
+        clips.append(
+            {
+                "bbox": clamp_bbox(
+                    (
+                        base[0],
+                        row_bbox[1] - IMAGE_ROW_CLIP_PAD_TOP_PT,
+                        base[2],
+                        row_bbox[3] + IMAGE_ROW_CLIP_PAD_BOTTOM_PT,
+                    ),
+                    page_size,
+                ),
+                "indices": {entry["index"] for entry in entries},
+            }
+        )
+    return clips
 
 
 def preserve_images_on_page(src_page, out_page, fitz, dpi: int):
     matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
     page_area = max(1.0, src_page.rect.get_area())
-    for info in src_page.get_image_info(xrefs=True):
-        bbox = fitz.Rect(info["bbox"])
-        if bbox.is_empty:
+    image_entries = []
+    for index, info in enumerate(src_page.get_image_info(xrefs=True)):
+        bbox = image_info_preserve_bbox(info, page_area)
+        if bbox is None:
             continue
-        if bbox.get_area() / page_area >= FULL_PAGE_IMAGE_AREA_FRACTION:
+        image_entries.append({"index": index, "info": info, "bbox": bbox})
+
+    grouped_indices = set()
+    for clip in grouped_image_row_clips(image_entries, (src_page.rect.width, src_page.rect.height)):
+        if not valid_image_insert_bbox(clip["bbox"]):
             continue
-        if bbox.x0 <= 2 and bbox.width <= EDGE_ICON_MAX_SIZE_PT and bbox.height <= EDGE_ICON_MAX_SIZE_PT:
+        pix = src_page.get_pixmap(matrix=matrix, clip=fitz.Rect(clip["bbox"]), alpha=False)
+        out_page.insert_image(clip["bbox"], pixmap=pix, keep_proportion=False)
+        grouped_indices.update(clip["indices"])
+
+    for entry in image_entries:
+        if entry["index"] in grouped_indices:
+            continue
+        info = entry["info"]
+        if not valid_image_insert_bbox(entry["bbox"]):
+            continue
+        bbox = fitz.Rect(entry["bbox"])
+        if info.get("has-mask"):
+            pix = src_page.get_pixmap(matrix=matrix, clip=bbox, alpha=False)
+            out_page.insert_image(bbox, pixmap=pix, keep_proportion=False)
             continue
         image_stream = None
         xref = info.get("xref") or 0
@@ -2481,6 +2641,72 @@ def contained_standalone_label_ids(blocks, classes) -> set[str]:
                 skipped.add(block["id"])
                 break
     return skipped
+
+
+def block_is_visually_covered_by_region(block, region_bbox) -> bool:
+    block_box = block_bbox(block)
+    if bbox_contains_point(region_bbox, bbox_center(block_box)):
+        return True
+    block_area = bbox_area(block_box)
+    return block_area > 0 and bbox_overlap_area(block_box, region_bbox) >= block_area * 0.35
+
+
+def is_large_prose_block(block, text: str) -> bool:
+    if not source_requires_chinese_translation(text) or not is_prose_row_text(text):
+        return False
+    block_box = block_bbox(block)
+    return (
+        bbox_area(block_box) >= LARGE_PROSE_VISUAL_AVOID_AREA_PT
+        or block_box[3] - block_box[1] >= LARGE_PROSE_VISUAL_AVOID_HEIGHT_PT
+        or len(normalize_text(text)) >= 220
+    )
+
+
+def nontranslated_blocks_covered_by_visual_region(blocks, classes, region_bbox, visual_ids) -> set[str]:
+    covered = set()
+    for block in blocks:
+        block_id = block["id"]
+        if block_id in visual_ids:
+            continue
+        text = normalize_text(block.get("text", ""))
+        if not text:
+            continue
+        if classes.get(block_id) in {"page_number", "header_footer", "journal_footer", "reference"}:
+            continue
+        if is_large_prose_block(block, text):
+            continue
+        if block_is_visually_covered_by_region(block, region_bbox):
+            covered.add(block_id)
+    return covered
+
+
+def cap_visual_bbox_around_large_prose(region_bbox, blocks, classes, visual_ids, page_size):
+    capped = region_bbox
+    for block in blocks:
+        block_id = block["id"]
+        if block_id in visual_ids or classes.get(block_id) in {"page_number", "header_footer", "journal_footer", "reference"}:
+            continue
+        text = normalize_text(block.get("text", ""))
+        if not is_large_prose_block(block, text):
+            continue
+        block_box = block_bbox(block)
+        if bbox_overlap_area(capped, block_box) <= min(bbox_area(capped), bbox_area(block_box)) * 0.05:
+            continue
+        region_center = bbox_center(capped)
+        block_center = bbox_center(block_box)
+        x0, y0, x1, y1 = capped
+        if block_center[0] >= region_center[0] and block_box[0] > x0 + 12.0:
+            x1 = min(x1, block_box[0] - TEXT_PROTECTED_GAP_PT)
+        elif block_center[0] < region_center[0] and block_box[2] < x1 - 12.0:
+            x0 = max(x0, block_box[2] + TEXT_PROTECTED_GAP_PT)
+        elif block_center[1] >= region_center[1] and block_box[1] > y0 + 12.0:
+            y1 = min(y1, block_box[1] - TEXT_PROTECTED_GAP_PT)
+        elif block_center[1] < region_center[1] and block_box[3] < y1 - 12.0:
+            y0 = max(y0, block_box[3] + TEXT_PROTECTED_GAP_PT)
+        next_box = clamp_bbox((x0, y0, x1, y1), page_size)
+        if next_box[2] - next_box[0] >= 20.0 and next_box[3] - next_box[1] >= 8.0:
+            capped = next_box
+    return capped
 
 
 @dataclass
@@ -2765,7 +2991,12 @@ def is_reference_heading(text: str) -> bool:
 
 
 def starts_reference_item(text: str) -> bool:
-    return bool(re.match(r"^\s*\d{1,3}\.\s*[A-Z][A-Za-z-]+,", normalize_text(text)))
+    return bool(
+        re.match(
+            r"^\s*(?:\[\d{1,3}\]|\d{1,3}\.)\s*[A-Z][A-Za-z-]+",
+            normalize_text(text),
+        )
+    )
 
 
 def is_decorative_update_marker(text: str) -> bool:
@@ -2821,6 +3052,32 @@ def is_first_page_footer_fragment(block) -> bool:
     return block.get("page") == 1 and block["yMin"] > 540 and len(text) < 50
 
 
+def is_publication_header_fragment(block) -> bool:
+    text = normalize_text(block.get("text", ""))
+    if block.get("page") != 1 or block["yMin"] > 72.0 or not text or len(text) > 180:
+        return False
+    lower = text.lower()
+    if re.fullmatch(r"\(?20\d{2}\)?\s+\d{1,4}:\d{1,5}", text):
+        return True
+    if re.match(r"(?i)^journal\s+of\b", text) or re.match(r"(?i)^proceedings\s+of\b", text):
+        return True
+    if re.match(r"(?i)^journal\s+of\s+l\s*a\s*tex\s+class\s+files\b", text):
+        return True
+    if any(marker in lower for marker in ("journal of", "transactions on", "proceedings of", "vol.", "issn")):
+        return bool(re.search(r"\b20\d{2}\b|\bvol\.|\bno\.", lower))
+    return False
+
+
+def is_conference_footer_fragment(block) -> bool:
+    text = normalize_text(block.get("text", ""))
+    return (
+        block.get("page", 1) > 1
+        and block["yMin"] > 700.0
+        and len(text) <= 40
+        and bool(re.fullmatch(r"[A-Z][A-Z0-9&./-]{1,16}\s+20\d{2}", text))
+    )
+
+
 def is_running_header_fragment(block) -> bool:
     text = normalize_text(block.get("text", ""))
     return (
@@ -2839,7 +3096,12 @@ def is_running_header_fragment(block) -> bool:
 
 
 def contains_reference_item(text: str) -> bool:
-    return bool(re.search(r"(?m)(?:^|\n)\s*\d{1,3}\.\s*[A-Z][A-Za-z-]+,", normalize_text(text)))
+    return bool(
+        re.search(
+            r"(?m)(?:^|\n)\s*(?:\[\d{1,3}\]|\d{1,3}\.)\s*[A-Z][A-Za-z-]+",
+            normalize_text(text),
+        )
+    )
 
 
 def reference_block_ids(blocks) -> set[str]:
@@ -3008,6 +3270,44 @@ def is_heading_text(text: str) -> bool:
 def is_title_block(block) -> bool:
     text = normalize_text(block.get("text", ""))
     return block.get("page") == 1 and block["yMin"] < 90 and len(text) <= 120 and "\n" not in text
+
+
+def is_first_page_author_block(block) -> bool:
+    text = normalize_text(block.get("text", ""))
+    if block.get("page") != 1 or not text:
+        return False
+    if not (80.0 <= block["yMin"] <= 380.0):
+        return False
+    if "@" in text:
+        return len(text) <= 220 and bool(re.search(r"[A-Za-z]", text))
+    if not (140.0 <= block["yMin"] <= 340.0):
+        return False
+    if len(text) > 220:
+        return False
+    if text.lower() in {"abstract", "introduction", "references"}:
+        return False
+    if re.search(r"\d|[:;!?]", text):
+        return False
+    words = re.findall(r"[A-Za-z][A-Za-z.'-]*", text)
+    if not (1 <= len(words) <= 5):
+        return False
+    if english_function_word_count(text) > 0:
+        return False
+    return True
+
+
+def is_first_page_arxiv_side_metadata_block(block) -> bool:
+    text = normalize_text(block.get("text", ""))
+    return (
+        block.get("page") == 1
+        and block["xMax"] <= 70.0
+        and block["yMin"] < 600.0
+        and "arXiv:" in text
+    )
+
+
+def should_preserve_first_page_metadata_as_image(block) -> bool:
+    return is_first_page_author_block(block) or is_first_page_arxiv_side_metadata_block(block)
 
 
 def adjusted_render_bbox(block, classification: str, page_size) -> tuple[float, float, float, float]:
@@ -3269,6 +3569,131 @@ def style_name_for_block(block, classification: str) -> str:
     if classification == "journal_footer":
         return "footer"
     return "body"
+
+
+def standalone_heading_number_text(text: str) -> str:
+    candidate = normalize_text(text).split("\n", 1)[0].strip()
+    if not re.fullmatch(r"\d+(?:\.\d+)*\.?", candidate):
+        return ""
+    number = candidate.rstrip(".")
+    parts = [int(part) for part in number.split(".") if part.isdigit()]
+    if not parts or parts[0] <= 0 or parts[0] > 30:
+        return ""
+    if any(part > 99 for part in parts[1:]):
+        return ""
+    return number
+
+
+def standalone_heading_title_candidate(block) -> bool:
+    title = short_heading_text(block.get("text", ""))
+    if not title or title.endswith("."):
+        return False
+    if is_reference_heading(title) or is_visual_caption(title) or contains_visual_caption(title):
+        return False
+    if re.match(r"(?i)question:", title):
+        return False
+    return starts_like_source_heading(title)
+
+
+def standalone_heading_number_pairs(blocks, classes: dict[str, str] | None = None):
+    pairs = []
+    used_ids = set()
+    sorted_blocks = sorted(
+        blocks,
+        key=lambda item: (item.get("block_index", 0), item["yMin"], item["xMin"]),
+    )
+    for block in sorted_blocks:
+        if block["id"] in used_ids or should_preserve_as_image(block):
+            continue
+        number_text = standalone_heading_number_text(block.get("text", ""))
+        if not number_text:
+            continue
+        candidates = []
+        for other in sorted_blocks:
+            if other["id"] == block["id"] or other["id"] in used_ids:
+                continue
+            if should_preserve_as_image(other):
+                continue
+            if classes and classes.get(other["id"]) in {
+                "page_number",
+                "header_footer",
+                "journal_footer",
+                "reference",
+                "figure_region",
+                "formula_region",
+            }:
+                continue
+            if not same_heading_line(block, other):
+                continue
+            gap = other["xMin"] - block["xMax"]
+            if gap < 0 or gap > HEADING_NUMBER_TITLE_MAX_GAP_PT:
+                continue
+            if not standalone_heading_title_candidate(other):
+                continue
+            center_delta = abs(bbox_center(block_bbox(block))[1] - bbox_center(block_bbox(other))[1])
+            candidates.append((gap, center_delta, other.get("block_index", 0), other))
+        if not candidates:
+            continue
+        _gap, _center_delta, _block_index, title_block = min(candidates, key=lambda item: item[:3])
+        pairs.append((block, title_block, number_text))
+        used_ids.add(block["id"])
+        used_ids.add(title_block["id"])
+    return pairs
+
+
+def standalone_heading_pair_bbox(number_block, title_block, page_size, style_name: str):
+    style = text_style(style_name)
+    number_box = adjusted_render_bbox(number_block, "heading", page_size)
+    title_box = adjusted_render_bbox(title_block, "heading", page_size)
+    x0 = min(number_box[0], title_box[0])
+    y0 = min(number_box[1], title_box[1])
+    x1 = max(number_box[2], title_box[2])
+    y1 = max(number_box[3], title_box[3], y0 + style.font_size * style.line_height_factor + 2.0)
+    x1 = max(x1 + 12.0, x0 + 160.0)
+    return clamp_bbox((x0, y0, x1, y1), page_size)
+
+
+def add_standalone_heading_pair_render_items(
+    plan: PageRenderPlan,
+    heading_pairs,
+    translations,
+    page_size,
+) -> set[str]:
+    rendered_ids = set()
+    for number_block, title_block, number_text in heading_pairs:
+        translated_title = clean_render_text(
+            title_block,
+            translation_for_block(title_block, translations),
+            translations.get(title_block["id"], ""),
+        )
+        title_text = clean_outline_title(translated_title or short_heading_text(title_block.get("text", "")))
+        if not title_text:
+            continue
+        heading_text = clean_outline_title(f"{number_text} {title_text}")
+        style_name = style_name_for_heading_text(number_text)
+        plan.items.append(
+            RenderItem(
+                "translated_text",
+                [number_block["id"], title_block["id"]],
+                standalone_heading_pair_bbox(number_block, title_block, page_size, style_name),
+                text=heading_text,
+                font_size=text_style(style_name).font_size,
+                style_name=style_name,
+                fallback_reason="standalone_heading_pair",
+            )
+        )
+        for block in (number_block, title_block):
+            plan.ledger.append(
+                CoverageEntry(
+                    block["id"],
+                    "heading",
+                    "translated_text",
+                    True,
+                    "standalone_heading_pair",
+                )
+            )
+            rendered_ids.add(block["id"])
+    return rendered_ids
 
 
 def first_page_title_metadata_split(block, translated: str) -> tuple[str, list[str], str] | None:
@@ -4256,7 +4681,9 @@ def is_table_body_candidate(seed_box, candidate_box, text: str) -> bool:
     if should_preserve_as_image({"text": normalized}):
         return True
     if not wide_row:
-        return len(normalized) <= 520
+        if is_prose_row_text(normalized):
+            return False
+        return len(normalized) <= 220 and height <= 80.0
     return len(normalized) <= 220 and height <= 120.0
 
 
@@ -4269,6 +4696,8 @@ def is_table_region_terminator(seed_box, candidate_box, text: str) -> bool:
     left_aligned = candidate_box[0] <= seed_box[0] + 16.0
     if not left_aligned:
         return False
+    if standalone_heading_number_text(normalized) or heuristic_heading_from_block({"text": normalized}):
+        return True
     width = candidate_box[2] - candidate_box[0]
     height = candidate_box[3] - candidate_box[1]
     seed_width = max(1.0, seed_box[2] - seed_box[0])
@@ -4283,11 +4712,15 @@ def is_adjacent_visual_table_row_cell(seed_box, candidate_box, text: str) -> boo
     normalized = normalize_text(text)
     if not normalized:
         return False
+    if standalone_heading_number_text(normalized) or heuristic_heading_from_block({"text": normalized}):
+        return False
+    if is_prose_row_text(normalized):
+        return False
     min_height = max(1.0, min(seed_box[3] - seed_box[1], candidate_box[3] - candidate_box[1]))
     if vertical_overlap(seed_box, candidate_box) < min_height * 0.45:
         return False
     horizontal_gap = max(0.0, max(seed_box[0], candidate_box[0]) - min(seed_box[2], candidate_box[2]))
-    if horizontal_gap > 170.0:
+    if horizontal_gap > 130.0:
         return False
     if candidate_box[2] - candidate_box[0] > 360.0:
         return False
@@ -4493,6 +4926,30 @@ def is_body_enumeration_line(text: str) -> bool:
     return bool(re.match(r"^\(\d+\)\s+[A-Za-z][A-Za-z0-9() ]+\bis\b", normalized))
 
 
+def table_cells_already_seen_above_caption(seed_box, blocks, consumed: set[str]) -> bool:
+    for other in blocks:
+        if other["id"] not in consumed:
+            continue
+        other_box = block_bbox(other)
+        if other_box[3] > seed_box[1] + 8.0 or other_box[3] < seed_box[1] - 140.0:
+            continue
+        if horizontal_overlap(seed_box, other_box) <= 0:
+            continue
+        text = normalize_text(other.get("text", ""))
+        if is_table_body_candidate(seed_box, other_box, text) or is_numeric_metric_cell(text):
+            return True
+    return False
+
+
+def has_standalone_heading_number_to_left(block, blocks) -> bool:
+    for other in blocks:
+        if other["id"] == block["id"] or not standalone_heading_number_text(other.get("text", "")):
+            continue
+        if same_heading_line(other, block) and 0 <= block["xMin"] - other["xMax"] <= HEADING_NUMBER_TITLE_MAX_GAP_PT:
+            return True
+    return False
+
+
 def merge_adjacent_code_visual_regions(regions: list[dict]) -> list[dict]:
     if len(regions) < 2:
         return regions
@@ -4515,6 +4972,78 @@ def merge_adjacent_code_visual_regions(regions: list[dict]) -> list[dict]:
     return merged
 
 
+def diagram_label_candidate_above_caption(block, caption_box) -> bool:
+    text = normalize_text(block.get("text", ""))
+    if not text or is_page_number(text) or is_visual_caption(text) or contains_visual_caption(text):
+        return False
+    if is_running_header_fragment(block):
+        return False
+    if re.search(r"(?i)\b(abstract|introduction|references)\b", text):
+        return False
+    box = block_bbox(block)
+    if box[3] >= caption_box[1] - 2.0:
+        return False
+    width = box[2] - box[0]
+    height = box[3] - box[1]
+    if width > 180.0 or height > 92.0 or len(text) > 120:
+        return False
+    if is_formula_or_code_block(text) or is_formula_like(text):
+        return True
+    if any(0x1D400 <= ord(char) <= 0x1D7FF for char in text):
+        return True
+    words = latin_words(text)
+    if 1 <= len(words) <= 4 and english_function_word_count(text) == 0:
+        return True
+    if re.fullmatch(r"[A-Za-z0-9 ._+:/%#?=&~×,;()[\]'\"!-]{1,40}", text):
+        return True
+    return text in {"…", "⊕"}
+
+
+def diagram_regions_above_visual_captions(blocks, existing_regions: list[dict]) -> list[dict]:
+    existing_ids = {source_id for region in existing_regions for source_id in region["source_ids"]}
+    sorted_blocks = sorted(blocks, key=lambda item: (item["yMin"], item["xMin"]))
+    regions = []
+    for caption in sorted_blocks:
+        caption_text = normalize_text(caption.get("text", ""))
+        if not (is_visual_caption(caption_text) or contains_visual_caption(caption_text)):
+            continue
+        caption_box = block_bbox(caption)
+        search = (
+            caption_box[0] - 60.0,
+            max(0.0, caption_box[1] - 230.0),
+            caption_box[2] + 60.0,
+            caption_box[1] - 2.0,
+        )
+        group = []
+        for block in sorted_blocks:
+            if block["id"] in existing_ids or block["id"] == caption["id"]:
+                continue
+            box = block_bbox(block)
+            center = bbox_center(box)
+            if not (search[0] <= center[0] <= search[2] and search[1] <= center[1] <= search[3]):
+                continue
+            if diagram_label_candidate_above_caption(block, caption_box):
+                group.append(block)
+        if len(group) < 8:
+            continue
+        region_box = bbox_union([block_bbox(block) for block in group])
+        if region_box[2] - region_box[0] < 160.0 or region_box[3] - region_box[1] < 80.0:
+            continue
+        source_ids = [block["id"] for block in group]
+        existing_ids.update(source_ids)
+        regions.append(
+            {
+                "source_ids": source_ids,
+                "bbox": region_box,
+                "has_code_seed": False,
+                "has_caption_seed": False,
+                "has_row_cell_seed": False,
+                "has_diagram_seed": True,
+            }
+        )
+    return regions
+
+
 def build_visual_regions(blocks) -> list[dict]:
     regions = []
     consumed = set()
@@ -4531,16 +5060,20 @@ def build_visual_regions(blocks) -> list[dict]:
             and not is_standalone_equation_label(text)
         ) and not is_body_enumeration_line(text)
         has_caption = is_visual_caption(text) or contains_visual_caption(text)
+        caption_seed = has_caption and not is_large_prose_block(block, text)
         row_cell_seed = is_numeric_metric_cell(text) or is_fragmented_narrow_table_cell(block)
         code_seed = is_code_listing_block(text) or is_code_row_text(text)
         formula_seed = (is_formula_or_code_block(text) or is_code_row_text(text)) and not is_standalone_equation_label(text)
-        is_visual_seed = explicit_image or has_caption or formula_seed
+        is_visual_seed = explicit_image or caption_seed or formula_seed
         if not is_visual_seed:
             continue
         seed_box = block_bbox(block)
-        table_seed = is_table_caption(text)
+        table_seed = is_table_caption(text) and caption_seed
         if table_seed:
-            search = (seed_box[0] - 260.0, seed_box[1] - 20.0, seed_box[2] + 260.0, seed_box[3] + 640.0)
+            if table_cells_already_seen_above_caption(seed_box, sorted_blocks, consumed):
+                search = (seed_box[0] - 260.0, seed_box[1] - 140.0, seed_box[2] + 260.0, seed_box[3] + 28.0)
+            else:
+                search = (seed_box[0] - 260.0, seed_box[1] - 20.0, seed_box[2] + 260.0, seed_box[3] + 640.0)
         elif has_caption:
             search = (seed_box[0] - 180.0, seed_box[1] - 60.0, seed_box[2] + 180.0, seed_box[3] + 28.0)
         elif row_cell_seed:
@@ -4589,6 +5122,13 @@ def build_visual_regions(blocks) -> list[dict]:
                     or (should_preserve_as_image(other) and not is_body_enumeration_line(other_text))
                 )
                 code_line_number = code_seed and is_code_line_number_block(other_text)
+                if (
+                    other["id"] != block["id"]
+                    and (standalone_heading_number_text(other_text) or heuristic_heading_from_block({"text": other_text}))
+                ):
+                    continue
+                if other["id"] != block["id"] and has_standalone_heading_number_to_left(other, sorted_blocks):
+                    continue
                 if visual_text or code_line_number or (short_fragment and (code_seed or not formula_seed)):
                     group.append(other)
         if not group:
@@ -4619,9 +5159,13 @@ def build_visual_regions(blocks) -> list[dict]:
                 "source_ids": [item["id"] for item in group],
                 "bbox": region_box,
                 "has_code_seed": code_seed,
+                "has_caption_seed": caption_seed,
+                "has_row_cell_seed": row_cell_seed,
             }
         )
-    return merge_adjacent_code_visual_regions(regions)
+    regions = merge_adjacent_code_visual_regions(regions)
+    regions.extend(diagram_regions_above_visual_captions(blocks, regions))
+    return regions
 
 
 def classify_blocks(blocks, visual_regions) -> dict[str, str]:
@@ -4639,7 +5183,13 @@ def classify_blocks(blocks, visual_regions) -> dict[str, str]:
         if is_journal_footer_block(block):
             classes[block["id"]] = "journal_footer"
             continue
-        if is_decorative_update_marker(text) or is_first_page_footer_fragment(block) or is_running_header_fragment(block):
+        if (
+            is_decorative_update_marker(text)
+            or is_first_page_footer_fragment(block)
+            or is_publication_header_fragment(block)
+            or is_conference_footer_fragment(block)
+            or is_running_header_fragment(block)
+        ):
             classes[block["id"]] = "header_footer"
             continue
         if block["id"] in references:
@@ -4693,6 +5243,10 @@ def build_page_render_plan(
     classes = classify_blocks(blocks, visual_regions)
     block_by_id = {block["id"]: block for block in blocks}
     visual_ids = {source_id for region in visual_regions for source_id in region["source_ids"]}
+    heading_pairs = standalone_heading_number_pairs(blocks, classes)
+    for number_block, title_block, _number_text in heading_pairs:
+        classes[number_block["id"]] = "heading"
+        classes[title_block["id"]] = "heading"
     footer_items = journal_footer_render_items(bbox_lines or [], page_size)
     plan.items.extend(footer_items)
     reference_line_items = reference_line_render_items(blocks, bbox_lines or [], page_size)
@@ -4703,6 +5257,15 @@ def build_page_render_plan(
         if classes.get(block_id) in {"body", "heading", "title"}
     }
     duplicate_ids.update(contained_standalone_label_ids(blocks, classes))
+    visual_covered_text_ids = set()
+    metadata_ids = {block["id"] for block in blocks if should_preserve_first_page_metadata_as_image(block)}
+    for metadata_block in blocks:
+        if metadata_block["id"] not in metadata_ids:
+            continue
+        metadata_bbox = clamped_expanded_bbox(block_bbox(metadata_block), page_size, pad_x=1.0, pad_y=1.0)
+        visual_covered_text_ids.update(
+            nontranslated_blocks_covered_by_visual_region(blocks, classes, metadata_bbox, metadata_ids)
+        )
 
     for region in visual_regions:
         region_classes = {classes.get(source_id, "figure_region") for source_id in region["source_ids"]}
@@ -4748,6 +5311,8 @@ def build_page_render_plan(
                 FORMULA_CLIP_PIXEL_SEARCH_PAD_X_PT
                 if formula_only
                 else 4.0
+                if region.get("has_row_cell_seed") or region.get("has_caption_seed")
+                else 4.0
                 if region.get("has_code_seed")
                 else VISUAL_CLIP_PIXEL_SEARCH_PAD_X_PT
             ),
@@ -4775,6 +5340,10 @@ def build_page_render_plan(
                 classes,
                 visual_ids,
             )
+        region_bbox = cap_visual_bbox_around_large_prose(region_bbox, blocks, classes, visual_ids, page_size)
+        visual_covered_text_ids.update(
+            nontranslated_blocks_covered_by_visual_region(blocks, classes, region_bbox, visual_ids)
+        )
         plan.items.append(
             RenderItem(
                 kind="original_image_clip",
@@ -4797,11 +5366,31 @@ def build_page_render_plan(
         if mixed_body_item is not None:
             plan.items.append(mixed_body_item)
 
+    paired_heading_ids = add_standalone_heading_pair_render_items(
+        plan,
+        heading_pairs,
+        translations,
+        page_size,
+    )
+
     for block in blocks:
         text = normalize_text(block.get("text", ""))
         if not text or block["id"] in visual_ids:
             continue
+        if block["id"] in paired_heading_ids:
+            continue
         classification = classes.get(block["id"], "unknown")
+        if block["id"] in visual_covered_text_ids:
+            plan.ledger.append(
+                CoverageEntry(
+                    block["id"],
+                    classification,
+                    "original_image_clip",
+                    True,
+                    "covered_by_visual_region",
+                )
+            )
+            continue
         bbox = adjusted_render_bbox(block, classification, page_size)
         if classification in {"body", "heading", "title", "reference"}:
             bbox = refined_text_bbox_from_lines(block, bbox, bbox_lines or [], page_size)
@@ -4843,6 +5432,27 @@ def build_page_render_plan(
             continue
         if classification in {"page_number", "header_footer"}:
             plan.ledger.append(CoverageEntry(block["id"], classification, "skip_explicitly", True))
+            continue
+        if should_preserve_first_page_metadata_as_image(block):
+            metadata_bbox = clamped_expanded_bbox(block_bbox(block), page_size, pad_x=1.0, pad_y=1.0)
+            plan.items.append(
+                RenderItem(
+                    "original_image_clip",
+                    [block["id"]],
+                    metadata_bbox,
+                    fallback_reason="first_page_metadata_original",
+                )
+            )
+            plan.protected_boxes.append(metadata_bbox)
+            plan.ledger.append(
+                CoverageEntry(
+                    block["id"],
+                    classification,
+                    "original_image_clip",
+                    True,
+                    "first_page_metadata_original",
+                )
+            )
             continue
         if classification == "reference":
             if reference_line_items:
@@ -5041,7 +5651,7 @@ def build_page_render_plan(
         plan.protected_boxes.append(bbox)
         plan.ledger.append(CoverageEntry(block["id"], classification, "original_image_clip", True, "unknown"))
     merge_contained_text_fragments(plan)
-    split_translated_text_around_protected(plan)
+    split_translated_text_around_protected(plan, page_size)
     merge_contained_text_fragments(plan)
     repair_numbered_enumeration_flow(plan)
     merge_adjacent_body_text_flows(plan)
@@ -5051,6 +5661,8 @@ def build_page_render_plan(
     repair_numbered_enumeration_flow(plan)
     drop_redundant_short_body_fragments(plan, blocks, bbox_lines or [])
     rebalance_body_text_flows(plan, page_size)
+    convert_unfit_nonprose_text_to_image_clips(plan, blocks)
+    split_translated_text_around_protected(plan, page_size)
     return plan
 
 
@@ -5683,12 +6295,16 @@ def merge_adjacent_body_text_flows(plan: PageRenderPlan) -> None:
     remove_indices = set()
     for group in groups:
         ordered_items = [item for _idx, item in group]
+        candidate_bbox = bbox_union([item.bbox for item in ordered_items])
+        candidate = RenderItem("translated_text", [], candidate_bbox)
+        if any(item_significantly_overlaps_protected(candidate, protected_item) for protected_item in protected):
+            continue
         first_idx = group[0][0]
         source_ids = [source_id for item in ordered_items for source_id in item.source_ids]
         replacement_by_first[first_idx] = RenderItem(
             "translated_text",
             source_ids,
-            bbox_union([item.bbox for item in ordered_items]),
+            candidate_bbox,
             text="\n".join(item.text for item in ordered_items if item.text.strip()),
             font_size=DOCUMENT_STYLES["body"].font_size,
             style_name="body",
@@ -5720,6 +6336,14 @@ def text_item_fit_metrics(item: RenderItem, fitz) -> tuple[tuple[float, float] |
     width = max(1.0, item.bbox[2] - item.bbox[0])
     lines = wrap_mixed_pdf_text(fitz, item.text, width, font_size)
     fit = fitted_text_spacing(lines, font_size, item.bbox[3] - item.bbox[1], style)
+    if fit is None:
+        shrink_size = font_size - 0.5
+        while shrink_size >= SHRINK_FIT_MIN_FONT_SIZE:
+            shrink_lines = wrap_mixed_pdf_text(fitz, item.text, width, shrink_size)
+            fit = fitted_text_spacing(shrink_lines, shrink_size, item.bbox[3] - item.bbox[1], style)
+            if fit is not None:
+                break
+            shrink_size -= 0.5
     required = text_height_for_lines(
         lines,
         font_size,
@@ -5734,7 +6358,7 @@ def item_is_expandable_body_text(item: RenderItem) -> bool:
     return (
         item.kind in {"translated_text", "original_selectable_text"}
         and item.text.strip()
-        and render_text_style_name(item) == "body"
+        and render_text_style_name(item) in EXPANDABLE_TEXT_STYLE_NAMES
     )
 
 
@@ -5973,6 +6597,8 @@ def rebalance_body_text_flows(plan: PageRenderPlan, page_size, fitz=None) -> Non
                 start_y = top_limit
                 available_span = bottom_limit - start_y
                 heights, gap = body_group_heights_and_gap(items, available_span, fitz)
+            if sum(heights) + gap * max(0, len(items) - 1) > available_span + TEXT_FIT_EPSILON_PT:
+                continue
 
             y = start_y
             for item, height in zip(items, heights):
@@ -5981,11 +6607,157 @@ def rebalance_body_text_flows(plan: PageRenderPlan, page_size, fitz=None) -> Non
                 y += height + gap
 
 
+def block_is_dense_nonprose_image_fallback(block) -> bool:
+    text = normalize_text(block.get("text", ""))
+    if not text:
+        return False
+    width = block["xMax"] - block["xMin"]
+    height = block["yMax"] - block["yMin"]
+    if should_preserve_first_page_metadata_as_image(block):
+        return True
+    if starts_reference_item(text) or contains_reference_item(text):
+        return True
+    if should_preserve_as_image(block):
+        return True
+    citation_count = len(re.findall(r"\[\d{1,3}\]", text))
+    if citation_count >= 3 and (height <= 18.0 or width <= 280.0):
+        return True
+    if "@" in text and block.get("page") == 1 and block["yMin"] < 220.0 and len(text) <= 300:
+        return True
+    if re.search(r"\{answer_[a-z]\}|\[The (?:Start|End) of", text, flags=re.I):
+        return True
+    if re.search(r"(?im)^(Input Sentence and GPT-\d+ Output|Input:|Output:|Expected Output:)", text):
+        return True
+    if height <= 12.0 and len(text) <= 300:
+        return True
+    if width <= 120.0 and len(text) <= 500:
+        return True
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if len(lines) >= 8 and width <= 320.0:
+        return True
+    if len(lines) >= 4 and (is_formula_or_code_block(text) or is_code_row_text(text)):
+        return True
+    if len(lines) >= 4 and sum(1 for line in lines if len(line) <= 48) >= len(lines) * 0.70:
+        return True
+    if is_prose_row_text(text):
+        return False
+    return len(lines) >= 4 and width <= 170.0 and not re.search(r"[.!?][\"')\]）】”’]*\s+[A-Z]", text)
+
+
+def unfit_text_item_should_be_image(item: RenderItem, blocks_by_id: dict[str, dict], fitz) -> bool:
+    if item.kind not in {"translated_text", "original_selectable_text"} or not item.text.strip():
+        return False
+    style_name = render_text_style_name(item)
+    if style_name not in {"body", "reference", "heading", "subheading"}:
+        return False
+    fit, required, available = text_item_fit_metrics(item, fitz)
+    if fit is not None:
+        return False
+    if style_name == "reference":
+        return True
+    source_blocks = [blocks_by_id[source_id] for source_id in item.source_ids if source_id in blocks_by_id]
+    if not source_blocks:
+        return False
+    source_text = "\n".join(normalize_text(block.get("text", "")) for block in source_blocks)
+    if is_prose_row_text(source_text) and not any(block_is_dense_nonprose_image_fallback(block) for block in source_blocks):
+        source_lines = [line.strip() for line in source_text.split("\n") if line.strip()]
+        source_width = max((block["xMax"] - block["xMin"] for block in source_blocks), default=0.0)
+        if not (
+            len(source_lines) >= 10
+            or source_width <= 260.0
+            or available < 8.0
+            or required > max(available * 2.0, available + 120.0)
+        ):
+            return False
+    if available < 8.0 and len(source_text) >= 60:
+        return True
+    if required > max(available * 2.0, available + 120.0):
+        return True
+    if any(len([line for line in normalize_text(block.get("text", "")).split("\n") if line.strip()]) >= 8 for block in source_blocks):
+        return True
+    if is_prose_row_text(source_text) and not any(block_is_dense_nonprose_image_fallback(block) for block in source_blocks):
+        return False
+    return any(block_is_dense_nonprose_image_fallback(block) for block in source_blocks)
+
+
+def convert_unfit_nonprose_text_to_image_clips(plan: PageRenderPlan, blocks, fitz=None) -> None:
+    if fitz is None:
+        fitz = load_fitz()
+    blocks_by_id = {block["id"]: block for block in blocks}
+    new_items = []
+    for item in plan.items:
+        if not unfit_text_item_should_be_image(item, blocks_by_id, fitz):
+            new_items.append(item)
+            continue
+        new_items.append(
+            RenderItem(
+                "original_image_clip",
+                list(item.source_ids),
+                item.bbox,
+                fallback_reason="unfit_nonprose_image",
+            )
+        )
+        update_ledger_render_kind(plan, item.source_ids, "original_image_clip", "unfit_nonprose_image")
+    plan.items = new_items
+
+
 def usable_text_segment(segment) -> bool:
     return segment[2] - segment[0] >= 80.0 and segment[3] - segment[1] >= BODY_FONT_SIZE * 1.8
 
 
-def vertical_segments_around_protected(box, protected_boxes) -> list[tuple[float, float, float, float]]:
+def text_box_overlaps_protected(box, protected_boxes) -> bool:
+    probe = RenderItem("translated_text", [], box)
+    return any(item_significantly_overlaps_protected(probe, protected) for protected in protected_boxes)
+
+
+def clamp_preserving_box_size(box, page_size) -> tuple[float, float, float, float] | None:
+    page_width, page_height = page_size
+    x0, y0, x1, y1 = box
+    width = x1 - x0
+    height = y1 - y0
+    if width <= 0.0 or height <= 0.0 or width > page_width or height > page_height:
+        return None
+    x0 = min(max(0.0, x0), page_width - width)
+    y0 = min(max(0.0, y0), page_height - height)
+    return (x0, y0, x0 + width, y0 + height)
+
+
+def shifted_boxes_around_protected(box, protected_boxes, page_size) -> list[tuple[float, float, float, float]]:
+    width = box[2] - box[0]
+    height = box[3] - box[1]
+    candidates = []
+    for protected in protected_boxes:
+        if not text_box_overlaps_protected(box, [protected]):
+            continue
+        px0, py0, px1, py1 = protected.bbox
+        raw_candidates = [
+            (px0 - TEXT_PROTECTED_GAP_PT - width, box[1], px0 - TEXT_PROTECTED_GAP_PT, box[3]),
+            (px1 + TEXT_PROTECTED_GAP_PT, box[1], px1 + TEXT_PROTECTED_GAP_PT + width, box[3]),
+            (box[0], py0 - TEXT_PROTECTED_GAP_PT - height, box[2], py0 - TEXT_PROTECTED_GAP_PT),
+            (box[0], py1 + TEXT_PROTECTED_GAP_PT, box[2], py1 + TEXT_PROTECTED_GAP_PT + height),
+        ]
+        for candidate in raw_candidates:
+            clamped = clamp_preserving_box_size(candidate, page_size)
+            if clamped is not None:
+                candidates.append(clamped)
+    unique = []
+    seen = set()
+    for candidate in candidates:
+        key = tuple(round(value, 3) for value in candidate)
+        if key in seen or text_box_overlaps_protected(candidate, protected_boxes):
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return sorted(
+        unique,
+        key=lambda candidate: (
+            abs(candidate[0] - box[0]) + abs(candidate[1] - box[1]),
+            -bbox_area(candidate),
+        ),
+    )
+
+
+def text_segments_around_protected(box, protected_boxes) -> list[tuple[float, float, float, float]]:
     segments = [box]
     for protected in sorted(protected_boxes, key=lambda item: item.bbox[1]):
         next_segments = []
@@ -5996,14 +6768,28 @@ def vertical_segments_around_protected(box, protected_boxes) -> list[tuple[float
                 continue
             top = (segment[0], segment[1], segment[2], min(segment[3], protected.bbox[1] - TEXT_PROTECTED_GAP_PT))
             bottom = (segment[0], max(segment[1], protected.bbox[3] + TEXT_PROTECTED_GAP_PT), segment[2], segment[3])
+            left = (segment[0], segment[1], min(segment[2], protected.bbox[0] - TEXT_PROTECTED_GAP_PT), segment[3])
+            right = (max(segment[0], protected.bbox[2] + TEXT_PROTECTED_GAP_PT), segment[1], segment[2], segment[3])
             if usable_text_segment(top):
                 next_segments.append(top)
             if usable_text_segment(bottom):
                 next_segments.append(bottom)
+            if usable_text_segment(left):
+                next_segments.append(left)
+            if usable_text_segment(right):
+                next_segments.append(right)
         segments = next_segments
         if not segments:
             return [box]
-    return sorted(segments, key=lambda item: item[1])
+    unique = []
+    seen = set()
+    for segment in segments:
+        key = tuple(round(value, 3) for value in segment)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(segment)
+    return sorted(unique, key=lambda item: (item[1], item[0]))
 
 
 def split_text_units(text: str) -> list[str]:
@@ -6048,7 +6834,7 @@ def distribute_text_across_segments(text: str, segments, style: TextStyle | None
     return result
 
 
-def split_translated_text_around_protected(plan: PageRenderPlan) -> None:
+def split_translated_text_around_protected(plan: PageRenderPlan, page_size=None) -> None:
     protected = [item for item in plan.items if item.kind == "original_image_clip"]
     if not protected:
         return
@@ -6060,7 +6846,11 @@ def split_translated_text_around_protected(plan: PageRenderPlan) -> None:
         if not any(item_significantly_overlaps_protected(item, protected_item) for protected_item in protected):
             new_items.append(item)
             continue
-        segments = vertical_segments_around_protected(item.bbox, protected)
+        segments = []
+        if page_size is not None:
+            segments = shifted_boxes_around_protected(item.bbox, protected, page_size)
+        if not segments:
+            segments = text_segments_around_protected(item.bbox, protected)
         if len(segments) == 1 and segments[0] == item.bbox:
             new_items.append(item)
             continue
@@ -6116,7 +6906,7 @@ def render_plan_item(out_page, src_page, fitz, item: RenderItem, dpi: int, sourc
             letter_spacing=style.letter_spacing,
             min_line_height_factor=style.min_line_height_factor,
             min_paragraph_spacing=style.min_paragraph_spacing,
-            allow_shrink=False,
+            allow_shrink=True,
         ):
             return
         raise RuntimeError(f"text item {item.source_ids} did not fit during render")
@@ -6134,7 +6924,7 @@ def render_plan_item(out_page, src_page, fitz, item: RenderItem, dpi: int, sourc
             letter_spacing=style.letter_spacing,
             min_line_height_factor=style.min_line_height_factor,
             min_paragraph_spacing=style.min_paragraph_spacing,
-            allow_shrink=False,
+            allow_shrink=True,
         ):
             return
         raise RuntimeError(f"selectable text item {item.source_ids or item.fallback_reason} did not fit during render")

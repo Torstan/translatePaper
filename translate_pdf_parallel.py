@@ -77,6 +77,8 @@ def build_page_batches(selected_pages, max_chars: int) -> list[PageBatch]:
         current_chars = 0
         chunk_idx = 1
         for block in page_blocks:
+            if pipeline.should_preserve_first_page_metadata_as_image(block):
+                continue
             if classes.get(block["id"]) not in {"body", "heading", "title"}:
                 continue
             if pipeline.should_preserve_as_image(block):
