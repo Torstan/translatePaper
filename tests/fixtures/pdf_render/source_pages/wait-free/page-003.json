@@ -1,0 +1,117 @@
+{
+  "blocks": [
+    {
+      "block_index": 1,
+      "id": "p003b0001",
+      "page": 3,
+      "preserve_image": false,
+      "text": "Maurice Herlihy",
+      "xMax": 237.67091969931354,
+      "xMin": 176.6792098496568,
+      "yMax": 55.5579658148262,
+      "yMin": 45.16582670061776
+    },
+    {
+      "block_index": 2,
+      "id": "p003b0002",
+      "page": 3,
+      "preserve_image": false,
+      "text": "126",
+      "xMax": 141.26466969931354,
+      "xMin": 124.73787776918374,
+      "yMax": 54.75856819752897,
+      "yMin": 45.96522159876449
+    },
+    {
+      "block_index": 3,
+      "id": "p003b0003",
+      "page": 3,
+      "preserve_image": false,
+      "text": "Object",
+      "xMax": 339.1925949369945,
+      "xMin": 314.0089378951947,
+      "yMax": 82.73739779011588,
+      "yMin": 71.54586377776072
+    },
+    {
+      "block_index": 4,
+      "id": "p003b0004",
+      "page": 3,
+      "preserve_image": true,
+      "text": "Consensus\nNumber\nread/write registers\n1\ntest&set,swap,fetch&add,queue,stack\n2\n\u00b7...\n2n-2\nn-registerassignment\n\uff1a\n8\ncompare&swap\uff0cfetch&cons,stickybyte\nFig. 1.Impossibility and universality hierarchy.",
+      "xMax": 389.5599525315028,
+      "xMin": 181.79464596506492,
+      "yMax": 193.45363604942065,
+      "yMin": 72.34526139505793
+    },
+    {
+      "block_index": 5,
+      "id": "p003b0005",
+      "page": 3,
+      "preserve_image": false,
+      "text": "memory-to-memorymoveandswap,auginentedqueue,",
+      "xMax": 426.15497626575143,
+      "xMin": 227.83353837055668,
+      "yMax": 162.67690935799246,
+      "yMin": 151.4853862222393
+    },
+    {
+      "block_index": 6,
+      "id": "p003b0006",
+      "page": 3,
+      "preserve_image": false,
+      "text": "compare&swap,and fetch&add,and (3) such simple memory-to-memory opera-\ntions as move or memory-to-memory swap. These results suggest that further\nprogress in understanding wait-free synchronization requires turning our atten-\ntionfromtheconventionalreadandwriteoperationstomorefundamental\nOur results also illustrate inherent limitations of certain multiprocessor archi-\ntectures.The NYU ultracomputer project[1o]has investigated architectural\nsupportforwait-freeimplementationsofcommonsynchronizationprimitives.\nThey use combining networks to implement fetch&add,a generalization of\ntest&set. IBM's RP3 [8] project is investigating a similar approach. The fetch&add\noperation is quite flexible: it can be used for semaphores, for highly concurrent\nqueues, and even for database synchronization [11, 14, 30]. Nevertheless, we\nshow that it is not universal, disproving a conjecture of Gottlieb et al. [11]. We\nalso show that message-passing architectures such as hypercubes [28] are not\nThis paper is organized as follows. Section 2 defines a model of computation,\nSection 3 presents impossibility results, Section 4 describes some universal\nobjects, and Section 5 concludes with a summary.\nInformally,our model of computation consists of a collection of sequential threads\nof control called processes that communicate through shared data structures\ncalled objects. Each object has a type, which defines a set of possible states and a\nsetofprimitiveoperations thatprovidetheonlymeanstomanipulatethatobject.\nEach process applies a sequence of operations to objects, issuing an invocation\nand receiving the associated response. The basic correctness condition for con-\nmay overlap, each operation appears to take effect instantaneously at some point\nbetween its invocation and response. In particular, operations that do not overlap\ntake effect in their\u201creal-time\u201dorder.\nFormally, we model objects and processes using a simplified form of I/O automata\n[22].Because the wait-free condition does not require any fairness or liveness\nconditions, and because we consider only finite sets of processes and objects,we\nACM Transactions on Programming Languages and Systems.Vol 11, No.1. January 1991.",
+      "xMax": 483.6052136082377,
+      "xMin": 125.91837223081629,
+      "yMax": 636.7182389505793,
+      "yMin": 211.83970511104283
+    },
+    {
+      "block_index": 7,
+      "id": "p003b0007",
+      "page": 3,
+      "preserve_image": false,
+      "text": "primitives.",
+      "xMax": 175.1052244859648,
+      "xMin": 126.3118631328757,
+      "yMax": 270.59526139505795,
+      "yMin": 259.0040231357532
+    },
+    {
+      "block_index": 8,
+      "id": "p003b0008",
+      "page": 3,
+      "preserve_image": false,
+      "text": "universal either.",
+      "xMax": 199.50191060137297,
+      "xMin": 127.8858376188405,
+      "yMax": 387.70665883953654,
+      "yMin": 377.3145006912746
+    },
+    {
+      "block_index": 9,
+      "id": "p003b0009",
+      "page": 3,
+      "preserve_image": false,
+      "text": "2. THE MODEL",
+      "xMax": 201.86287776918374,
+      "xMin": 127.49234671678109,
+      "yMax": 444.06398964185394,
+      "yMin": 433.671875
+    },
+    {
+      "block_index": 10,
+      "id": "p003b0010",
+      "page": 3,
+      "preserve_image": false,
+      "text": "2.11/OAutomata",
+      "xMax": 206.1913212027459,
+      "xMin": 127.49234671678109,
+      "yMax": 583.9581484813905,
+      "yMin": 572.7666470988413
+    }
+  ],
+  "document": "wait-free-synchronization",
+  "page": 3,
+  "source": "work/jobs/wait-free-synchronization/source_pages.json"
+}

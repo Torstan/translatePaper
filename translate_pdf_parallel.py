@@ -18,7 +18,8 @@ SUMMARY_JSON = TMP_DIR / "parallel_translation_summary.json"
 SUMMARY_MD = TMP_DIR / "parallel_translation_summary.md"
 
 sys.path.insert(0, str(TOOL_ROOT))
-import backtranslate_check as qa  # noqa: E402
+import qa_semantic as qa  # noqa: E402
+import qa_visual  # noqa: E402
 import translate_pdf_via_codex as pipeline  # noqa: E402
 
 
@@ -68,18 +69,31 @@ def load_cached_translations(path: Path, valid_ids: set[str], *, retranslate: bo
     return {key: value for key, value in existing.items() if key in valid_ids}
 
 
-def build_page_batches(selected_pages, max_chars: int) -> list[PageBatch]:
+def build_page_batches(selected_pages, max_chars: int, *, page_size=None, job_paths=None) -> list[PageBatch]:
     batches = []
+    lines_by_page = pipeline.bbox_lines_by_page(job_paths)
     for page_num, page_blocks in selected_pages:
         visual_regions = pipeline.build_visual_regions(page_blocks)
         classes = pipeline.classify_blocks(page_blocks, visual_regions)
+        source_image = pipeline.source_page_image_path(job_paths, page_num) if job_paths else None
+        visual_covered_text_ids = pipeline.visual_translation_protected_ids(
+            page_blocks,
+            classes,
+            visual_regions,
+            page_size=page_size,
+            page_num=page_num,
+            source_image_path=source_image,
+            bbox_lines=lines_by_page.get(page_num),
+        )
         current = []
         current_chars = 0
         chunk_idx = 1
         for block in page_blocks:
             if pipeline.should_preserve_first_page_metadata_as_image(block):
                 continue
-            if classes.get(block["id"]) not in {"body", "heading", "title"}:
+            if classes.get(block["id"]) not in pipeline.NORMAL_TRANSLATED_CLASSES:
+                continue
+            if block["id"] in visual_covered_text_ids:
                 continue
             if pipeline.should_preserve_as_image(block):
                 continue
@@ -99,14 +113,106 @@ def build_page_batches(selected_pages, max_chars: int) -> list[PageBatch]:
     return batches
 
 
-def write_deterministic_quality_report(issues: list[str], job_dir: Path):
+def normalize_artifact_paths(paths) -> list[str]:
+    return sorted({str(path) for path in (paths or []) if path})
+
+
+def render_plan_artifact_paths(selected_pages, job_paths) -> list[str]:
+    paths = []
+    for page_num, _ in selected_pages:
+        artifact_path = pipeline.render_plan_artifact_path(job_paths, page_num)
+        if artifact_path is not None:
+            paths.append(artifact_path)
+    return normalize_artifact_paths(paths)
+
+
+def source_png_paths_for_pages(selected_pages, job_paths) -> dict[int, Path]:
+    paths = {}
+    for page_num, _ in selected_pages:
+        source_png = pipeline.source_page_image_path(job_paths, page_num)
+        if source_png is not None:
+            paths[int(page_num)] = source_png
+    return paths
+
+
+def source_blocks_by_page(selected_pages) -> dict[int, list[dict]]:
+    return {int(page_num): list(blocks) for page_num, blocks in selected_pages}
+
+
+def visual_qa_summary_from_report(report_json_path: Path) -> dict:
+    try:
+        payload = json.loads(Path(report_json_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "visual_checked_pages": [],
+            "visual_highest_severity": "unknown",
+            "visual_highest_severity_issues": [],
+        }
+    highest_severity = str(payload.get("highest_severity", "none") or "none")
+    issues = [
+        issue
+        for issue in payload.get("issues", [])
+        if str(issue.get("severity", "")) == highest_severity
+    ][:5]
+    return {
+        "visual_checked_pages": sorted({int(page_num) for page_num in payload.get("checked_pages", [])}),
+        "visual_highest_severity": highest_severity,
+        "visual_highest_severity_issues": issues,
+    }
+
+
+def run_visual_qa_for_job(
+    selected_pages,
+    job_paths,
+    page_size,
+    args,
+    output_pdf_path: Path,
+    plan_artifact_paths,
+) -> dict:
+    report = qa_visual.generate_visual_qa_report(
+        plan_artifact_paths,
+        output_dir=job_paths["job_dir"] / "visual_qa",
+        translated_pdf_path=output_pdf_path,
+        source_png_paths=source_png_paths_for_pages(selected_pages, job_paths),
+        source_blocks_by_page=source_blocks_by_page(selected_pages),
+        page_size=page_size,
+        strict_body_flow=bool(getattr(args, "strict_body_flow", False)),
+    )
+    return {
+        "visual_issue_count": report.issue_count,
+        "visual_error_count": report.error_count,
+        "visual_warning_count": report.warning_count,
+        "visual_report_json": str(report.json_path),
+        "visual_report_md": str(report.markdown_path),
+        **visual_qa_summary_from_report(report.json_path),
+    }
+
+
+def write_deterministic_quality_report(
+    issues: list[str],
+    job_dir: Path,
+    plan_artifact_paths=None,
+):
+    normalized_plan_artifact_paths = normalize_artifact_paths(plan_artifact_paths)
     (job_dir / "deterministic_quality_report.json").write_text(
-        json.dumps({"issue_count": len(issues), "issues": issues}, ensure_ascii=False, indent=2),
+        json.dumps(
+            {
+                "issue_count": len(issues),
+                "issues": issues,
+                "plan_artifact_paths": normalized_plan_artifact_paths,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
     lines = ["# Deterministic PDF Quality Report", "", f"- issue_count: {len(issues)}", ""]
     for issue in issues[:100]:
         lines.append(f"- {issue}")
+    if normalized_plan_artifact_paths:
+        lines.extend(["", "## Plan Artifacts", ""])
+        for artifact_path in normalized_plan_artifact_paths:
+            lines.append(f"- {artifact_path}")
     (job_dir / "deterministic_quality_report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -206,7 +312,14 @@ def run_parallel_translation(batches: list[PageBatch], translations: dict[str, s
     return translations
 
 
-def run_qa_for_job(selected_pages, translations: dict[str, str], job_paths, page_size, args) -> dict:
+def run_qa_for_job(
+    selected_pages,
+    translations: dict[str, str],
+    job_paths,
+    page_size,
+    args,
+    output_pdf_path: Path | None = None,
+) -> dict:
     pages = [page for _, page in selected_pages]
     original_map = {
         block["id"]: block["text"]
@@ -219,7 +332,12 @@ def run_qa_for_job(selected_pages, translations: dict[str, str], job_paths, page
         page_size,
         job_paths=job_paths,
     )
-    write_deterministic_quality_report(deterministic_issues, job_paths["job_dir"])
+    plan_artifact_paths = render_plan_artifact_paths(selected_pages, job_paths)
+    write_deterministic_quality_report(
+        deterministic_issues,
+        job_paths["job_dir"],
+        plan_artifact_paths=plan_artifact_paths,
+    )
     if deterministic_issues and args.strict_qa:
         raise RuntimeError(
             f"deterministic QA found {len(deterministic_issues)} issue(s); "
@@ -240,13 +358,30 @@ def run_qa_for_job(selected_pages, translations: dict[str, str], job_paths, page
     report_path = job_paths["job_dir"] / "backtranslate_report.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     qa.write_markdown(report, job_paths["job_dir"] / "backtranslate_report.md")
-    return {
+    result = {
         "deterministic_issue_count": len(deterministic_issues),
         "deterministic_issues": deterministic_issues[:10],
+        "plan_artifact_paths": plan_artifact_paths,
         "checked_blocks": len(report),
         "worst_score": report[0]["score"] if report else None,
         "worst_items": report[:5],
     }
+    if output_pdf_path is not None and getattr(args, "render_mode", "vector") == "vector":
+        visual_result = run_visual_qa_for_job(
+            selected_pages,
+            job_paths,
+            page_size,
+            args,
+            output_pdf_path,
+            plan_artifact_paths,
+        )
+        result.update(visual_result)
+        if getattr(args, "strict_qa", False) and visual_result["visual_error_count"] > 0:
+            raise RuntimeError(
+                f"visual QA found {visual_result['visual_error_count']} error(s); "
+                f"see {visual_result['visual_report_md']}"
+            )
+    return result
 
 
 def translate_one_pdf(pdf_path: Path, output_dir: Path, args) -> dict:
@@ -284,7 +419,7 @@ def translate_one_pdf(pdf_path: Path, output_dir: Path, args) -> dict:
     if not selected_pages:
         raise RuntimeError(f"no pages selected for {pdf_path}")
 
-    batches = build_page_batches(selected_pages, args.batch_chars)
+    batches = build_page_batches(selected_pages, args.batch_chars, page_size=pdf_size_pt, job_paths=job_paths)
     valid_ids = {item["id"] for batch in batches for item in batch.items}
     translations = load_cached_translations(
         job_paths["translations_path"],
@@ -329,6 +464,7 @@ def translate_one_pdf(pdf_path: Path, output_dir: Path, args) -> dict:
             job_paths,
             pdf_size_pt,
             args,
+            output_pdf_path=output_path,
         )
     return result
 
@@ -343,8 +479,27 @@ def select_pdfs(source_dir: Path, includes: list[str], max_documents: int) -> li
     return pdf_paths
 
 
+def normalize_summary_results(results: list[dict]) -> list[dict]:
+    normalized = []
+    for item in results:
+        normalized_item = dict(item)
+        qa_report = normalized_item.get("qa")
+        if isinstance(qa_report, dict):
+            qa_report = dict(qa_report)
+            if "plan_artifact_paths" in qa_report:
+                qa_report["plan_artifact_paths"] = normalize_artifact_paths(qa_report["plan_artifact_paths"])
+            if "visual_checked_pages" in qa_report:
+                qa_report["visual_checked_pages"] = sorted(
+                    {int(page_num) for page_num in qa_report["visual_checked_pages"]}
+                )
+            normalized_item["qa"] = qa_report
+        normalized.append(normalized_item)
+    return normalized
+
+
 def write_summary(results: list[dict]):
     TMP_DIR.mkdir(parents=True, exist_ok=True)
+    results = normalize_summary_results(results)
     SUMMARY_JSON.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     lines = ["# Parallel PDF Translation Summary", ""]
     for item in results:
@@ -359,6 +514,30 @@ def write_summary(results: list[dict]):
             lines.append(f"- deterministic_issue_count: {item['qa'].get('deterministic_issue_count', 0)}")
             for issue in item["qa"].get("deterministic_issues", [])[:5]:
                 lines.append(f"- deterministic_issue: {issue}")
+            for artifact_path in item["qa"].get("plan_artifact_paths", []):
+                lines.append(f"- plan_artifact: {artifact_path}")
+            if "visual_issue_count" in item["qa"]:
+                lines.append(f"- visual_issue_count: {item['qa']['visual_issue_count']}")
+                lines.append(f"- visual_error_count: {item['qa'].get('visual_error_count', 0)}")
+                lines.append(f"- visual_warning_count: {item['qa'].get('visual_warning_count', 0)}")
+                lines.append(f"- visual_report_json: {item['qa'].get('visual_report_json', '')}")
+                lines.append(f"- visual_report_md: {item['qa'].get('visual_report_md', '')}")
+                checked_pages = item["qa"].get("visual_checked_pages", [])
+                if checked_pages:
+                    lines.append(
+                        "- visual_checked_pages: "
+                        + ", ".join(str(page_num) for page_num in checked_pages)
+                    )
+                if "visual_highest_severity" in item["qa"]:
+                    lines.append(f"- visual_highest_severity: {item['qa']['visual_highest_severity']}")
+                for issue in item["qa"].get("visual_highest_severity_issues", [])[:5]:
+                    source_ids = ", ".join(issue.get("source_ids", []))
+                    suffix = f" source_ids={source_ids}" if source_ids else ""
+                    lines.append(
+                        f"- visual_issue: page {int(issue.get('page_num', 0)):03d}"
+                        f" [{issue.get('severity', '')}] {issue.get('category', '')}:"
+                        f" {issue.get('message', '')}{suffix}"
+                    )
             lines.append(f"- checked_blocks: {item['qa']['checked_blocks']}")
             lines.append(f"- worst_score: {item['qa']['worst_score']}")
             for worst in item["qa"]["worst_items"]:

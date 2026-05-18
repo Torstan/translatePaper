@@ -1,0 +1,83 @@
+{
+  "assertions": [
+    {
+      "category": "running_headers",
+      "expect": "ledger_entry",
+      "source_id": "p025b0002",
+      "classification": "body",
+      "render_kind": "translated_text",
+      "fallback_reason": "",
+      "summary": "Conclusion body block remains translated selectable text."
+    },
+    {
+      "category": "running_headers",
+      "expect": "translated_text",
+      "source_id": "p025b0002",
+      "text_contains": "无论是在时间",
+      "summary": "Conclusion body translation is present before checking stripped running header text."
+    },
+    {
+      "category": "running_headers",
+      "expect": "translated_text_excludes",
+      "source_id": "p025b0002",
+      "text_excludes": [
+        "Maurice Herlihy",
+        "MauriceHerlihy"
+      ],
+      "summary": "Embedded running author header is stripped from translated body text."
+    },
+    {
+      "category": "references",
+      "expect": "ledger_entry",
+      "source_id": "p025b0005",
+      "classification": "reference",
+      "render_kind": "original_selectable_text",
+      "fallback_reason": "reference_original",
+      "summary": "References heading is kept as original selectable reference text, not translated."
+    },
+    {
+      "category": "references",
+      "expect": "ledger_entry",
+      "source_id": "p025b0006",
+      "classification": "reference",
+      "render_kind": "original_selectable_text",
+      "fallback_reason": "reference_original",
+      "summary": "Reference section source block is covered by original selectable reference text."
+    },
+    {
+      "category": "references",
+      "expect": "reference_original_text",
+      "text_contains": [
+        "REFERENCES",
+        "1. ANDERSON",
+        "15. KRUSKAL"
+      ],
+      "summary": "Reference entries are preserved in original English selectable text."
+    },
+    {
+      "category": "references",
+      "expect": "ledger_entries",
+      "source_ids": [
+        "p025b0007",
+        "p025b0008",
+        "p025b0009",
+        "p025b0010",
+        "p025b0011",
+        "p025b0012",
+        "p025b0013",
+        "p025b0014",
+        "p025b0015"
+      ],
+      "classification": "reference",
+      "render_kind": "original_selectable_text",
+      "fallback_reason": "reference_original",
+      "summary": "OCR side fragments in references remain reference content instead of translated body prose."
+    }
+  ],
+  "categories": [
+    "references",
+    "running_headers"
+  ],
+  "document": "wait-free-synchronization",
+  "page": 25
+}

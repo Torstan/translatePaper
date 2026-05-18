@@ -1,0 +1,21 @@
+{
+  "assertions": [
+    {
+      "category": "formulas",
+      "expect": "no_text_protected_overlap",
+      "source_ids": [
+        "p015b0006",
+        "p015b0007"
+      ],
+      "summary": "Assertion intro prose does not overlap the formula clip below it."
+    },
+    {
+      "category": "formulas",
+      "expect": "no_blank_clip",
+      "source_id": "p015b0011",
+      "summary": "Termination assertion formula clip contains visible source content."
+    }
+  ],
+  "document": "wait-free-synchronization",
+  "page": 15
+}

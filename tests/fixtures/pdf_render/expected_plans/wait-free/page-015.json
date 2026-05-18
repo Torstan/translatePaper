@@ -1,0 +1,35 @@
+{
+  "assertions": [
+    {
+      "category": "formulas",
+      "expect": "original_image_clip",
+      "source_ids": [
+        "p015b0004",
+        "p015b0007",
+        "p015b0011"
+      ],
+      "summary": "Figure caption and assertion formulas remain protected image clips."
+    },
+    {
+      "category": "formulas",
+      "expect": "translated_text",
+      "source_id": "p015b0006",
+      "text_contains": "\u4e3a\u8bc1\u660e\u4e00\u81f4\u6027",
+      "summary": "Formula clipping does not swallow the assertion intro prose."
+    },
+    {
+      "category": "headings",
+      "expect": "translated_text_style",
+      "source_id": "p015b0005",
+      "style_name": "subheading",
+      "text_contains": "3.5 \u5185\u5b58\u5230\u5185\u5b58\u64cd\u4f5c",
+      "summary": "Embedded subsection heading is separated from following body prose."
+    }
+  ],
+  "categories": [
+    "formulas",
+    "headings"
+  ],
+  "document": "wait-free-synchronization",
+  "page": 15
+}

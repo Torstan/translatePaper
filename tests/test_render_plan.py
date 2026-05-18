@@ -1,8 +1,11 @@
 import unittest
 import tempfile
+import json
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image, ImageDraw
+import classify
 import translate_pdf_via_codex as pdf
 
 
@@ -23,6 +26,56 @@ def block(block_id, page, text, x0=100, y0=100, x1=400, y1=120, preserve_image=F
 
 
 class RenderPlanClassificationTests(unittest.TestCase):
+    def test_classify_module_direct_api_matches_pipeline_classification(self):
+        blocks = [
+            block("p101b0001", 101, "2. THE MODEL", x0=90, y0=70, x1=240, y1=88),
+            block(
+                "p101b0002",
+                101,
+                "The automaton receives input events and produces output events.",
+                x0=90,
+                y0=100,
+                x1=480,
+                y1=135,
+            ),
+            block("p101b0003", 101, "101", x0=300, y0=760, x1=316, y1=772),
+            block("p101b0004", 101, "REFERENCES", x0=90, y0=620, x1=180, y1=636),
+            block("p101b0005", 101, "1. LAMPORT, L. Time, clocks.", x0=90, y0=642, x1=420, y1=660),
+        ]
+        visual_regions = [{"source_ids": ["p101b0005"]}]
+
+        self.assertEqual(
+            classify.classify_blocks(blocks, visual_regions),
+            {
+                "p101b0001": "heading",
+                "p101b0002": "body",
+                "p101b0003": "page_number",
+                "p101b0004": "reference",
+                "p101b0005": "reference",
+            },
+        )
+        self.assertEqual(
+            classify.classify_blocks(blocks, visual_regions),
+            pdf.classify_blocks(blocks, visual_regions),
+        )
+
+    def test_classify_module_translation_eligibility_matches_pipeline(self):
+        samples = [
+            "This paper presents a wait-free implementation for concurrent objects.",
+            "https://example.com/research.pdf",
+            "NVIDIA Blackwell Dual-Die GPU",
+            "x := y + z",
+        ]
+
+        self.assertEqual(
+            [classify.source_requires_chinese_translation(text) for text in samples],
+            [True, False, False, False],
+        )
+        self.assertEqual(
+            [classify.source_requires_chinese_translation(text) for text in samples],
+            [pdf.source_requires_chinese_translation(text) for text in samples],
+        )
+
     def test_large_unfilled_drawing_rect_is_not_preserved_as_border(self):
         class Rect:
             width = 120.0
@@ -67,6 +120,357 @@ class RenderPlanClassificationTests(unittest.TestCase):
 
         self.assertEqual(classes["p006b0001"], "page_number")
         self.assertNotEqual(classes["p006b0002"], "page_number")
+
+    def test_build_batches_includes_subheading_class(self):
+        blocks = [
+            block("p001b0001", 1, "3.3 Queues, stacks, and lists", x0=72, y0=100, x1=260, y1=116)
+        ]
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=[]),
+            patch.object(pdf, "classify_blocks", return_value={"p001b0001": "subheading"}),
+        ):
+            batches = pdf.build_batches([blocks], max_chars=7000)
+
+        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0001"]])
+
+    def test_build_batches_excludes_text_covered_by_visual_region(self):
+        blocks = [
+            block("p001b0001", 1, "Figure 1: architecture", x0=80, y0=100, x1=260, y1=180),
+            block("p001b0002", 1, "short caption fragment", x0=100, y0=130, x1=180, y1=145),
+            block("p001b0003", 1, "This body paragraph should still be translated.", x0=80, y0=220, x1=360, y1=245),
+        ]
+        visual_regions = [
+            {
+                "source_ids": ["p001b0001"],
+                "bbox": (78.0, 98.0, 262.0, 182.0),
+            }
+        ]
+        classes = {
+            "p001b0001": "figure_region",
+            "p001b0002": "body",
+            "p001b0003": "body",
+        }
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=visual_regions),
+            patch.object(pdf, "classify_blocks", return_value=classes),
+        ):
+            batches = pdf.build_batches([blocks], max_chars=7000)
+
+        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0003"]])
+
+    def test_build_batches_excludes_text_covered_by_final_visual_clip_padding(self):
+        blocks = [
+            block("p001b0001", 1, "Figure 1", x0=100, y0=100, x1=140, y1=140),
+            block("p001b0002", 1, "short protected-side label", x0=145, y0=110, x1=150, y1=120),
+            block(
+                "p001b0003",
+                1,
+                "This body paragraph should still be translated.",
+                x0=180,
+                y0=150,
+                x1=360,
+                y1=170,
+            ),
+        ]
+        visual_regions = [{"source_ids": ["p001b0001"], "bbox": (100.0, 100.0, 140.0, 140.0)}]
+        classes = {
+            "p001b0001": "figure_region",
+            "p001b0002": "body",
+            "p001b0003": "body",
+        }
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=visual_regions),
+            patch.object(pdf, "classify_blocks", return_value=classes),
+        ):
+            batches = pdf.build_batches([blocks], max_chars=7000, page_size=(400, 400))
+
+        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0003"]])
+
+    def test_visual_translation_protected_ids_uses_final_visual_clip_padding(self):
+        blocks = [
+            block("p001b0001", 1, "Figure 1", x0=100, y0=100, x1=140, y1=140),
+            block("p001b0002", 1, "short protected-side label", x0=145, y0=110, x1=150, y1=120),
+        ]
+        visual_regions = [{"source_ids": ["p001b0001"], "bbox": (100.0, 100.0, 140.0, 140.0)}]
+        classes = {"p001b0001": "figure_region", "p001b0002": "body"}
+        raw_covered = pdf.nontranslated_blocks_covered_by_visual_region(
+            blocks,
+            classes,
+            visual_regions[0]["bbox"],
+            {"p001b0001"},
+        )
+
+        protected = pdf.visual_translation_protected_ids(
+            blocks,
+            classes,
+            visual_regions,
+            page_size=(400, 400),
+            page_num=1,
+        )
+
+        self.assertEqual(raw_covered, set())
+        self.assertEqual(protected, {"p001b0002"})
+
+    def test_visual_translation_protected_ids_matches_formula_only_final_clip(self):
+        blocks = [
+            block("p001b0001", 1, "x + y = z", x0=100, y0=100, x1=160, y1=140),
+            block("p001b0002", 1, "short protected formula-side text", x0=105, y0=140.25, x1=150, y1=140.45),
+        ]
+        visual_regions = [{"source_ids": ["p001b0001"], "bbox": (100.0, 100.0, 160.0, 140.0)}]
+        classes = {"p001b0001": "formula_region", "p001b0002": "body"}
+
+        protected = pdf.visual_translation_protected_ids(
+            blocks,
+            classes,
+            visual_regions,
+            page_size=(400, 400),
+            page_num=1,
+        )
+
+        self.assertEqual(protected, {"p001b0002"})
+
+    def test_visual_translation_protected_ids_uses_formula_bbox_lines_final_clip(self):
+        blocks = [
+            block("p001b0001", 1, "x + y = z", x0=100, y0=100, x1=160, y1=140),
+            block("p001b0002", 1, "short text covered only by line-refined formula clip", x0=105, y0=140.25, x1=150, y1=140.45),
+        ]
+        visual_regions = [{"source_ids": ["p001b0001"], "bbox": (100.0, 100.0, 160.0, 140.0)}]
+        classes = {"p001b0001": "formula_region", "p001b0002": "body"}
+        bbox_lines = [
+            {
+                "page": 1,
+                "text": "x + y = z",
+                "bbox": (100.0, 100.0, 160.0, 141.0),
+            }
+        ]
+
+        plan = pdf.build_page_render_plan(
+            1,
+            blocks,
+            {},
+            page_size=(400, 400),
+            bbox_lines=bbox_lines,
+        )
+        final_clip = next(item for item in plan.items if item.kind == "original_image_clip")
+        covered_by_final_clip = pdf.nontranslated_blocks_covered_by_visual_region(
+            blocks,
+            classes,
+            final_clip.bbox,
+            {"p001b0001"},
+        )
+        protected = pdf.visual_translation_protected_ids(
+            blocks,
+            classes,
+            visual_regions,
+            page_size=(400, 400),
+            page_num=1,
+            bbox_lines=bbox_lines,
+        )
+
+        self.assertEqual(covered_by_final_clip, {"p001b0002"})
+        self.assertEqual(protected, covered_by_final_clip)
+
+    def test_build_batches_uses_bbox_lines_for_formula_final_clip_exclusion(self):
+        blocks = [
+            block("p001b0001", 1, "x + y = z", x0=100, y0=100, x1=160, y1=140),
+            block("p001b0002", 1, "short text covered only by line-refined formula clip", x0=105, y0=140.25, x1=150, y1=140.45),
+            block("p001b0003", 1, "This body paragraph should still be translated.", x0=105, y0=180, x1=320, y1=198),
+        ]
+        visual_regions = [{"source_ids": ["p001b0001"], "bbox": (100.0, 100.0, 160.0, 140.0)}]
+        classes = {"p001b0001": "formula_region", "p001b0002": "body", "p001b0003": "body"}
+        bbox_html = """
+        <html><body><page>
+          <block><line xMin="100" yMin="100" xMax="160" yMax="141"><word>x</word><word>+</word><word>y</word><word>=</word><word>z</word></line></block>
+        </page></body></html>
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bbox_path = Path(tmp) / "source_bbox.html"
+            bbox_path.write_text(bbox_html, encoding="utf-8")
+            with (
+                patch.object(pdf, "build_visual_regions", return_value=visual_regions),
+                patch.object(pdf, "classify_blocks", return_value=classes),
+            ):
+                batches = pdf.build_batches(
+                    [blocks],
+                    max_chars=7000,
+                    page_size=(400, 400),
+                    job_paths={"bbox_path": bbox_path},
+                )
+
+        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0003"]])
+
+    def assert_heading_pair_original_fallback(self, translations, reason):
+        blocks = [
+            block("p001b0001", 1, "3.", x0=80, y0=100, x1=96, y1=116),
+            block("p001b0002", 1, "System Architecture", x0=112, y0=100, x1=260, y1=116),
+        ]
+
+        plan = pdf.build_page_render_plan(
+            1,
+            blocks,
+            translations,
+            page_size=(400, 400),
+            bbox_lines=None,
+        )
+        entries = {entry.block_id: entry for entry in plan.ledger}
+        fallback_items = [
+            item
+            for item in plan.items
+            if item.kind == "original_selectable_text" and item.fallback_reason == reason
+        ]
+        pair_translations = [
+            item
+            for item in plan.items
+            if item.kind == "translated_text" and item.fallback_reason == "standalone_heading_pair"
+        ]
+
+        self.assertEqual(entries["p001b0001"].render_kind, "original_selectable_text")
+        self.assertEqual(entries["p001b0001"].fallback_reason, reason)
+        self.assertEqual(entries["p001b0002"].render_kind, "original_selectable_text")
+        self.assertEqual(entries["p001b0002"].fallback_reason, reason)
+        self.assertFalse(pair_translations)
+        self.assertEqual({source_id for item in fallback_items for source_id in item.source_ids}, {"p001b0001", "p001b0002"})
+
+    def test_missing_heading_pair_translation_uses_original_selectable_fallback(self):
+        self.assert_heading_pair_original_fallback({}, "missing_translation")
+
+    def test_empty_heading_pair_translation_uses_original_selectable_fallback(self):
+        self.assert_heading_pair_original_fallback({"p001b0002": ""}, "untranslated_fallback_original")
+
+    def test_untranslated_heading_pair_translation_uses_original_selectable_fallback(self):
+        self.assert_heading_pair_original_fallback(
+            {"p001b0002": "System Architecture"},
+            "untranslated_fallback_original",
+        )
+
+    def assert_subheading_render_plan_item(self, translations, expected_kind, expected_reason, expected_text, expected_style):
+        blocks = [
+            block("p001b0001", 1, "3.3 Queues, stacks, and lists", x0=72, y0=100, x1=260, y1=116)
+        ]
+
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=[]),
+            patch.object(pdf, "classify_blocks", return_value={"p001b0001": "subheading"}),
+        ):
+            plan = pdf.build_page_render_plan(
+                1,
+                blocks,
+                translations,
+                page_size=(400, 400),
+                bbox_lines=None,
+            )
+        item = next(item for item in plan.items if "p001b0001" in item.source_ids)
+        entry = next(entry for entry in plan.ledger if entry.block_id == "p001b0001")
+
+        self.assertEqual(item.kind, expected_kind)
+        self.assertEqual(item.fallback_reason, expected_reason)
+        self.assertEqual(item.text, expected_text)
+        self.assertEqual(item.style_name, expected_style)
+        self.assertEqual(item.font_size, pdf.DOCUMENT_STYLES[expected_style].font_size)
+        self.assertEqual(entry.render_kind, expected_kind)
+        self.assertEqual(entry.fallback_reason, expected_reason)
+
+    def test_subheading_translation_renders_as_subheading_text(self):
+        self.assert_subheading_render_plan_item(
+            {"p001b0001": "3.3 队列、栈和列表"},
+            "translated_text",
+            "",
+            "3.3 队列、栈和列表",
+            "subheading",
+        )
+
+    def test_missing_subheading_translation_uses_original_selectable_fallback(self):
+        self.assert_subheading_render_plan_item(
+            {},
+            "original_selectable_text",
+            "missing_translation",
+            "3.3 Queues, stacks, and lists",
+            "subheading",
+        )
+
+    def test_empty_subheading_translation_uses_original_selectable_fallback(self):
+        self.assert_subheading_render_plan_item(
+            {"p001b0001": ""},
+            "original_selectable_text",
+            "untranslated_fallback_original",
+            "3.3 Queues, stacks, and lists",
+            "subheading",
+        )
+
+    def test_untranslated_subheading_translation_uses_original_selectable_fallback(self):
+        self.assert_subheading_render_plan_item(
+            {"p001b0001": "3.3 Queues, stacks, and lists"},
+            "original_selectable_text",
+            "untranslated_fallback_original",
+            "3.3 Queues, stacks, and lists",
+            "subheading",
+        )
+
+    def test_build_batches_excludes_translation_ineligible_classes(self):
+        class_by_id = {
+            "p001b0001": "title",
+            "p001b0002": "heading",
+            "p001b0003": "subheading",
+            "p001b0004": "body",
+            "p001b0005": "reference",
+            "p001b0006": "figure_region",
+            "p001b0007": "formula_region",
+            "p001b0008": "table_region",
+            "p001b0009": "code_region",
+            "p001b0010": "page_number",
+            "p001b0011": "header_footer",
+            "p001b0012": "journal_footer",
+            "p001b0013": "unknown",
+        }
+        blocks = [
+            block(
+                block_id,
+                1,
+                f"Source text for {classification}",
+                x0=80,
+                y0=80 + idx * 20,
+                x1=360,
+                y1=94 + idx * 20,
+            )
+            for idx, (block_id, classification) in enumerate(class_by_id.items())
+        ]
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=[]),
+            patch.object(pdf, "classify_blocks", return_value=class_by_id),
+        ):
+            batches = pdf.build_batches([blocks], max_chars=7000)
+
+        sent_ids = [item["id"] for batch in batches for item in batch]
+        self.assertEqual(sent_ids, ["p001b0001", "p001b0002", "p001b0003", "p001b0004"])
+
+    def test_unknown_nontrivial_block_is_preserved_and_reported_as_image_clip(self):
+        blocks = [
+            block(
+                "p001b0001",
+                1,
+                "Unclassified dense source content with symbols ++ === and prose.",
+                x0=80,
+                y0=120,
+                x1=360,
+                y1=170,
+            )
+        ]
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=[]),
+            patch.object(pdf, "classify_blocks", return_value={"p001b0001": "unknown"}),
+        ):
+            plan = pdf.build_page_render_plan(1, blocks, {}, page_size=(400, 400), bbox_lines=None)
+
+        item = next(item for item in plan.items if "p001b0001" in item.source_ids)
+        entry = next(entry for entry in plan.ledger if entry.block_id == "p001b0001")
+
+        self.assertEqual(item.kind, "original_image_clip")
+        self.assertEqual(item.fallback_reason, "unknown_classification")
+        self.assertEqual(entry.classification, "unknown")
+        self.assertEqual(entry.render_kind, item.kind)
+        self.assertEqual(entry.fallback_reason, "unknown_classification")
+        self.assertEqual(pdf.validate_plan_coverage(1, blocks, plan), [])
 
     def test_visual_caption_region_becomes_single_image_clip(self):
         blocks = [
@@ -190,6 +594,34 @@ class RenderPlanClassificationTests(unittest.TestCase):
         image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
 
         self.assertIn("p313b0012", image_ids)
+
+    def test_narrow_indented_body_after_table_remains_translated(self):
+        blocks = [
+            block("p315b0001", 315, "Table 6-5. CUDA occupancy examples", x0=77, y0=80, x1=414, y1=97),
+            block("p315b0002", 315, "Resource", x0=84, y0=132, x1=148, y1=149),
+            block(
+                "p315b0003",
+                315,
+                "This paragraph is indented but it explains the table in normal prose.",
+                x0=136,
+                y0=410,
+                x1=356,
+                y1=455,
+            ),
+        ]
+
+        plan = pdf.build_page_render_plan(
+            315,
+            blocks,
+            {"p315b0003": "这段正文带有缩进，但它是普通说明文字。"},
+            page_size=(612, 792),
+            bbox_lines=None,
+        )
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+        translated_ids = {source_id for item in plan.items if item.kind == "translated_text" for source_id in item.source_ids}
+
+        self.assertNotIn("p315b0003", image_ids)
+        self.assertIn("p315b0003", translated_ids)
 
     def test_following_section_heading_after_table_remains_translated(self):
         blocks = [
@@ -920,6 +1352,142 @@ class CrossPageSentencePostprocessTests(unittest.TestCase):
 
 
 class GlobalStyleTests(unittest.TestCase):
+    def test_style_policy_rejects_non_monotonic_global_hierarchy(self):
+        plan = pdf.PageRenderPlan(page_num=1)
+        with patch.dict(
+            pdf.DOCUMENT_STYLES,
+            {
+                "heading": pdf.TextStyle(
+                    font_size=8.0,
+                    line_height_factor=pdf.DOCUMENT_STYLES["heading"].line_height_factor,
+                    paragraph_spacing=pdf.DOCUMENT_STYLES["heading"].paragraph_spacing,
+                )
+            },
+        ):
+            errors = pdf.validate_plan_style_policy(plan)
+
+        self.assertTrue(any("style hierarchy" in error for error in errors), errors)
+
+    def test_style_policy_uses_ledger_classification_for_expected_style(self):
+        plan = pdf.PageRenderPlan(page_num=1)
+        plan.items.append(
+            pdf.RenderItem(
+                "translated_text",
+                ["p001b0001"],
+                (72.0, 96.0, 420.0, 116.0),
+                text="1. 引言",
+                font_size=pdf.DOCUMENT_STYLES["body"].font_size,
+                style_name="body",
+            )
+        )
+        plan.ledger.append(pdf.CoverageEntry("p001b0001", "heading", "translated_text", True, ""))
+
+        errors = pdf.validate_plan_style_policy(plan)
+
+        self.assertTrue(any("expected heading/subheading" in error for error in errors), errors)
+
+    def test_style_policy_allows_heading_classification_with_subheading_style(self):
+        plan = pdf.PageRenderPlan(page_num=1)
+        plan.items.append(
+            pdf.RenderItem(
+                "translated_text",
+                ["p001b0001"],
+                (72.0, 96.0, 420.0, 116.0),
+                text="6.1 实现",
+                font_size=pdf.DOCUMENT_STYLES["subheading"].font_size,
+                style_name="subheading",
+            )
+        )
+        plan.ledger.append(pdf.CoverageEntry("p001b0001", "heading", "translated_text", True, ""))
+
+        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
+
+    def test_style_policy_checks_each_ledger_classified_text_role(self):
+        cases = [
+            ("title", "heading"),
+            ("heading", "body"),
+            ("subheading", "body"),
+            ("body", "heading"),
+            ("reference", "body"),
+            ("footer", "body"),
+        ]
+        for classification, wrong_style in cases:
+            with self.subTest(classification=classification):
+                plan = pdf.PageRenderPlan(page_num=1)
+                plan.items.append(
+                    pdf.RenderItem(
+                        "translated_text",
+                        [f"{classification}-block"],
+                        (72.0, 96.0, 420.0, 116.0),
+                        text="文本",
+                        font_size=pdf.DOCUMENT_STYLES[wrong_style].font_size,
+                        style_name=wrong_style,
+                    )
+                )
+                plan.ledger.append(
+                    pdf.CoverageEntry(f"{classification}-block", classification, "translated_text", True, "")
+                )
+
+                errors = pdf.validate_plan_style_policy(plan)
+
+                self.assertTrue(any(f"expected {classification}" in error for error in errors), errors)
+
+    def test_style_policy_rejects_generic_fallback_style_mismatch(self):
+        plan = pdf.PageRenderPlan(page_num=1)
+        plan.items.append(
+            pdf.RenderItem(
+                "original_selectable_text",
+                ["p001b0001"],
+                (72.0, 96.0, 420.0, 116.0),
+                text="1. INTRODUCTION",
+                font_size=pdf.DOCUMENT_STYLES["body"].font_size,
+                style_name="body",
+                fallback_reason="untranslated_fallback_original",
+            )
+        )
+        plan.ledger.append(
+            pdf.CoverageEntry("p001b0001", "heading", "original_selectable_text", True, "untranslated_fallback_original")
+        )
+
+        errors = pdf.validate_plan_style_policy(plan)
+
+        self.assertTrue(any("expected heading/subheading" in error for error in errors), errors)
+
+    def test_style_policy_allows_explicit_role_split_exception(self):
+        plan = pdf.PageRenderPlan(page_num=1)
+        plan.items.append(
+            pdf.RenderItem(
+                "translated_text",
+                ["p001b0001"],
+                (72.0, 96.0, 420.0, 116.0),
+                text="2.2 子章节",
+                font_size=pdf.DOCUMENT_STYLES["subheading"].font_size,
+                style_name="subheading",
+                fallback_reason="embedded_heading",
+            )
+        )
+        plan.ledger.append(pdf.CoverageEntry("p001b0001", "body", "translated_text", True, "embedded_heading_split"))
+
+        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
+
+    def test_style_policy_checks_page_number_style_when_rendered_as_text(self):
+        plan = pdf.PageRenderPlan(page_num=1)
+        plan.items.append(
+            pdf.RenderItem(
+                "original_selectable_text",
+                ["p001b0001"],
+                (300.0, 760.0, 318.0, 772.0),
+                text="1",
+                font_size=pdf.DOCUMENT_STYLES["body"].font_size,
+                style_name="body",
+            )
+        )
+        plan.ledger.append(pdf.CoverageEntry("p001b0001", "page_number", "original_selectable_text", True, ""))
+
+        errors = pdf.validate_plan_style_policy(plan)
+
+        self.assertTrue(any("expected footer" in error for error in errors), errors)
+
     def test_translated_items_use_global_document_styles(self):
         blocks = [
             block("p001b0001", 1, "Wait-Free Synchronization", y0=60, y1=78),
@@ -1132,6 +1700,17 @@ class CoverageValidationTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
+    def test_validate_coverage_rejects_unknown_skip(self):
+        blocks = [
+            block("p002b0001", 2, "Unclassified but meaningful source content.", y0=100, y1=120),
+        ]
+        plan = pdf.PageRenderPlan(page_num=2)
+        plan.ledger.append(pdf.CoverageEntry("p002b0001", "unknown", "skip_explicitly", True))
+
+        errors = pdf.validate_plan_coverage(2, blocks, plan)
+
+        self.assertTrue(any("illegal skip class unknown" in error for error in errors), errors)
+
 
 class BBoxLineParserTests(unittest.TestCase):
     def test_parse_bbox_lines_extracts_words_and_coordinates(self):
@@ -1271,6 +1850,435 @@ class QualityValidationTests(unittest.TestCase):
         errors = pdf.validate_plan_quality(17, [], {}, plan)
 
         self.assertTrue(any("body flow has uneven vertical spacing" in error for error in errors))
+
+    def test_quality_still_flags_unbalanced_flow_when_no_protected_region_blocks_rebalance(self):
+        plan = pdf.PageRenderPlan(page_num=17)
+        plan.items.append(
+            pdf.RenderItem(
+                "translated_text",
+                ["p017b0002"],
+                (135, 150, 495, 210),
+                text="第一段证明正文。",
+                font_size=pdf.BODY_FONT_SIZE,
+                style_name="body",
+            )
+        )
+        plan.items.append(
+            pdf.RenderItem(
+                "translated_text",
+                ["p017b0003"],
+                (135, 430, 495, 490),
+                text="第二段证明正文。",
+                font_size=pdf.BODY_FONT_SIZE,
+                style_name="body",
+            )
+        )
+        plan.items.append(
+            pdf.RenderItem(
+                "original_selectable_text",
+                ["p017b0004"],
+                (150, 170, 320, 190),
+                text="anchor",
+                font_size=pdf.BODY_FONT_SIZE,
+                style_name="reference",
+            )
+        )
+
+        errors = pdf.validate_plan_vertical_balance(plan)
+
+        self.assertTrue(any("body flow has uneven vertical spacing" in error for error in errors))
+
+    def test_moving_leading_enum_continuation_does_not_duplicate_source_ids(self):
+        plan = pdf.PageRenderPlan(page_num=4)
+        previous = pdf.RenderItem(
+            "translated_text",
+            ["p004b0001"],
+            (135, 180, 492, 190),
+            text="(1) States(A) 是状态集合。",
+            font_size=pdf.BODY_FONT_SIZE,
+            style_name="body",
+        )
+        current = pdf.RenderItem(
+            "translated_text",
+            ["p004b0004", "p004b0005"],
+            (136, 190, 492, 260),
+            text="初始状态集合。\n(2) In(A) 是输入事件集合。",
+            font_size=pdf.BODY_FONT_SIZE,
+            style_name="body",
+        )
+        plan.items.extend([previous, current])
+
+        pdf.move_leading_enum_continuations_to_previous_items(plan)
+
+        self.assertNotIn("p004b0004", previous.source_ids)
+        self.assertEqual(current.source_ids, ["p004b0004", "p004b0005"])
+
+
+class RenderPlanSerializationTests(unittest.TestCase):
+    def sample_plan(self):
+        return pdf.PageRenderPlan(
+            page_num=7,
+            items=[
+                pdf.RenderItem(
+                    "translated_text",
+                    ["p007b0002"],
+                    (100.0, 120.25, 360.5, 168.75),
+                    text="稳定的中文正文。",
+                    font_size=9.5,
+                    style_name="body",
+                    color=(0.1, 0.2, 0.3),
+                    fallback_reason="",
+                ),
+                pdf.RenderItem(
+                    "original_image_clip",
+                    ["p007b0003", "p007b0004"],
+                    (90, 190, 380, 260),
+                    fallback_reason="visual_region",
+                ),
+            ],
+            ledger=[
+                pdf.CoverageEntry("p007b0002", "body", "translated_text", True),
+                pdf.CoverageEntry("p007b0003", "figure_region", "original_image_clip", True, "visual_region"),
+            ],
+            protected_boxes=[(90, 190, 380, 260)],
+        )
+
+    def test_serialized_ledger_covers_non_trivial_translated_and_protected_blocks(self):
+        blocks = [
+            block(
+                "p042b0001",
+                42,
+                "This body paragraph should be represented as translated text.",
+                x0=78,
+                y0=80,
+                x1=520,
+                y1=126,
+            ),
+            block(
+                "p042b0002",
+                42,
+                "Fig. 2. Protected diagram with nodes and arrows.",
+                x0=110,
+                y0=180,
+                x1=420,
+                y1=245,
+                preserve_image=True,
+            ),
+        ]
+        plan = pdf.build_page_render_plan(
+            42,
+            blocks,
+            {"p042b0001": "这段正文应当作为译文文本呈现。"},
+            page_size=(612, 792),
+            bbox_lines=None,
+        )
+
+        plan_json = pdf.render_plan_to_json(plan)
+        ledger_by_id = {entry["block_id"]: entry for entry in plan_json["coverage_ledger"]}
+
+        self.assertEqual(set(ledger_by_id), {"p042b0001", "p042b0002"})
+        for source_id in ("p042b0001", "p042b0002"):
+            self.assertEqual(
+                set(ledger_by_id[source_id]),
+                {"block_id", "classification", "render_kind", "rendered", "fallback_reason"},
+            )
+            self.assertTrue(ledger_by_id[source_id]["rendered"])
+
+        self.assertEqual(ledger_by_id["p042b0001"]["classification"], "body")
+        self.assertEqual(ledger_by_id["p042b0001"]["render_kind"], "translated_text")
+        self.assertEqual(ledger_by_id["p042b0001"]["fallback_reason"], "")
+        self.assertEqual(ledger_by_id["p042b0002"]["classification"], "figure_region")
+        self.assertEqual(ledger_by_id["p042b0002"]["render_kind"], "original_image_clip")
+        self.assertEqual(ledger_by_id["p042b0002"]["fallback_reason"], "visual_region")
+
+    def test_serialized_visual_fallback_reason_is_kept_on_item_and_ledger(self):
+        blocks = [
+            block(
+                "p043b0001",
+                43,
+                "Fig. 3. Protected visual content that must remain an image clip.",
+                x0=96,
+                y0=145,
+                x1=430,
+                y1=230,
+                preserve_image=True,
+            )
+        ]
+        plan = pdf.build_page_render_plan(43, blocks, {}, page_size=(612, 792), bbox_lines=None)
+
+        plan_json = pdf.render_plan_to_json(plan)
+        image_items = [
+            item
+            for item in plan_json["render_items"]
+            if item["kind"] == "original_image_clip" and "p043b0001" in item["source_ids"]
+        ]
+        ledger_entries = [
+            entry for entry in plan_json["coverage_ledger"] if entry["block_id"] == "p043b0001"
+        ]
+
+        self.assertEqual(len(image_items), 1)
+        self.assertEqual(image_items[0]["fallback_reason"], "visual_region")
+        self.assertEqual(len(ledger_entries), 1)
+        self.assertEqual(ledger_entries[0]["fallback_reason"], "visual_region")
+
+    def test_render_plan_json_dumps_is_deterministic_for_same_plan_content(self):
+        plan = self.sample_plan()
+        first = pdf.render_plan_json_dumps(
+            plan,
+            validation_results={"warnings": ["check later"], "errors": []},
+        )
+        second = pdf.render_plan_json_dumps(
+            plan,
+            validation_results={"errors": [], "warnings": ["check later"]},
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(json.loads(first), json.loads(second))
+
+    def test_render_plan_json_includes_diagnostic_fields(self):
+        plan_json = pdf.render_plan_to_json(
+            self.sample_plan(),
+            validation_results=[
+                {"category": "style", "message": "body style checked", "source_ids": ["p007b0002"]},
+            ],
+        )
+
+        self.assertEqual(plan_json["page_num"], 7)
+        self.assertEqual(
+            plan_json["render_items"][0],
+            {
+                "kind": "translated_text",
+                "source_ids": ["p007b0002"],
+                "bbox": [100.0, 120.25, 360.5, 168.75],
+                "text": "稳定的中文正文。",
+                "font_size": 9.5,
+                "style_name": "body",
+                "color": [0.1, 0.2, 0.3],
+                "fallback_reason": "",
+            },
+        )
+        self.assertEqual(
+            plan_json["coverage_ledger"][1],
+            {
+                "block_id": "p007b0003",
+                "classification": "figure_region",
+                "render_kind": "original_image_clip",
+                "rendered": True,
+                "fallback_reason": "visual_region",
+            },
+        )
+        self.assertEqual(plan_json["protected_regions"], [{"bbox": [90.0, 190.0, 380.0, 260.0]}])
+        self.assertEqual(
+            plan_json["validation_results"],
+            [{"category": "style", "message": "body style checked", "source_ids": ["p007b0002"]}],
+        )
+
+    def test_write_vector_pdf_writes_page_render_plan_artifact(self):
+        fitz = pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_pdf = tmp_path / "source.pdf"
+            output_pdf = tmp_path / "out.pdf"
+            plans_dir = tmp_path / "plans"
+
+            src_doc = fitz.open()
+            src_doc.new_page(width=200, height=200)
+            src_doc.save(source_pdf)
+            src_doc.close()
+
+            blocks = [
+                block(
+                    "p001b0001",
+                    1,
+                    "A short source paragraph.",
+                    x0=20,
+                    y0=20,
+                    x1=180,
+                    y1=80,
+                )
+            ]
+            translations = {"p001b0001": "稳定的中文正文。"}
+
+            pdf.write_vector_pdf(
+                source_pdf,
+                output_pdf,
+                [(1, blocks)],
+                translations,
+                (200, 200),
+                72,
+                job_paths={"plans_dir": plans_dir},
+            )
+
+            expected_plan = pdf.build_page_render_plan(
+                1,
+                blocks,
+                translations,
+                (200, 200),
+                bbox_lines=None,
+                source_image_path=None,
+            )
+            expected_json = pdf.render_plan_json_dumps(
+                expected_plan,
+                validation_results={
+                    "coverage_errors": [],
+                    "layout_errors": [],
+                    "style_policy_errors": [],
+                    "text_fit_errors": [],
+                },
+            )
+
+            artifact_path = plans_dir / "page-001.render-plan.json"
+            self.assertTrue(artifact_path.exists())
+            self.assertEqual(artifact_path.read_text(encoding="utf-8"), expected_json)
+
+    def test_write_vector_pdf_render_plan_artifact_is_deterministic_for_same_inputs(self):
+        fitz = pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_pdf = tmp_path / "source.pdf"
+
+            src_doc = fitz.open()
+            src_doc.new_page(width=200, height=200)
+            src_doc.save(source_pdf)
+            src_doc.close()
+
+            blocks = [
+                block(
+                    "p001b0001",
+                    1,
+                    "A short source paragraph.",
+                    x0=20,
+                    y0=20,
+                    x1=180,
+                    y1=80,
+                )
+            ]
+            translations = {"p001b0001": "稳定的中文正文。"}
+            artifacts = []
+
+            for run_name in ("first", "second"):
+                output_pdf = tmp_path / run_name / "out.pdf"
+                plans_dir = tmp_path / run_name / "plans"
+                pdf.write_vector_pdf(
+                    source_pdf,
+                    output_pdf,
+                    [(1, blocks)],
+                    translations,
+                    (200, 200),
+                    72,
+                    job_paths={"plans_dir": plans_dir},
+                )
+                artifacts.append((plans_dir / "page-001.render-plan.json").read_bytes())
+
+            self.assertEqual(artifacts[0], artifacts[1])
+
+    def test_failed_vector_pdf_plan_artifact_records_only_executed_validation(self):
+        fitz = pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_pdf = tmp_path / "source.pdf"
+            output_pdf = tmp_path / "out.pdf"
+            plans_dir = tmp_path / "plans"
+
+            src_doc = fitz.open()
+            src_doc.new_page(width=100, height=100)
+            src_doc.save(source_pdf)
+            src_doc.close()
+
+            blocks = [block("p001b0001", 1, "A short source line.", x0=10, y0=10, x1=40, y1=20)]
+            original_validate = pdf.validate_plan_coverage
+            pdf.validate_plan_coverage = lambda page_num, blocks_arg, plan: ["coverage failed before later checks"]
+            try:
+                with self.assertRaisesRegex(RuntimeError, "coverage failed before later checks"):
+                    pdf.write_vector_pdf(
+                        source_pdf,
+                        output_pdf,
+                        [(1, blocks)],
+                        {"p001b0001": "稳定的中文正文。"},
+                        (100, 100),
+                        72,
+                        job_paths={"plans_dir": plans_dir},
+                    )
+            finally:
+                pdf.validate_plan_coverage = original_validate
+
+            artifact = json.loads((plans_dir / "page-001.render-plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                artifact["validation_results"],
+                {"coverage_errors": ["coverage failed before later checks"]},
+            )
+
+    def test_vector_pdf_rejects_and_records_style_policy_errors(self):
+        fitz = pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_pdf = tmp_path / "source.pdf"
+            output_pdf = tmp_path / "out.pdf"
+            plans_dir = tmp_path / "plans"
+
+            src_doc = fitz.open()
+            src_doc.new_page(width=200, height=200)
+            src_doc.save(source_pdf)
+            src_doc.close()
+
+            blocks = [block("p001b0001", 1, "1. INTRODUCTION", x0=20, y0=20, x1=180, y1=60)]
+            bad_plan = pdf.PageRenderPlan(page_num=1)
+            bad_plan.items.append(
+                pdf.RenderItem(
+                    "translated_text",
+                    ["p001b0001"],
+                    (20, 20, 180, 60),
+                    text="1. 引言",
+                    font_size=pdf.DOCUMENT_STYLES["body"].font_size,
+                    style_name="body",
+                )
+            )
+            bad_plan.ledger.append(pdf.CoverageEntry("p001b0001", "heading", "translated_text", True, ""))
+            original_build = pdf.build_page_render_plan
+            pdf.build_page_render_plan = lambda *args, **kwargs: bad_plan
+            try:
+                with self.assertRaisesRegex(RuntimeError, "expected heading/subheading"):
+                    pdf.write_vector_pdf(
+                        source_pdf,
+                        output_pdf,
+                        [(1, blocks)],
+                        {"p001b0001": "1. 引言"},
+                        (200, 200),
+                        72,
+                        job_paths={"plans_dir": plans_dir},
+                    )
+            finally:
+                pdf.build_page_render_plan = original_build
+
+            artifact = json.loads((plans_dir / "page-001.render-plan.json").read_text(encoding="utf-8"))
+            self.assertTrue(artifact["validation_results"]["style_policy_errors"])
+
+    def test_failed_vector_pdf_keeps_validation_error_when_plan_artifact_write_fails(self):
+        fitz = pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_pdf = tmp_path / "source.pdf"
+            output_pdf = tmp_path / "out.pdf"
+            plans_dir = tmp_path / "plans-blocker"
+            plans_dir.write_text("not a directory", encoding="utf-8")
+
+            src_doc = fitz.open()
+            src_doc.new_page(width=100, height=100)
+            src_doc.save(source_pdf)
+            src_doc.close()
+
+            blocks = [block("p001b0001", 1, "A short source line.", x0=10, y0=10, x1=40, y1=20)]
+
+            with self.assertRaisesRegex(RuntimeError, "needs .* height"):
+                pdf.write_vector_pdf(
+                    source_pdf,
+                    output_pdf,
+                    [(1, blocks)],
+                    {"p001b0001": "这是一个很长很长的译文，应该无法放入这个非常矮的文本框中。" * 8},
+                    (100, 100),
+                    72,
+                    job_paths={"plans_dir": plans_dir},
+                )
 
 
 class SourceClipRenderingTests(unittest.TestCase):

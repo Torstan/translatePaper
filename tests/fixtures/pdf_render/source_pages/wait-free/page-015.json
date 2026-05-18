@@ -1,0 +1,161 @@
+{
+  "blocks": [
+    {
+      "block_index": 1,
+      "id": "p015b0001",
+      "page": 15,
+      "preserve_image": false,
+      "text": "138\u00b7",
+      "xMax": 188.09055270503254,
+      "xMin": 132.60777635251628,
+      "yMax": 60.754034912164705,
+      "yMin": 49.5625
+    },
+    {
+      "block_index": 2,
+      "id": "p015b0002",
+      "page": 15,
+      "preserve_image": false,
+      "text": "Maurice Herlihy",
+      "xMax": 247.5082778129444,
+      "xMin": 183.36861639568102,
+      "yMax": 61.1537316081098,
+      "yMin": 49.5625
+    },
+    {
+      "block_index": 3,
+      "id": "p015b0003",
+      "page": 15,
+      "preserve_image": false,
+      "text": "decide(input: value) returns(value)\nenq(q,input)\nreturn peek(q)\nend decide",
+      "xMax": 489.50766471942916,
+      "xMin": 358.4738524892088,
+      "yMax": 115.51260292973177,
+      "yMin": 72.74496321621962
+    },
+    {
+      "block_index": 4,
+      "id": "p015b0004",
+      "page": 15,
+      "preserve_image": false,
+      "text": "Fig. 1l. Augmented FIFO queue: n-process consensus.",
+      "xMax": 337.22512261870304,
+      "xMin": 137.3297126618678,
+      "yMax": 101.52319114595137,
+      "yMin": 90.33165623378667
+    },
+    {
+      "block_index": 5,
+      "id": "p015b0005",
+      "page": 15,
+      "preserve_image": false,
+      "text": "3.5Memory-to-MemoryOperations\nConsider a collection of atomicread/writeregistershaving one additional oper-\nation: move atomically copies the value of one register to another.? We use the\nexpression \u201ca - b\" to move the contents of b to a.\nTHEoREM 9.An array of registers with move has infinite consensus number.\nPRooF. An n-process consensus protocol appears in Figure 12. The processes\nshare two arrays: prefer[1 .. n] and r[1 .. n, 1 .. 2], where r[P, 1] is initialized\nto 1 and r[P, 2] to 0, for 1 \u2264 P \u2264 n. The protocol is clearly wait-free, since all",
+      "xMax": 493.442580517977,
+      "xMin": 134.18176244604408,
+      "yMax": 257.00555143243923,
+      "yMin": 147.08871321621962
+    },
+    {
+      "block_index": 6,
+      "id": "p015b0006",
+      "page": 15,
+      "preserve_image": false,
+      "text": "loops arebounded.\nTo show consistency, we use the following assertions:",
+      "xMax": 384.8379904748122,
+      "xMin": 134.96875,
+      "yMax": 281.38711022163454,
+      "yMin": 257.80495579461024
+    },
+    {
+      "block_index": 7,
+      "id": "p015b0007",
+      "page": 15,
+      "preserve_image": true,
+      "text": "(P) = r[P, 1j = 0 ^ r[P, 2] = 0\nQ(P) = r[P, 2] = 1",
+      "xMax": 617.0,
+      "xMin": 237.6709224028793,
+      "yMax": 310.565029362171,
+      "yMin": 283.7073904333175
+    },
+    {
+      "block_index": 8,
+      "id": "p015b0008",
+      "page": 15,
+      "preserve_image": true,
+      "text": "Q(P) = r[P, 2] = 1\n(P)= (P)V<(P)",
+      "xMax": 339.1926024892088,
+      "xMin": 0.0,
+      "yMax": 322.15627194056157,
+      "yMin": 296.8973978549269
+    },
+    {
+      "block_index": 9,
+      "id": "p015b0009",
+      "page": 15,
+      "preserve_image": true,
+      "text": "(P)= (P)V<(P)",
+      "xMax": 339.1926024892088,
+      "xMin": 0.0,
+      "yMax": 323.5941685860738,
+      "yMin": 307.6892360711465
+    },
+    {
+      "block_index": 10,
+      "id": "p015b0010",
+      "page": 15,
+      "preserve_image": false,
+      "text": "It is easily checked that (P),&(P),and \u2260(P) are stable for each P, that (P)\nand&(P)are mutually exclusive,that(P)is true after Pexecutes statement\n2,and that(i)is true after each execution of statement 4.We say thata process\nP has stabilized if \"(P) holds.\nWe claim that if (P) holds for some P, then &(Q) holds for some Q< P, and\nthat every process between Q and P has stablized. Let P be the least process for\nwhich (P) holds. Since r[P, 1] and r[P, 2] are both 0, some Q < P must have\nassigned 0 to r[P, 1] (statement 4) before P executed statement 2. Q, however,\nexecutes statement 2 before statement 4; hence '(Q) holds. Since (Q) is false\nby hypothesis, <(Q) must hold. Moreover, if Q has assigned to r[P, 1], then it\nhas assigned to every r[P', 1] for Q < P' < P; thus each such P' has stabilized.\nDefine the termination assertion as follows:",
+      "xMax": 495.41006038848275,
+      "xMin": 135.36224377697798,
+      "yMax": 470.4440807297569,
+      "yMin": 328.55141907568316
+    },
+    {
+      "block_index": 11,
+      "id": "p015b0011",
+      "page": 15,
+      "preserve_image": true,
+      "text": "g(P) = C(P) A (VQ > P)(Q).",
+      "xMax": 617.0,
+      "xMin": 240.03188506474712,
+      "yMax": 490.66774951039065,
+      "yMin": 474.76281699546337
+    },
+    {
+      "block_index": 12,
+      "id": "p015b0012",
+      "page": 15,
+      "preserve_image": false,
+      "text": "J is stable and it holds for at most one process. When P finishes the first loop\nof them satisfies Z, we are done. Otherwise, there exists a largest Q< P satisfying\n\u300a(Q),and all the processes between P and Q have stabilized,implying that Z(Q)\nholds.When P's protocol terminates,it chooses the input of the unique Q\nsatisfying Z(Q). Since the termination assertion is stable, all processes agree.\nValidity follows because prefer[P] must beinitialized before(P) can become",
+      "xMax": 495.0165556258888,
+      "xMin": 136.1492313309339,
+      "yMax": 576.3639410162448,
+      "yMin": 495.625
+    },
+    {
+      "block_index": 13,
+      "id": "p015b0013",
+      "page": 15,
+      "preserve_image": false,
+      "text": "true.",
+      "xMax": 176.67921120143967,
+      "xMin": 135.75573755395592,
+      "yMax": 588.7545660162448,
+      "yMin": 576.7636102864878
+    },
+    {
+      "block_index": 14,
+      "id": "p015b0014",
+      "page": 15,
+      "preserve_image": false,
+      "text": "3 Memory-to-memory move should not be confused with assignment; the former copies values between\ntwopublicregisters,whilethe lattercopiesvaluebetween public and privateregisters.\nACM Transactions on Programming Languages and Systems, Vol. 11, No. 1, January 1991.",
+      "xMax": 495.41006038848275,
+      "xMin": 135.75573755395592,
+      "yMax": 637.1179704432691,
+      "yMin": 601.5448602864878
+    }
+  ],
+  "document": "wait-free-synchronization",
+  "page": 15,
+  "source": "work/jobs/wait-free-synchronization/source_pages.json"
+}

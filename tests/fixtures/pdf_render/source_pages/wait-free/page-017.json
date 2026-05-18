@@ -1,0 +1,106 @@
+{
+  "blocks": [
+    {
+      "block_index": 1,
+      "id": "p017b0001",
+      "page": 17,
+      "preserve_image": true,
+      "text": "140\u00b7MauriceHerlihy\nFig. 13. Memory-to-memory swap: n-process consensus.",
+      "xMax": 339.5861149269492,
+      "xMin": 132.60778803236656,
+      "yMax": 122.70716222589667,
+      "yMin": 46.76461569352583
+    },
+    {
+      "block_index": 2,
+      "id": "p017b0002",
+      "page": 17,
+      "preserve_image": false,
+      "text": "decide(input:value)returns(value)\nprefer[Pj := input\nfor Q in 1 .. n do\nthen return prefer[Q]\nendif\nend for\nenddecide\nPRooF. The protocol uses m \u201csingle-writer\u201d registers ri, ..., rm, where P:\nwrites to register r,, and m(m -1)/2 \u201cmultiwriter\u201d registers ry, where i >j, where\nP, and P, both write to register ry. All registers are initialized to I. Each process\natomically assigns its input value to m registers: its single-writer register and its\nm - 1 multiwriter registers. The decision value of the protocol is the first value",
+      "xMax": 495.0166014196442,
+      "xMin": 134.96875,
+      "yMax": 238.6194570645419,
+      "yMin": 71.1461679354581
+    },
+    {
+      "block_index": 3,
+      "id": "p017b0003",
+      "page": 17,
+      "preserve_image": true,
+      "text": "swap(a(P),r)",
+      "xMax": 617.0,
+      "xMin": 296.15999999999997,
+      "yMax": 104.16409250432795,
+      "yMin": 89.04680949124423
+    },
+    {
+      "block_index": 4,
+      "id": "p017b0004",
+      "page": 17,
+      "preserve_image": true,
+      "text": "if a[Q] = 1",
+      "xMax": 617.0,
+      "xMin": 296.15999999999997,
+      "yMax": 124.14898040771484,
+      "yMin": 109.03169189453125
+    },
+    {
+      "block_index": 5,
+      "id": "p017b0005",
+      "page": 17,
+      "preserve_image": false,
+      "text": "to be assigned.\nthe assignments for two processes P, and P, as follows:\n(1) Read r,. If the value is I, then neither assignment has occurred.\n(2) Otherwise, read r, and r,. If r's value is I, then P, precedes P, and similarly\n(3) If neither r, nor r, is I, reread r,. If its value is equal to the value read from\nr, then P, precedes P,, else vice-versa.\nBy repeating this procedure, a process can determine the value written by the",
+      "xMax": 495.0166014196442,
+      "xMin": 134.96875,
+      "yMax": 358.1290372258967,
+      "yMin": 239.41886358087714
+    },
+    {
+      "block_index": 6,
+      "id": "p017b0006",
+      "page": 17,
+      "preserve_image": false,
+      "text": "for r.",
+      "xMax": 181.401156278714,
+      "xMin": 152.67602535491105,
+      "yMax": 317.7595801613548,
+      "yMin": 305.3689551613548
+    },
+    {
+      "block_index": 7,
+      "id": "p017b0007",
+      "page": 17,
+      "preserve_image": false,
+      "text": "earliest assignment.\nThis result can be improved.\n2m - 2.",
+      "xMax": 273.8724476304788,
+      "xMin": 135.7557483403009,
+      "yMax": 417.2842614191229,
+      "yMin": 358.1290372258967
+    },
+    {
+      "block_index": 8,
+      "id": "p017b0008",
+      "page": 17,
+      "preserve_image": false,
+      "text": "THEoREM 12.Atomic m-register assignment has consensus number at least\nPRooF. Consider the following two-phase protocol. Each process has two\nsingle-writer registers, one for each phase,and each pair of processes share a\nregister. Divide the processes into two predefined groups of m - 1. In the first\nphase,each group achieves consensus within itself using the protocol from\nTheorem 11. In the second phase, each process atomically assigns its group's\nvalue to its phase-two single-writer register and the m - 1 multiwriter registers\nshared with processes in the other group. Using the ordering procedures described\nabove, the process constructs a directed graph G with the property that there is\nan edge from P, to Pk if P, and Pk are in different groups and the former's\nassignment precedes the latter's. It then locates a source process having at least\none outgoing edge but no incoming edges, and returns that process's value. At\nleast one process have performed an assignment; thus G has edges. Let Q be the\nprocess whose assignment is first in the linearization order. Q is a source, and it\nhas an outgoing edge to every process in the other group; thus no process in the\nother group is also a source. Therefore, all source processes belong to the same\nThis algorithm is optimal with respect to the number of processes.\nACM Transactions on Programming Languages and Systems, Vol. 11. No. 1, January 1991",
+      "xMax": 496.5905540292203,
+      "xMin": 135.7557483403009,
+      "yMax": 643.5130934836648,
+      "yMin": 394.50152770996095
+    },
+    {
+      "block_index": 9,
+      "id": "p017b0009",
+      "page": 17,
+      "preserve_image": false,
+      "text": "group.",
+      "xMax": 184.1556174164979,
+      "xMin": 136.1492364926949,
+      "yMax": 612.7363826127486,
+      "yMin": 600.3457576127486
+    }
+  ],
+  "document": "wait-free-synchronization",
+  "page": 17,
+  "source": "work/jobs/wait-free-synchronization/source_pages.json"
+}

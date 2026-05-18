@@ -1,0 +1,22 @@
+{
+  "assertions": [
+    {
+      "category": "body_flow_spacing",
+      "expect": "no_excessive_whitespace",
+      "source_ids": [
+        "p017b0002",
+        "p017b0005",
+        "p017b0008"
+      ],
+      "summary": "Proof body flow has no avoidable large vertical gap."
+    },
+    {
+      "category": "figures",
+      "expect": "no_region_overcapture",
+      "source_id": "p017b0002",
+      "summary": "Figure 13 code clip does not capture proof prose below it."
+    }
+  ],
+  "document": "wait-free-synchronization",
+  "page": 17
+}

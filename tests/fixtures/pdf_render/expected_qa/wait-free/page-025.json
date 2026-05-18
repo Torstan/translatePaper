@@ -1,0 +1,29 @@
+{
+  "assertions": [
+    {
+      "category": "running_headers",
+      "expect": "text_noise_absent",
+      "text_excludes": [
+        "Maurice Herlihy",
+        "MauriceHerlihy"
+      ],
+      "summary": "Running author header is absent from rendered translated text."
+    },
+    {
+      "category": "references",
+      "expect": "reference_fragment_handling",
+      "source_ids": [
+        "p025b0006",
+        "p025b0007",
+        "p025b0008",
+        "p025b0009",
+        "p025b0012",
+        "p025b0013",
+        "p025b0015"
+      ],
+      "summary": "Reference body and OCR fragments remain covered without body-flow overlap."
+    }
+  ],
+  "document": "wait-free-synchronization",
+  "page": 25
+}

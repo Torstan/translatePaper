@@ -23,6 +23,60 @@ Output: `<original-name>-Chinese.pdf`.
 
 Test two pages by adding `--include paper.pdf --page-start 1 --page-end 2 --no-qa`.
 
-Common options: `--force`, `--retranslate`, `--refresh-source`, `--no-qa`.
+Common options: `--force`, `--retranslate`, `--refresh-source`, `--no-qa`,
+`--strict-qa`, `--qa-mode all`, and `--qa-sample-size N`.
 
 Intermediate files: `work/jobs/<pdf-stem>/`. Summary: `work/parallel_translation_summary.md`.
+
+## QA Artifacts
+
+Vector rendering writes page render plans under:
+
+```text
+work/jobs/<pdf-stem>/plans/page-NNN.render-plan.json
+```
+
+When QA is enabled, deterministic quality reports are written to:
+
+```text
+work/jobs/<pdf-stem>/deterministic_quality_report.json
+work/jobs/<pdf-stem>/deterministic_quality_report.md
+```
+
+Visual QA writes rendered PNGs and reports to:
+
+```text
+work/jobs/<pdf-stem>/visual_qa/rendered_png/
+work/jobs/<pdf-stem>/visual_qa/visual_qa_report.json
+work/jobs/<pdf-stem>/visual_qa/visual_qa_report.md
+```
+
+Use non-strict QA while exploring defects. Use `--strict-qa` before accepting a
+batch; strict mode fails jobs with coverage, layout, visual, clipping, overlap,
+or style errors instead of reporting a defective PDF as translated.
+
+## Fixture Workflow
+
+Page-level visual regression fixtures live under `tests/fixtures/pdf_render/`.
+For a user-reported visual defect, add the smallest page fixture that reproduces
+the issue:
+
+```text
+source_pages/<document>/page-NNN.json
+translations/<document>/page-NNN.json
+expected_plans/<document>/page-NNN.json
+expected_qa/<document>/page-NNN.json
+```
+
+Then run:
+
+```bash
+PYTHONPYCACHEPREFIX=/tmp/translatePaper_pycache python3 -m unittest \
+  tests.test_pdf_render_fixtures tests.test_pdf_render_fixture_layout -v
+```
+
+Render representative output pages to PNG with Poppler when layout changes:
+
+```bash
+pdftoppm -png -f 1 -l 1 translated.pdf output/page
+```

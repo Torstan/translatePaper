@@ -1,0 +1,172 @@
+{
+  "blocks": [
+    {
+      "block_index": 1,
+      "id": "p025b0001",
+      "page": 25,
+      "preserve_image": false,
+      "text": "148\u00b7",
+      "xMax": 184.9425962589405,
+      "xMin": 129.45981520193595,
+      "yMax": 56.75705891982219,
+      "yMin": 44.76612920855873
+    },
+    {
+      "block_index": 2,
+      "id": "p025b0002",
+      "page": 25,
+      "preserve_image": false,
+      "text": "Maurice Herlihy\nboth in terms of time (rounds of consensus) and space (number of cells). The\nimplementsrelation mayhave additional structurenotshown in theimpossibility\nwith consensus number 1 in a system of two or more processes? Can fetch&add\nimplement any object with consensus number 2 in a system of three or more\nprocesses? Does the implements relation have a different structure for bounded\nwait-free, wait-free,or nonblocking synchronization? Finally, little is known\naboutpracticalimplementationtechniques.",
+      "xMax": 487.146642755579,
+      "xMin": 130.64029967343365,
+      "yMax": 164.67540992523166,
+      "yMin": 45.96522600540947
+    },
+    {
+      "block_index": 3,
+      "id": "p025b0003",
+      "page": 25,
+      "preserve_image": false,
+      "text": "ACKNOWLEDGMENTS",
+      "xMax": 214.84819560580783,
+      "xMin": 131.82078414493137,
+      "yMax": 191.05545201081895,
+      "yMin": 183.0615025135237
+    },
+    {
+      "block_index": 4,
+      "id": "p025b0004",
+      "page": 25,
+      "preserve_image": false,
+      "text": "The author is grateful to Jim Aspnes. Vladimir Lanin, Michael Merritt, Serge\nPlotkin, Mark Tuttle,and Jennifer Welch for many invaluable suggestions.",
+      "xMax": 487.146642755579,
+      "xMin": 131.03379812947026,
+      "yMax": 217.4354831657651,
+      "yMin": 193.8533244972953
+    },
+    {
+      "block_index": 5,
+      "id": "p025b0005",
+      "page": 25,
+      "preserve_image": false,
+      "text": "REFERENCES",
+      "xMax": 184.5490978029039,
+      "xMin": 131.42728568889476,
+      "yMax": 244.61493769010772,
+      "yMin": 234.62249535316806
+    },
+    {
+      "block_index": 6,
+      "id": "p025b0006",
+      "page": 25,
+      "preserve_image": false,
+      "text": "1.ANDERsON, J. H., AND GoUDA, M. G. The virtue of patience: Concurrent programming with\nandwithoutwaiting.Private communication.\n2.AsPNEs,J.,ANDHERLIHY,M.P.Fast randomized consensususing shared memory.J.Algorith.\n3. BAR-Noy, A., AND DoLEv, D. Shared memory vs. message-passing in an asynchronous distrib-\nuted environment.InProceedings of the 8th ACMSIGACT-SIGOPS Symposuum onPrinciples of\n4.BLooM,B.Constructing two-writer atomic registers.In Proceedings of the 6th ACM Symposium\n5.BURNs, J. E., AND PETERsoN, G. L.Constructing multi-reader atomic values from non-atomic\nvalues.InProceedings of the6thACMSymposium onPrinciplesofDistributed Computing(1987),\n6. CHoR, B., IsRAELI, A.. AND L1, M. On processor coordination using asynchronous hardware.\nIn Proceedings of the 6th ACM Symposium on Principles of Distributed Computing (1987),\n7.DoLEV, D., DwoRK, C.,AND SrOcKMEYER,L.On the minimal synchronism needed for\ndistributed consensus.J.ACM 34,1 (Jan.1987),77-97.\n8.PFisTER,G.H.,ET AL.The IBM research parallel processor prototype (rp3):Introduction and\narchitecture.Presented at the International Conference on Parallel Processing,1985.\n9.FISCHER,M.J.,LYNCH,N.A.,AND PATERSON,M.S.Impossibility of distributed consensus\nwith one faulty process.J ACM 32,2(April 1985),374-382.\n10.GOTTLIEB, A.,GRISHMAN, R., KRUSKAL,C.P..MCAULIFFE, K.P.,RUDOLPH,L.,AND\nSNIR, M.The NYU ultracomputer\u2014Designing an mimd parallel computer. IEEE Trans.\n11.GoTTLIEB,A.,LUBACHEVSKY,B.D.,AND RUDOLPH.L.Basic techniques for the efficient\ncoordination of very large numbers of cooperating sequential processors.ACM Trans.Program.\n12.HERLIHy,M.P.A methodology for implementinghighly concurrent data structures.In Pro-\nceedingsofthe2ndACMSIGPLANSymposiumonPrinciplesandPracticeofParallelProgram-\n13.HERLIHy, M. P.Impossibility and universality results for wait-free synchronization. In Pro-\nceedings of the7th ACM SIGACT-SIGOPS Symposium onPrinciples ofDistributed Computing\n14. HERLIHY, M. P.,AND WING, J. M.Axioms for concurrent objects. In Proceedings of the 14th\nACM Symposium on Principles of Programming Languages (Jan.1987),pp.13-26.\n15. KRUSKAL, C. P., RUDOLPH, L., AND SNIR, M. Efficient synchronization On multiprocessors\nwith shared memory.In Proceedings of the5th ACM SIGACT-SIGOPS Symposium onPrinciples\nofDistributed Computing(Aug.1986).\nACM Transactions on Programming Languages and Systems,Vol 11. No.1, January 1991.",
+      "xMax": 488.3271381236889,
+      "xMin": 131.42728568889476,
+      "yMax": 633.1210100540948,
+      "yMin": 247.41281017658403
+    },
+    {
+      "block_index": 7,
+      "id": "p025b0007",
+      "page": 25,
+      "preserve_image": true,
+      "text": "11 (1990), 441-461.",
+      "xMax": 320.84000000000003,
+      "xMin": 0.0,
+      "yMax": 287.61618918648907,
+      "yMin": 275.32411484688174
+    },
+    {
+      "block_index": 8,
+      "id": "p025b0008",
+      "page": 25,
+      "preserve_image": true,
+      "text": "Distributed Computing(Aug.1989),pp.307-318.",
+      "xMax": 320.84000000000003,
+      "xMin": 0.0,
+      "yMax": 317.99320602072396,
+      "yMin": 303.7026607027545
+    },
+    {
+      "block_index": 9,
+      "id": "p025b0009",
+      "page": 25,
+      "preserve_image": true,
+      "text": "onPrinciples ofDistributed Computing(1987),pp.249-259.",
+      "xMax": 357.2933508908307,
+      "xMin": 0.0,
+      "yMax": 337.978068833321,
+      "yMin": 323.68752351535153
+    },
+    {
+      "block_index": 10,
+      "id": "p025b0010",
+      "page": 25,
+      "preserve_image": false,
+      "text": "pp.222-231.",
+      "xMax": 192.4190015439634,
+      "xMin": 146.3800962589405,
+      "yMax": 366.1230050270474,
+      "yMin": 355.7308510054095
+    },
+    {
+      "block_index": 11,
+      "id": "p025b0011",
+      "page": 25,
+      "preserve_image": false,
+      "text": "pp. 86-97.",
+      "xMax": 184.15559934686732,
+      "xMin": 145.9865978029039,
+      "yMax": 396.1003320378663,
+      "yMin": 385.3084663315302
+    },
+    {
+      "block_index": 12,
+      "id": "p025b0012",
+      "page": 25,
+      "preserve_image": true,
+      "text": "Comput.C-32.2(Feb.1984)175-189.",
+      "xMax": 320.84000000000003,
+      "xMin": 0.0,
+      "yMax": 484.2674080315429,
+      "yMin": 471.9753336919356
+    },
+    {
+      "block_index": 13,
+      "id": "p025b0013",
+      "page": 25,
+      "preserve_image": true,
+      "text": "Lang.Syst.5,2(April 1983).164-189.",
+      "xMax": 320.84000000000003,
+      "xMin": 0.0,
+      "yMax": 513.8450233576636,
+      "yMin": 501.55294901805627
+    },
+    {
+      "block_index": 14,
+      "id": "p025b0014",
+      "page": 25,
+      "preserve_image": false,
+      "text": "ming (March 1990).",
+      "xMax": 217.99616146087646,
+      "xMin": 147.16708227440162,
+      "yMax": 541.1905580432758,
+      "yMin": 533.1965866846982
+    },
+    {
+      "block_index": 15,
+      "id": "p025b0015",
+      "page": 25,
+      "preserve_image": true,
+      "text": "(Aug.1988), pp. 276-290.",
+      "xMax": 320.84000000000003,
+      "xMin": 0.0,
+      "yMax": 572.6005423252068,
+      "yMin": 558.3100407298018
+    }
+  ],
+  "document": "wait-free-synchronization",
+  "page": 25,
+  "source": "work/jobs/wait-free-synchronization/source_pages.json"
+}

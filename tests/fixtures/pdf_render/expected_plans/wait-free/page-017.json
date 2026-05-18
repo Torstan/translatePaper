@@ -1,0 +1,58 @@
+{
+  "assertions": [
+    {
+      "category": "body_flow_spacing",
+      "expect": "max_visible_gap",
+      "max_points": 22.0,
+      "source_ids": [
+        "p017b0002",
+        "p017b0005"
+      ],
+      "summary": "Proof body flow should not leave a large dead-space gap after the protected code clip."
+    },
+    {
+      "category": "body_flow_spacing",
+      "expect": "ledger_entry",
+      "source_id": "p017b0005",
+      "classification": "body",
+      "render_kind": "translated_text",
+      "fallback_reason": "",
+      "summary": "Proof text after the protected code clip remains translated selectable body text."
+    },
+    {
+      "category": "body_flow_spacing",
+      "expect": "translated_text",
+      "source_id": "p017b0005",
+      "text_contains": "被赋值",
+      "summary": "Proof text following Figure 13 is present in translated text instead of swallowed by the image clip."
+    },
+    {
+      "category": "body_flow_spacing",
+      "expect": "translated_text_excludes",
+      "source_id": "p017b0002",
+      "text_excludes": [
+        "for Q in 1 .. n",
+        "enddecide"
+      ],
+      "allow_missing_translated_text": true,
+      "summary": "Code prefix from mixed code/prose block is not rendered as translated body text."
+    },
+    {
+      "category": "figures",
+      "expect": "original_image_clip",
+      "source_ids": [
+        "p017b0001",
+        "p017b0002",
+        "p017b0003",
+        "p017b0004"
+      ],
+      "summary": "Figure 13 and its code lines remain protected while following proof text stays selectable."
+    }
+  ],
+  "categories": [
+    "body_flow_spacing",
+    "figures"
+  ],
+  "document": "wait-free-synchronization",
+  "page": 17
+}

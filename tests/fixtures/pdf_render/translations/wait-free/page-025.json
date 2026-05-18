@@ -1,0 +1,10 @@
+{
+  "document": "wait-free-synchronization",
+  "page": 25,
+  "source": "work/jobs/wait-free-synchronization/translations.json",
+  "translations": {
+    "p025b0002": "Maurice Herlihy\n无论是在时间（共识轮数）方面，还是在空间（单元数量）方面。implements 关系可能具有不可能性结果中未显示的额外结构：在包含两个或更多进程的系统中，具有共识数 1 的对象能否实现任何其他具有共识数 1 的对象？在包含三个或更多进程的系统中，fetch&add 能否实现任何具有共识数 2 的对象？对于有界 wait-free、wait-free 或 nonblocking 同步，implements 关系是否具有不同的结构？最后，人们对实用的实现技术所知甚少。",
+    "p025b0003": "致谢",
+    "p025b0004": "作者感谢 Jim Aspnes、Vladimir Lanin、Michael Merritt、Serge\nPlotkin、Mark Tuttle 和 Jennifer Welch 提出的许多宝贵建议。"
+  }
+}

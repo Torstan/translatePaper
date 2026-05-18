@@ -1,0 +1,783 @@
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import translate_pdf_parallel as parallel
+
+
+class ParallelBatchPlanningTests(unittest.TestCase):
+    def test_build_page_batches_includes_subheading_class(self):
+        blocks = [
+            {
+                "id": "p001b0001",
+                "text": "3.3 Queues, stacks, and lists",
+                "xMin": 72.0,
+                "yMin": 100.0,
+                "xMax": 260.0,
+                "yMax": 116.0,
+            }
+        ]
+        with (
+            patch.object(parallel.pipeline, "build_visual_regions", return_value=[]),
+            patch.object(parallel.pipeline, "classify_blocks", return_value={"p001b0001": "subheading"}),
+        ):
+            batches = parallel.build_page_batches([(1, blocks)], max_chars=7000)
+
+        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0001"]])
+
+    def test_build_page_batches_excludes_text_covered_by_visual_region(self):
+        blocks = [
+            {
+                "id": "p001b0001",
+                "text": "Figure 1: architecture",
+                "xMin": 80.0,
+                "yMin": 100.0,
+                "xMax": 260.0,
+                "yMax": 180.0,
+            },
+            {
+                "id": "p001b0002",
+                "text": "short caption fragment",
+                "xMin": 100.0,
+                "yMin": 130.0,
+                "xMax": 180.0,
+                "yMax": 145.0,
+            },
+            {
+                "id": "p001b0003",
+                "text": "This body paragraph should still be translated.",
+                "xMin": 80.0,
+                "yMin": 220.0,
+                "xMax": 360.0,
+                "yMax": 245.0,
+            },
+        ]
+        visual_regions = [
+            {
+                "source_ids": ["p001b0001"],
+                "bbox": (78.0, 98.0, 262.0, 182.0),
+            }
+        ]
+        classes = {
+            "p001b0001": "figure_region",
+            "p001b0002": "body",
+            "p001b0003": "body",
+        }
+        with (
+            patch.object(parallel.pipeline, "build_visual_regions", return_value=visual_regions),
+            patch.object(parallel.pipeline, "classify_blocks", return_value=classes),
+        ):
+            batches = parallel.build_page_batches([(1, blocks)], max_chars=7000)
+
+        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0003"]])
+
+    def test_build_page_batches_excludes_text_covered_by_final_visual_clip_padding(self):
+        blocks = [
+            {
+                "id": "p001b0001",
+                "text": "Figure 1",
+                "xMin": 100.0,
+                "yMin": 100.0,
+                "xMax": 140.0,
+                "yMax": 140.0,
+            },
+            {
+                "id": "p001b0002",
+                "text": "short protected-side label",
+                "xMin": 145.0,
+                "yMin": 110.0,
+                "xMax": 150.0,
+                "yMax": 120.0,
+            },
+            {
+                "id": "p001b0003",
+                "text": "This body paragraph should still be translated.",
+                "xMin": 180.0,
+                "yMin": 150.0,
+                "xMax": 360.0,
+                "yMax": 170.0,
+            },
+        ]
+        visual_regions = [{"source_ids": ["p001b0001"], "bbox": (100.0, 100.0, 140.0, 140.0)}]
+        classes = {
+            "p001b0001": "figure_region",
+            "p001b0002": "body",
+            "p001b0003": "body",
+        }
+        with (
+            patch.object(parallel.pipeline, "build_visual_regions", return_value=visual_regions),
+            patch.object(parallel.pipeline, "classify_blocks", return_value=classes),
+        ):
+            batches = parallel.build_page_batches([(1, blocks)], max_chars=7000, page_size=(400, 400))
+
+        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0003"]])
+
+    def test_build_page_batches_uses_bbox_lines_for_formula_final_clip_exclusion(self):
+        blocks = [
+            {
+                "id": "p001b0001",
+                "text": "x + y = z",
+                "xMin": 100.0,
+                "yMin": 100.0,
+                "xMax": 160.0,
+                "yMax": 140.0,
+            },
+            {
+                "id": "p001b0002",
+                "text": "short text covered only by line-refined formula clip",
+                "xMin": 105.0,
+                "yMin": 140.25,
+                "xMax": 150.0,
+                "yMax": 140.45,
+            },
+            {
+                "id": "p001b0003",
+                "text": "This body paragraph should still be translated.",
+                "xMin": 105.0,
+                "yMin": 180.0,
+                "xMax": 320.0,
+                "yMax": 198.0,
+            },
+        ]
+        visual_regions = [{"source_ids": ["p001b0001"], "bbox": (100.0, 100.0, 160.0, 140.0)}]
+        classes = {"p001b0001": "formula_region", "p001b0002": "body", "p001b0003": "body"}
+        bbox_html = """
+        <html><body><page>
+          <block><line xMin="100" yMin="100" xMax="160" yMax="141"><word>x</word><word>+</word><word>y</word><word>=</word><word>z</word></line></block>
+        </page></body></html>
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bbox_path = Path(tmp) / "source_bbox.html"
+            bbox_path.write_text(bbox_html, encoding="utf-8")
+            with (
+                patch.object(parallel.pipeline, "build_visual_regions", return_value=visual_regions),
+                patch.object(parallel.pipeline, "classify_blocks", return_value=classes),
+            ):
+                batches = parallel.build_page_batches(
+                    [(1, blocks)],
+                    max_chars=7000,
+                    page_size=(400, 400),
+                    job_paths={"bbox_path": bbox_path},
+                )
+
+        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0003"]])
+
+    def test_build_page_batches_excludes_translation_ineligible_classes(self):
+        class_by_id = {
+            "p001b0001": "title",
+            "p001b0002": "heading",
+            "p001b0003": "subheading",
+            "p001b0004": "body",
+            "p001b0005": "reference",
+            "p001b0006": "figure_region",
+            "p001b0007": "formula_region",
+            "p001b0008": "table_region",
+            "p001b0009": "code_region",
+            "p001b0010": "page_number",
+            "p001b0011": "header_footer",
+            "p001b0012": "journal_footer",
+        }
+        blocks = [
+            {
+                "id": block_id,
+                "text": f"Source text for {classification}",
+                "xMin": 80.0,
+                "yMin": 80.0 + idx * 20.0,
+                "xMax": 360.0,
+                "yMax": 94.0 + idx * 20.0,
+            }
+            for idx, (block_id, classification) in enumerate(class_by_id.items())
+        ]
+        with (
+            patch.object(parallel.pipeline, "build_visual_regions", return_value=[]),
+            patch.object(parallel.pipeline, "classify_blocks", return_value=class_by_id),
+        ):
+            batches = parallel.build_page_batches([(1, blocks)], max_chars=7000)
+
+        sent_ids = [item["id"] for batch in batches for item in batch.items]
+        self.assertEqual(sent_ids, ["p001b0001", "p001b0002", "p001b0003", "p001b0004"])
+
+
+class ParallelArtifactReportTests(unittest.TestCase):
+    def test_run_qa_reports_sorted_plan_artifact_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp) / "job"
+            plans_dir = job_dir / "plans"
+            job_dir.mkdir()
+            selected_pages = [(2, []), (1, [])]
+            job_paths = {"job_dir": job_dir, "plans_dir": plans_dir}
+            args = SimpleNamespace(
+                strict_qa=False,
+                qa_mode="sample",
+                qa_sample_size=10,
+                qa_batch_chars=7000,
+                model="test-model",
+                reasoning_effort="low",
+                retries=1,
+            )
+
+            with (
+                patch.object(parallel.pipeline, "validate_document_quality", return_value=["layout issue"]),
+                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(parallel.qa, "run_backtranslation", return_value={}),
+                patch.object(parallel.qa, "build_report", return_value=[]),
+                patch.object(parallel.qa, "write_markdown"),
+            ):
+                result = parallel.run_qa_for_job(
+                    selected_pages,
+                    translations={},
+                    job_paths=job_paths,
+                    page_size=(612, 792),
+                    args=args,
+                )
+
+            expected_paths = [
+                str(plans_dir / "page-001.render-plan.json"),
+                str(plans_dir / "page-002.render-plan.json"),
+            ]
+            self.assertEqual(result["plan_artifact_paths"], expected_paths)
+
+            report_json = json.loads(
+                (job_dir / "deterministic_quality_report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report_json["plan_artifact_paths"], expected_paths)
+
+            report_md = (job_dir / "deterministic_quality_report.md").read_text(encoding="utf-8")
+            self.assertIn("## Plan Artifacts", report_md)
+            self.assertLess(report_md.index(expected_paths[0]), report_md.index(expected_paths[1]))
+
+    def test_write_summary_lists_sorted_qa_plan_artifact_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_tmp_dir = parallel.TMP_DIR
+            original_summary_json = parallel.SUMMARY_JSON
+            original_summary_md = parallel.SUMMARY_MD
+            original_pipeline_tmp_root = parallel.pipeline.TMP_ROOT
+
+            def restore_work_dirs():
+                parallel.TMP_DIR = original_tmp_dir
+                parallel.SUMMARY_JSON = original_summary_json
+                parallel.SUMMARY_MD = original_summary_md
+                parallel.pipeline.TMP_ROOT = original_pipeline_tmp_root
+
+            self.addCleanup(restore_work_dirs)
+            parallel.set_work_dir(Path(tmp))
+            result = {
+                "pdf": "/docs/example.pdf",
+                "output": "/out/example-Chinese.pdf",
+                "status": "translated",
+                "qa": {
+                    "deterministic_issue_count": 0,
+                    "deterministic_issues": [],
+                    "checked_blocks": 0,
+                    "worst_score": None,
+                    "worst_items": [],
+                    "plan_artifact_paths": [
+                        "/work/job/plans/page-003.render-plan.json",
+                        "/work/job/plans/page-001.render-plan.json",
+                    ],
+                    "visual_issue_count": 2,
+                    "visual_error_count": 1,
+                    "visual_warning_count": 1,
+                    "visual_report_json": "/work/job/visual_qa/visual_qa_report.json",
+                    "visual_report_md": "/work/job/visual_qa/visual_qa_report.md",
+                    "visual_checked_pages": [3, 1],
+                    "visual_highest_severity": "error",
+                    "visual_highest_severity_issues": [
+                        {
+                            "category": "blank_clip",
+                            "severity": "error",
+                            "page_num": 3,
+                            "message": "blank source image clip",
+                            "source_ids": ["p003b0001"],
+                        }
+                    ],
+                },
+            }
+
+            parallel.write_summary([result])
+
+            summary_json = json.loads(parallel.SUMMARY_JSON.read_text(encoding="utf-8"))
+            self.assertEqual(
+                summary_json[0]["qa"]["plan_artifact_paths"],
+                [
+                    "/work/job/plans/page-001.render-plan.json",
+                    "/work/job/plans/page-003.render-plan.json",
+                ],
+            )
+            self.assertEqual(summary_json[0]["qa"]["visual_checked_pages"], [1, 3])
+
+            summary_md = parallel.SUMMARY_MD.read_text(encoding="utf-8")
+            self.assertIn("- plan_artifact: /work/job/plans/page-001.render-plan.json", summary_md)
+            self.assertIn("- plan_artifact: /work/job/plans/page-003.render-plan.json", summary_md)
+            self.assertIn("- visual_issue_count: 2", summary_md)
+            self.assertIn("- visual_error_count: 1", summary_md)
+            self.assertIn("- visual_warning_count: 1", summary_md)
+            self.assertIn("- visual_report_json: /work/job/visual_qa/visual_qa_report.json", summary_md)
+            self.assertIn("- visual_report_md: /work/job/visual_qa/visual_qa_report.md", summary_md)
+            self.assertIn("- visual_checked_pages: 1, 3", summary_md)
+            self.assertIn("- visual_highest_severity: error", summary_md)
+            self.assertIn("- visual_issue: page 003 [error] blank_clip: blank source image clip", summary_md)
+            self.assertLess(
+                summary_md.index("/work/job/plans/page-001.render-plan.json"),
+                summary_md.index("/work/job/plans/page-003.render-plan.json"),
+            )
+
+    def test_run_qa_writes_visual_qa_report_after_vector_rendering(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp) / "job"
+            plans_dir = job_dir / "plans"
+            pages_dir = job_dir / "pages"
+            job_dir.mkdir()
+            plans_dir.mkdir()
+            pages_dir.mkdir()
+            (plans_dir / "page-001.render-plan.json").write_text("{}", encoding="utf-8")
+            (pages_dir / "page-001.png").write_bytes(b"source png")
+            output_pdf = Path(tmp) / "translated.pdf"
+            output_pdf.write_bytes(b"%PDF-1.4\n")
+            selected_pages = [(1, [{"id": "p001b0001", "text": "Body"}])]
+            job_paths = {
+                "job_dir": job_dir,
+                "plans_dir": plans_dir,
+                "pages_dir": pages_dir,
+            }
+            args = SimpleNamespace(
+                strict_qa=False,
+                qa_mode="sample",
+                qa_sample_size=10,
+                qa_batch_chars=7000,
+                model="test-model",
+                reasoning_effort="low",
+                retries=1,
+                render_mode="vector",
+                strict_body_flow=False,
+            )
+            visual_report = SimpleNamespace(
+                json_path=job_dir / "visual_qa" / "visual_qa_report.json",
+                markdown_path=job_dir / "visual_qa" / "visual_qa_report.md",
+                issue_count=2,
+                error_count=1,
+                warning_count=1,
+            )
+
+            with (
+                patch.object(parallel.pipeline, "validate_document_quality", return_value=[]),
+                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(parallel.qa, "run_backtranslation", return_value={}),
+                patch.object(parallel.qa, "build_report", return_value=[]),
+                patch.object(parallel.qa, "write_markdown"),
+                patch.object(parallel.qa_visual, "generate_visual_qa_report", return_value=visual_report) as visual_mock,
+            ):
+                result = parallel.run_qa_for_job(
+                    selected_pages,
+                    translations={},
+                    job_paths=job_paths,
+                    page_size=(612, 792),
+                    args=args,
+                    output_pdf_path=output_pdf,
+                )
+
+            visual_mock.assert_called_once()
+            _, kwargs = visual_mock.call_args
+            self.assertEqual(kwargs["output_dir"], job_dir / "visual_qa")
+            self.assertEqual(kwargs["translated_pdf_path"], output_pdf)
+            self.assertEqual(
+                kwargs["source_png_paths"],
+                {1: pages_dir / "page-001.png"},
+            )
+            self.assertEqual(
+                kwargs["source_blocks_by_page"],
+                {1: [{"id": "p001b0001", "text": "Body"}]},
+            )
+            self.assertEqual(kwargs["page_size"], (612, 792))
+            self.assertFalse(kwargs["strict_body_flow"])
+            self.assertEqual(result["visual_issue_count"], 2)
+            self.assertEqual(result["visual_error_count"], 1)
+            self.assertEqual(result["visual_warning_count"], 1)
+            self.assertEqual(result["visual_report_json"], str(visual_report.json_path))
+            self.assertEqual(result["visual_report_md"], str(visual_report.markdown_path))
+
+    def test_run_qa_includes_visual_checked_pages_and_highest_severity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp) / "job"
+            plans_dir = job_dir / "plans"
+            pages_dir = job_dir / "pages"
+            visual_dir = job_dir / "visual_qa"
+            job_dir.mkdir()
+            plans_dir.mkdir()
+            pages_dir.mkdir()
+            visual_dir.mkdir()
+            (plans_dir / "page-001.render-plan.json").write_text("{}", encoding="utf-8")
+            (pages_dir / "page-001.png").write_bytes(b"source png")
+            output_pdf = Path(tmp) / "translated.pdf"
+            output_pdf.write_bytes(b"%PDF-1.4\n")
+            report_json_path = visual_dir / "visual_qa_report.json"
+            report_json_path.write_text(
+                json.dumps(
+                    {
+                        "checked_pages": [2, 1],
+                        "highest_severity": "error",
+                        "issues": [
+                            {
+                                "category": "blank_clip",
+                                "severity": "error",
+                                "page_num": 2,
+                                "message": "blank source image clip",
+                                "source_ids": ["p002b0003"],
+                            },
+                            {
+                                "category": "body_flow_whitespace",
+                                "severity": "warning",
+                                "page_num": 1,
+                                "message": "body flow gap is 60.0pt",
+                                "source_ids": ["p001b0001", "p001b0002"],
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            selected_pages = [(1, [{"id": "p001b0001", "text": "Body"}])]
+            job_paths = {
+                "job_dir": job_dir,
+                "plans_dir": plans_dir,
+                "pages_dir": pages_dir,
+            }
+            args = SimpleNamespace(
+                strict_qa=False,
+                qa_mode="sample",
+                qa_sample_size=10,
+                qa_batch_chars=7000,
+                model="test-model",
+                reasoning_effort="low",
+                retries=1,
+                render_mode="vector",
+                strict_body_flow=False,
+            )
+            visual_report = SimpleNamespace(
+                json_path=report_json_path,
+                markdown_path=visual_dir / "visual_qa_report.md",
+                issue_count=2,
+                error_count=1,
+                warning_count=1,
+            )
+
+            with (
+                patch.object(parallel.pipeline, "validate_document_quality", return_value=[]),
+                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(parallel.qa, "run_backtranslation", return_value={}),
+                patch.object(parallel.qa, "build_report", return_value=[]),
+                patch.object(parallel.qa, "write_markdown"),
+                patch.object(parallel.qa_visual, "generate_visual_qa_report", return_value=visual_report),
+            ):
+                result = parallel.run_qa_for_job(
+                    selected_pages,
+                    translations={},
+                    job_paths=job_paths,
+                    page_size=(612, 792),
+                    args=args,
+                    output_pdf_path=output_pdf,
+                )
+
+            self.assertEqual(result["visual_checked_pages"], [1, 2])
+            self.assertEqual(result["visual_highest_severity"], "error")
+            self.assertEqual(
+                result["visual_highest_severity_issues"],
+                [
+                    {
+                        "category": "blank_clip",
+                        "severity": "error",
+                        "page_num": 2,
+                        "message": "blank source image clip",
+                        "source_ids": ["p002b0003"],
+                    }
+                ],
+            )
+
+    def test_run_qa_strict_mode_fails_on_visual_qa_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp) / "job"
+            plans_dir = job_dir / "plans"
+            pages_dir = job_dir / "pages"
+            job_dir.mkdir()
+            plans_dir.mkdir()
+            pages_dir.mkdir()
+            (plans_dir / "page-001.render-plan.json").write_text("{}", encoding="utf-8")
+            (pages_dir / "page-001.png").write_bytes(b"source png")
+            output_pdf = Path(tmp) / "translated.pdf"
+            output_pdf.write_bytes(b"%PDF-1.4\n")
+            selected_pages = [(1, [{"id": "p001b0001", "text": "Body"}])]
+            job_paths = {
+                "job_dir": job_dir,
+                "plans_dir": plans_dir,
+                "pages_dir": pages_dir,
+            }
+            args = SimpleNamespace(
+                strict_qa=True,
+                qa_mode="sample",
+                qa_sample_size=10,
+                qa_batch_chars=7000,
+                model="test-model",
+                reasoning_effort="low",
+                retries=1,
+                render_mode="vector",
+                strict_body_flow=True,
+            )
+            visual_report = SimpleNamespace(
+                json_path=job_dir / "visual_qa" / "visual_qa_report.json",
+                markdown_path=job_dir / "visual_qa" / "visual_qa_report.md",
+                issue_count=1,
+                error_count=1,
+                warning_count=0,
+            )
+
+            with (
+                patch.object(parallel.pipeline, "validate_document_quality", return_value=[]),
+                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(parallel.qa, "run_backtranslation", return_value={}),
+                patch.object(parallel.qa, "build_report", return_value=[]),
+                patch.object(parallel.qa, "write_markdown"),
+                patch.object(parallel.qa_visual, "generate_visual_qa_report", return_value=visual_report),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "visual QA found 1 error"):
+                    parallel.run_qa_for_job(
+                        selected_pages,
+                        translations={},
+                        job_paths=job_paths,
+                        page_size=(612, 792),
+                        args=args,
+                        output_pdf_path=output_pdf,
+                    )
+
+    def test_run_qa_strict_mode_allows_visual_warnings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp) / "job"
+            plans_dir = job_dir / "plans"
+            pages_dir = job_dir / "pages"
+            job_dir.mkdir()
+            plans_dir.mkdir()
+            pages_dir.mkdir()
+            (plans_dir / "page-001.render-plan.json").write_text("{}", encoding="utf-8")
+            (pages_dir / "page-001.png").write_bytes(b"source png")
+            output_pdf = Path(tmp) / "translated.pdf"
+            output_pdf.write_bytes(b"%PDF-1.4\n")
+            selected_pages = [(1, [{"id": "p001b0001", "text": "Body"}])]
+            job_paths = {
+                "job_dir": job_dir,
+                "plans_dir": plans_dir,
+                "pages_dir": pages_dir,
+            }
+            args = SimpleNamespace(
+                strict_qa=True,
+                qa_mode="sample",
+                qa_sample_size=10,
+                qa_batch_chars=7000,
+                model="test-model",
+                reasoning_effort="low",
+                retries=1,
+                render_mode="vector",
+                strict_body_flow=False,
+            )
+            visual_report = SimpleNamespace(
+                json_path=job_dir / "visual_qa" / "visual_qa_report.json",
+                markdown_path=job_dir / "visual_qa" / "visual_qa_report.md",
+                issue_count=1,
+                error_count=0,
+                warning_count=1,
+            )
+
+            with (
+                patch.object(parallel.pipeline, "validate_document_quality", return_value=[]),
+                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(parallel.qa, "run_backtranslation", return_value={}),
+                patch.object(parallel.qa, "build_report", return_value=[]),
+                patch.object(parallel.qa, "write_markdown"),
+                patch.object(parallel.qa_visual, "generate_visual_qa_report", return_value=visual_report),
+            ):
+                result = parallel.run_qa_for_job(
+                    selected_pages,
+                    translations={},
+                    job_paths=job_paths,
+                    page_size=(612, 792),
+                    args=args,
+                    output_pdf_path=output_pdf,
+                )
+
+            self.assertEqual(result["visual_issue_count"], 1)
+            self.assertEqual(result["visual_error_count"], 0)
+            self.assertEqual(result["visual_warning_count"], 1)
+
+    def test_run_qa_non_strict_reports_visual_errors_without_failing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp) / "job"
+            plans_dir = job_dir / "plans"
+            pages_dir = job_dir / "pages"
+            job_dir.mkdir()
+            plans_dir.mkdir()
+            pages_dir.mkdir()
+            (plans_dir / "page-001.render-plan.json").write_text("{}", encoding="utf-8")
+            (pages_dir / "page-001.png").write_bytes(b"source png")
+            output_pdf = Path(tmp) / "translated.pdf"
+            output_pdf.write_bytes(b"%PDF-1.4\n")
+            selected_pages = [(1, [{"id": "p001b0001", "text": "Body"}])]
+            job_paths = {
+                "job_dir": job_dir,
+                "plans_dir": plans_dir,
+                "pages_dir": pages_dir,
+            }
+            args = SimpleNamespace(
+                strict_qa=False,
+                qa_mode="sample",
+                qa_sample_size=10,
+                qa_batch_chars=7000,
+                model="test-model",
+                reasoning_effort="low",
+                retries=1,
+                render_mode="vector",
+                strict_body_flow=False,
+            )
+            visual_report = SimpleNamespace(
+                json_path=job_dir / "visual_qa" / "visual_qa_report.json",
+                markdown_path=job_dir / "visual_qa" / "visual_qa_report.md",
+                issue_count=3,
+                error_count=2,
+                warning_count=1,
+            )
+
+            with (
+                patch.object(parallel.pipeline, "validate_document_quality", return_value=[]),
+                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(parallel.qa, "run_backtranslation", return_value={}),
+                patch.object(parallel.qa, "build_report", return_value=[]),
+                patch.object(parallel.qa, "write_markdown"),
+                patch.object(parallel.qa_visual, "generate_visual_qa_report", return_value=visual_report),
+            ):
+                result = parallel.run_qa_for_job(
+                    selected_pages,
+                    translations={},
+                    job_paths=job_paths,
+                    page_size=(612, 792),
+                    args=args,
+                    output_pdf_path=output_pdf,
+                )
+
+            self.assertEqual(result["visual_issue_count"], 3)
+            self.assertEqual(result["visual_error_count"], 2)
+            self.assertEqual(result["visual_warning_count"], 1)
+            self.assertEqual(result["visual_report_json"], str(visual_report.json_path))
+            self.assertEqual(result["visual_report_md"], str(visual_report.markdown_path))
+
+
+class ParallelCliIntegrationTests(unittest.TestCase):
+    def test_main_non_strict_visual_errors_write_success_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_dir = tmp_path / "source"
+            target_dir = tmp_path / "target"
+            work_dir = tmp_path / "work"
+            source_dir.mkdir()
+            pdf_path = source_dir / "paper.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n")
+
+            def fake_translate_one_pdf(pdf_path_arg, output_dir_arg, args):
+                self.assertFalse(args.strict_qa)
+                return {
+                    "pdf": str(pdf_path_arg),
+                    "output": str(output_dir_arg / "paper-Chinese.pdf"),
+                    "status": "translated",
+                    "qa": {
+                        "deterministic_issue_count": 0,
+                        "deterministic_issues": [],
+                        "checked_blocks": 0,
+                        "worst_score": None,
+                        "worst_items": [],
+                        "plan_artifact_paths": [],
+                        "visual_issue_count": 2,
+                        "visual_error_count": 1,
+                        "visual_warning_count": 1,
+                        "visual_report_json": str(work_dir / "jobs" / "paper" / "visual_qa" / "visual_qa_report.json"),
+                        "visual_report_md": str(work_dir / "jobs" / "paper" / "visual_qa" / "visual_qa_report.md"),
+                        "visual_checked_pages": [1],
+                        "visual_highest_severity": "error",
+                        "visual_highest_severity_issues": [
+                            {
+                                "category": "blank_clip",
+                                "severity": "error",
+                                "page_num": 1,
+                                "message": "blank source image clip",
+                                "source_ids": ["p001b0001"],
+                            }
+                        ],
+                    },
+                }
+
+            argv = [
+                "translate_pdf_parallel.py",
+                "--source-dir",
+                str(source_dir),
+                "--target-dir",
+                str(target_dir),
+                "--work-dir",
+                str(work_dir),
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(parallel, "translate_one_pdf", side_effect=fake_translate_one_pdf),
+            ):
+                parallel.main()
+
+            summary_json = json.loads((work_dir / "parallel_translation_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary_json[0]["status"], "translated")
+            self.assertEqual(summary_json[0]["qa"]["visual_error_count"], 1)
+            summary_md = (work_dir / "parallel_translation_summary.md").read_text(encoding="utf-8")
+            self.assertIn("- status: translated", summary_md)
+            self.assertIn("- visual_error_count: 1", summary_md)
+            self.assertIn("- visual_highest_severity: error", summary_md)
+
+    def test_main_strict_visual_error_with_continue_on_error_writes_failed_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_dir = tmp_path / "source"
+            target_dir = tmp_path / "target"
+            work_dir = tmp_path / "work"
+            source_dir.mkdir()
+            pdf_path = source_dir / "paper.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4\n")
+
+            def fake_translate_one_pdf(_pdf_path_arg, _output_dir_arg, args):
+                self.assertTrue(args.strict_qa)
+                raise RuntimeError("visual QA found 1 error(s); see visual_qa_report.md")
+
+            argv = [
+                "translate_pdf_parallel.py",
+                "--source-dir",
+                str(source_dir),
+                "--target-dir",
+                str(target_dir),
+                "--work-dir",
+                str(work_dir),
+                "--strict-qa",
+                "--continue-on-error",
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(parallel, "translate_one_pdf", side_effect=fake_translate_one_pdf),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "1 PDF\\(s\\) failed"):
+                    parallel.main()
+
+            summary_json = json.loads((work_dir / "parallel_translation_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary_json[0]["status"], "failed")
+            self.assertIn("visual QA found 1 error", summary_json[0]["error"])
+            summary_md = (work_dir / "parallel_translation_summary.md").read_text(encoding="utf-8")
+            self.assertIn("- status: failed", summary_md)
+            self.assertIn("- error: visual QA found 1 error(s); see visual_qa_report.md", summary_md)
+
+
+if __name__ == "__main__":
+    unittest.main()

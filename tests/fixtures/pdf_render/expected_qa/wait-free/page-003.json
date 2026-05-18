@@ -1,0 +1,21 @@
+{
+  "assertions": [
+    {
+      "category": "figures",
+      "expect": "no_blank_clip",
+      "source_id": "p003b0004",
+      "summary": "Figure 1 image clip contains visible hierarchy content."
+    },
+    {
+      "category": "headings",
+      "expect": "style_hierarchy_ok",
+      "source_ids": [
+        "p003b0009",
+        "p003b0010"
+      ],
+      "summary": "Heading and subheading use distinct hierarchy styles."
+    }
+  ],
+  "document": "wait-free-synchronization",
+  "page": 3
+}

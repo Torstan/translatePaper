@@ -1,0 +1,77 @@
+{
+  "assertions": [
+    {
+      "category": "figures",
+      "expect": "original_image_clip",
+      "source_ids": [
+        "p003b0004",
+        "p003b0005"
+      ],
+      "bbox_constraints": {
+        "max": [
+          178.0,
+          72.0,
+          438.0,
+          200.0
+        ],
+        "min": [
+          170.0,
+          65.0,
+          430.0,
+          190.0
+        ]
+      },
+      "summary": "Figure 1 hierarchy table is preserved as one image clip, including the right-side table text."
+    },
+    {
+      "category": "figures",
+      "expect": "ledger_entries",
+      "source_ids": [
+        "p003b0004",
+        "p003b0005"
+      ],
+      "classification": "figure_region",
+      "render_kind": "original_image_clip",
+      "fallback_reason": "visual_region",
+      "summary": "Figure blocks are classified as protected figure regions in the coverage ledger."
+    },
+    {
+      "category": "figures",
+      "expect": "not_in_source_ids",
+      "source_ids": [
+        "p003b0001",
+        "p003b0002"
+      ],
+      "target_source_id": "p003b0004",
+      "summary": "Figure 1 clip excludes the running author header and page number."
+    },
+    {
+      "category": "headings",
+      "expect": "translated_text_style",
+      "source_id": "p003b0009",
+      "style_name": "heading",
+      "text_contains": "2. \u6a21\u578b",
+      "summary": "Section heading is rendered as a heading, not merged into body text."
+    },
+    {
+      "category": "headings",
+      "expect": "translated_text_style",
+      "source_id": "p003b0010",
+      "style_name": "subheading",
+      "text_contains": "2.1 I/O \u81ea\u52a8\u673a",
+      "summary": "Subsection heading keeps subheading style below the section heading."
+    },
+    {
+      "category": "coverage",
+      "expect": "coverage_ledger_complete",
+      "summary": "Every non-empty source block on the fixture page has a coverage ledger entry."
+    }
+  ],
+  "categories": [
+    "coverage",
+    "figures",
+    "headings"
+  ],
+  "document": "wait-free-synchronization",
+  "page": 3
+}
