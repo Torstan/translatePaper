@@ -72,32 +72,22 @@ def load_cached_translations(path: Path, valid_ids: set[str], *, retranslate: bo
 def build_page_batches(selected_pages, max_chars: int, *, page_size=None, job_paths=None) -> list[PageBatch]:
     batches = []
     lines_by_page = pipeline.bbox_lines_by_page(job_paths)
+    in_reference_section = False
     for page_num, page_blocks in selected_pages:
-        visual_regions = pipeline.build_visual_regions(page_blocks)
-        classes = pipeline.classify_blocks(page_blocks, visual_regions)
-        source_image = pipeline.source_page_image_path(job_paths, page_num) if job_paths else None
-        visual_covered_text_ids = pipeline.visual_translation_protected_ids(
+        ownership_result, in_reference_section = pipeline.prepare_page_ownership(
+            page_num,
             page_blocks,
-            classes,
-            visual_regions,
             page_size=page_size,
-            page_num=page_num,
-            source_image_path=source_image,
+            job_paths=job_paths,
             bbox_lines=lines_by_page.get(page_num),
+            in_reference_section=in_reference_section,
         )
+        translatable_ids = set(ownership_result.translatable_ids)
         current = []
         current_chars = 0
         chunk_idx = 1
         for block in page_blocks:
-            if pipeline.should_preserve_first_page_metadata_as_image(block):
-                continue
-            if classes.get(block["id"]) not in pipeline.NORMAL_TRANSLATED_CLASSES:
-                continue
-            if block["id"] in visual_covered_text_ids:
-                continue
-            if pipeline.should_preserve_as_image(block):
-                continue
-            if pipeline.is_trivial_keep(block["text"]):
+            if block["id"] not in translatable_ids:
                 continue
             item = {"id": block["id"], "text": block["text"]}
             item_chars = len(block["text"])
@@ -147,7 +137,14 @@ def visual_qa_summary_from_report(report_json_path: Path) -> dict:
             "visual_checked_pages": [],
             "visual_highest_severity": "unknown",
             "visual_highest_severity_issues": [],
+            "ownership_issue_count": 0,
+            "ownership_error_count": 0,
         }
+    ownership_issues = [
+        issue
+        for issue in payload.get("issues", [])
+        if str(issue.get("render_kind", "")) == "ownership"
+    ]
     highest_severity = str(payload.get("highest_severity", "none") or "none")
     issues = [
         issue
@@ -158,6 +155,8 @@ def visual_qa_summary_from_report(report_json_path: Path) -> dict:
         "visual_checked_pages": sorted({int(page_num) for page_num in payload.get("checked_pages", [])}),
         "visual_highest_severity": highest_severity,
         "visual_highest_severity_issues": issues,
+        "ownership_issue_count": len(ownership_issues),
+        "ownership_error_count": sum(1 for issue in ownership_issues if str(issue.get("severity", "")) == "error"),
     }
 
 
@@ -376,6 +375,12 @@ def run_qa_for_job(
             plan_artifact_paths,
         )
         result.update(visual_result)
+        ownership_error_count = int(visual_result.get("ownership_error_count", 0))
+        if getattr(args, "strict_qa", False) and ownership_error_count > 0:
+            raise RuntimeError(
+                f"strict QA failed with {ownership_error_count} ownership error(s); "
+                f"see {visual_result['visual_report_md']}"
+            )
         if getattr(args, "strict_qa", False) and visual_result["visual_error_count"] > 0:
             raise RuntimeError(
                 f"visual QA found {visual_result['visual_error_count']} error(s); "

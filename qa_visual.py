@@ -1,11 +1,15 @@
 import json
 import math
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
 from PIL import Image
 
+
+TOOL_ROOT = Path(__file__).resolve().parent
+VENDOR_ROOT = TOOL_ROOT / "vendor"
 
 SEVERITY_ORDER = {
     "info": 0,
@@ -62,6 +66,23 @@ class VisualQaIssue:
     artifact_paths: Mapping[str, str] = field(default_factory=dict)
 
 
+OWNERSHIP_ISSUE_CATEGORY_BY_CODE = {
+    "duplicate_owner": "duplicate_ownership",
+    "source_rendered_as_image_and_text": "duplicate_ownership",
+    "text_over_visual": "text_over_visual",
+    "text_over_visual_component": "text_over_visual",
+    "visual_overcapture": "visual_overcapture",
+    "visual_clip_overcaptures_translated_component": "visual_overcapture",
+    "visual_clip_undercaptures_source": "visual_undercapture",
+    "visual_clip_undercaptures_owned_block": "visual_undercapture",
+    "missing_owner": "missing_ownership",
+    "invalid_owner": "invalid_ownership",
+    "invalid_component_kind": "invalid_ownership",
+    "invalid_confidence": "invalid_ownership",
+    "ownership_violation": "ownership_violation",
+}
+
+
 @dataclass(frozen=True)
 class VisualQaReport:
     json_path: Path
@@ -72,11 +93,13 @@ class VisualQaReport:
 
 
 def load_fitz():
+    if str(VENDOR_ROOT) not in sys.path:
+        sys.path.insert(0, str(VENDOR_ROOT))
     try:
         import fitz
     except ImportError as exc:
         raise SystemExit(
-            "PyMuPDF is required for visual QA. Install with: python3 -m pip install pymupdf"
+            "PyMuPDF is required for visual QA. Install with: python3 -m pip install --target vendor pymupdf"
         ) from exc
     return fitz
 
@@ -261,6 +284,13 @@ def _ledger_by_block_id(plan) -> dict[str, object]:
     return {str(_ledger_value(entry, "block_id")): entry for entry in _plan_ledger_entries(plan)}
 
 
+def _has_component_ownership_metadata(plan) -> bool:
+    return any(
+        str(_ledger_value(entry, "component_kind", "") or "")
+        for entry in _plan_ledger_entries(plan)
+    )
+
+
 def _classifications_by_block_id(plan) -> dict[str, str]:
     return {
         block_id: str(_ledger_value(entry, "classification", ""))
@@ -292,6 +322,22 @@ def _body_source_block_overcaptured(block_bbox, clip_bbox) -> bool:
     return area > 0 and _bbox_overlap_area(block_bbox, clip_bbox) >= area * 0.35
 
 
+def _bbox_contains(inner, outer, *, tolerance: float = 1.0) -> bool:
+    return (
+        inner[0] >= outer[0] - tolerance
+        and inner[1] >= outer[1] - tolerance
+        and inner[2] <= outer[2] + tolerance
+        and inner[3] <= outer[3] + tolerance
+    )
+
+
+def _visual_source_block_undercaptured(block_bbox, clip_bbox) -> bool:
+    area = _bbox_area(block_bbox)
+    if area <= 0 or _bbox_contains(block_bbox, clip_bbox):
+        return False
+    return _bbox_overlap_area(block_bbox, clip_bbox) < area * 0.98
+
+
 def _expanded_bbox(bbox, page_size, amount: float) -> tuple[float, float, float, float]:
     width, height = page_size
     return (
@@ -316,6 +362,47 @@ def _dedupe_protected_regions(regions: list[dict]) -> list[dict]:
         source_ids.update(region["source_ids"])
         by_bbox[key]["source_ids"] = sorted(source_ids)
     return list(by_bbox.values())
+
+
+def _ownership_issue_to_visual_issue(plan, issue) -> VisualQaIssue:
+    issue_code = str(_ledger_value(issue, "issue_code", ""))
+    category = OWNERSHIP_ISSUE_CATEGORY_BY_CODE.get(issue_code, issue_code or "ownership_violation")
+    source_ids = [str(source_id) for source_id in _ledger_value(issue, "source_ids", [])]
+    bboxes = _ledger_value(issue, "bboxes", []) or []
+    bbox = None
+    if bboxes:
+        bbox = _bbox_tuple(bboxes[0])
+    elif _ledger_value(issue, "bbox") is not None:
+        bbox = _bbox_tuple(_ledger_value(issue, "bbox"))
+    component_ids = [str(component_id) for component_id in _ledger_value(issue, "component_ids", [])]
+    artifact_paths = {}
+    if component_ids:
+        artifact_paths["component_ids"] = ",".join(sorted(component_ids))
+    return VisualQaIssue(
+        category=category,
+        severity=str(_ledger_value(issue, "severity", "error")),
+        page_num=_plan_page_num(plan),
+        message=str(_ledger_value(issue, "message", "")),
+        source_ids=source_ids,
+        bbox=bbox,
+        render_kind="ownership",
+        artifact_paths=artifact_paths,
+    )
+
+
+def detect_ownership_issues(plan) -> list[VisualQaIssue]:
+    validation = _item_value(plan, "ownership_validation", None)
+    if validation is None:
+        if isinstance(plan, Mapping):
+            validation = plan.get("ownership_validation")
+        else:
+            validation = getattr(plan, "ownership_validation", None)
+    if not validation:
+        return []
+    serialized_issues = _item_value(validation, "errors", None)
+    if serialized_issues is None:
+        serialized_issues = _item_value(validation, "issues", [])
+    return [_ownership_issue_to_visual_issue(plan, issue) for issue in serialized_issues]
 
 
 def detect_blank_image_clips(
@@ -355,12 +442,12 @@ def detect_blank_image_clips(
     return issues
 
 
-def _dark_bbox_touches_clip_edge(dark_bbox, clip_bbox, tolerance: float) -> bool:
+def _dark_bbox_exceeds_clip_edge(dark_bbox, clip_bbox, tolerance: float) -> bool:
     return (
-        dark_bbox[0] <= clip_bbox[0] + tolerance
-        or dark_bbox[1] <= clip_bbox[1] + tolerance
-        or dark_bbox[2] >= clip_bbox[2] - tolerance
-        or dark_bbox[3] >= clip_bbox[3] - tolerance
+        dark_bbox[0] <= clip_bbox[0] - tolerance
+        or dark_bbox[1] <= clip_bbox[1] - tolerance
+        or dark_bbox[2] >= clip_bbox[2] + tolerance
+        or dark_bbox[3] >= clip_bbox[3] + tolerance
     )
 
 
@@ -378,10 +465,22 @@ def detect_image_clip_boundary_issues(
     issues = []
     ledger_by_id = _ledger_by_block_id(plan)
     blocks_by_id = {str(block["id"]): block for block in (source_blocks or [])}
+    ownership_aware = _has_component_ownership_metadata(plan)
     body_block_ids = {
         block_id
         for block_id, entry in ledger_by_id.items()
         if _ledger_value(entry, "classification") == "body"
+        and (
+            str(_ledger_value(entry, "component_kind", "") or "") == "translated_text"
+            if ownership_aware
+            else True
+        )
+    }
+    visual_ledger_ids = {
+        block_id
+        for block_id, entry in ledger_by_id.items()
+        if str(_ledger_value(entry, "component_kind", "") or "") == "visual"
+        and str(_ledger_value(entry, "render_kind", "") or "") == "original_image_clip"
     }
     for item in _plan_render_items(plan):
         if _item_value(item, "kind") != "original_image_clip":
@@ -395,7 +494,7 @@ def detect_image_clip_boundary_issues(
             darkness_threshold=darkness_threshold,
         )
         source_ids = _source_ids_for_item(item)
-        if dark_bbox is not None and _dark_bbox_touches_clip_edge(dark_bbox, clip_bbox, edge_tolerance):
+        if dark_bbox is not None and _dark_bbox_exceeds_clip_edge(dark_bbox, clip_bbox, edge_tolerance):
             issues.append(
                 VisualQaIssue(
                     category="clipped_content",
@@ -404,6 +503,26 @@ def detect_image_clip_boundary_issues(
                     message="dark source content touches image clip boundary",
                     source_ids=source_ids,
                     bbox=clip_bbox,
+                    render_kind="original_image_clip",
+                    artifact_paths={"source_png": str(source_image_path)},
+                )
+            )
+
+        for source_id in sorted(set(source_ids) & visual_ledger_ids):
+            block = blocks_by_id.get(source_id)
+            if block is None:
+                continue
+            undercapture_bbox = _block_bbox(block)
+            if not _visual_source_block_undercaptured(undercapture_bbox, clip_bbox):
+                continue
+            issues.append(
+                VisualQaIssue(
+                    category="visual_undercapture",
+                    severity="error",
+                    page_num=page_num,
+                    message="image clip does not cover visual-owned source block",
+                    source_ids=[source_id],
+                    bbox=undercapture_bbox,
                     render_kind="original_image_clip",
                     artifact_paths={"source_png": str(source_image_path)},
                 )
@@ -978,6 +1097,10 @@ def generate_visual_qa_report(
         int(page_num): list(blocks)
         for page_num, blocks in (source_blocks_by_page or {}).items()
     }
+    for plan in loaded_plans:
+        page_num = int(plan["page_num"])
+        report_issues.extend(detect_ownership_issues(plan))
+
     if page_size is not None:
         for plan in loaded_plans:
             page_num = int(plan["page_num"])

@@ -1,0 +1,326 @@
+{
+  "document": "bert",
+  "page": 9,
+  "blocks": [
+    {
+      "id": "p009b0001",
+      "page": 9,
+      "block_index": 1,
+      "xMin": 72.0,
+      "yMin": 66.37063,
+      "xMax": 290.269273,
+      "yMax": 252.263366,
+      "text": "mixed results on the downstream task impact of\nincreasing the pre-trained bi-LM size from two\nto four layers and Melamud et al. (2016) men-\ntioned in passing that increasing hidden dimen-\nsion size from 200 to 600 helped, but increasing\nfurther to 1,000 did not bring further improve-\nments. Both of these prior works used a feature-\nbased approach — we hypothesize that when the\nmodel is fine-tuned directly on the downstream\ntasks and uses only a very small number of ran-\ndomly initialized additional parameters, the task-\nspecific models can benefit from the larger, more\nexpressive pre-trained representations even when\ndownstream task data is very small."
+    },
+    {
+      "id": "p009b0002",
+      "page": 9,
+      "block_index": 2,
+      "xMin": 72.0,
+      "yMin": 267.339721,
+      "xMax": 85.636375,
+      "yMax": 277.147002,
+      "text": "5.3"
+    },
+    {
+      "id": "p009b0003",
+      "page": 9,
+      "block_index": 3,
+      "xMin": 96.545475,
+      "yMin": 267.339721,
+      "xMax": 266.989253,
+      "yMax": 277.147002,
+      "text": "Feature-based Approach with BERT"
+    },
+    {
+      "id": "p009b0004",
+      "page": 9,
+      "block_index": 4,
+      "xMin": 72.0,
+      "yMin": 286.42263,
+      "xMax": 290.269273,
+      "yMax": 581.451366,
+      "text": "All of the BERT results presented so far have used\nthe fine-tuning approach, where a simple classifi-\ncation layer is added to the pre-trained model, and\nall parameters are jointly fine-tuned on a down-\nstream task. However, the feature-based approach,\nwhere fixed features are extracted from the pre-\ntrained model, has certain advantages. First, not\nall tasks can be easily represented by a Trans-\nformer encoder architecture, and therefore require\na task-specific model architecture to be added.\nSecond, there are major computational benefits\nto pre-compute an expensive representation of the\ntraining data once and then run many experiments\nwith cheaper models on top of this representation.\nIn this section, we compare the two approaches\nby applying BERT to the CoNLL-2003 Named\nEntity Recognition (NER) task (Tjong Kim Sang\nand De Meulder, 2003). In the input to BERT, we\nuse a case-preserving WordPiece model, and we\ninclude the maximal document context provided\nby the data. Following standard practice, we for-\nmulate this as a tagging task but do not use a CRF"
+    },
+    {
+      "id": "p009b0005",
+      "page": 9,
+      "block_index": 5,
+      "xMin": 85.57,
+      "yMin": 623.128781,
+      "xMax": 95.53167,
+      "yMax": 631.144742,
+      "text": "#L"
+    },
+    {
+      "id": "p009b0006",
+      "page": 9,
+      "block_index": 6,
+      "xMin": 317.015,
+      "yMin": 83.068781,
+      "xMax": 416.622738,
+      "yMax": 111.009742,
+      "text": "ELMo (Peters et al., 2018a)\nCVT (Clark et al., 2018)\nCSE (Akbik et al., 2018)"
+    },
+    {
+      "id": "p009b0007",
+      "page": 9,
+      "block_index": 7,
+      "xMin": 461.678898,
+      "yMin": 83.068781,
+      "xMax": 477.370098,
+      "yMax": 111.009742,
+      "text": "95.7\n-\n-"
+    },
+    {
+      "id": "p009b0008",
+      "page": 9,
+      "block_index": 8,
+      "xMin": 494.693182,
+      "yMin": 83.068781,
+      "xMax": 510.3882,
+      "yMax": 110.946978,
+      "text": "92.2\n92.6\n93.1"
+    },
+    {
+      "id": "p009b0009",
+      "page": 9,
+      "block_index": 9,
+      "xMin": 317.015,
+      "yMin": 118.433781,
+      "xMax": 393.964645,
+      "yMax": 146.726162,
+      "text": "Fine-tuning approach\nBERT LARGE\nBERT BASE"
+    },
+    {
+      "id": "p009b0010",
+      "page": 9,
+      "block_index": 10,
+      "xMin": 461.678,
+      "yMin": 128.396781,
+      "xMax": 477.3692,
+      "yMax": 146.374742,
+      "text": "96.6\n96.4"
+    },
+    {
+      "id": "p009b0011",
+      "page": 9,
+      "block_index": 11,
+      "xMin": 494.701251,
+      "yMin": 128.396781,
+      "xMax": 510.392451,
+      "yMax": 146.374742,
+      "text": "92.8\n92.4"
+    },
+    {
+      "id": "p009b0012",
+      "page": 9,
+      "block_index": 12,
+      "xMin": 317.015,
+      "yMin": 153.798781,
+      "xMax": 449.766811,
+      "yMax": 221.590742,
+      "text": "Feature-based approach (BERT BASE )\nEmbeddings\nSecond-to-Last Hidden\nLast Hidden\nWeighted Sum Last Four Hidden\nConcat Last Four Hidden\nWeighted Sum All 12 Layers"
+    },
+    {
+      "id": "p009b0013",
+      "page": 9,
+      "block_index": 13,
+      "xMin": 461.679886,
+      "yMin": 163.761781,
+      "xMax": 477.371086,
+      "yMax": 221.590742,
+      "text": "91.0\n95.6\n94.9\n95.9\n96.1\n95.5"
+    },
+    {
+      "id": "p009b0014",
+      "page": 9,
+      "block_index": 14,
+      "xMin": 501.051349,
+      "yMin": 163.761781,
+      "xMax": 504.03716,
+      "yMax": 221.590742,
+      "text": "-\n-\n-\n-\n-\n-"
+    },
+    {
+      "id": "p009b0015",
+      "page": 9,
+      "block_index": 15,
+      "xMin": 307.276,
+      "yMin": 314.38963,
+      "xMax": 525.545273,
+      "yMax": 351.240366,
+      "text": "layer in the output. We use the representation of\nthe first sub-token as the input to the token-level\nclassifier over the NER label set."
+    },
+    {
+      "id": "p009b0016",
+      "page": 9,
+      "block_index": 16,
+      "xMin": 307.276,
+      "yMin": 358.89963,
+      "xMax": 525.545273,
+      "yMax": 449.947366,
+      "text": "To ablate the fine-tuning approach, we apply the\nfeature-based approach by extracting the activa-\ntions from one or more layers without fine-tuning\nany parameters of BERT. These contextual em-\nbeddings are used as input to a randomly initial-\nized two-layer 768-dimensional BiLSTM before\nthe classification layer."
+    },
+    {
+      "id": "p009b0017",
+      "page": 9,
+      "block_index": 17,
+      "xMin": 307.276,
+      "yMin": 457.60563,
+      "xMax": 525.545273,
+      "yMax": 562.202366,
+      "text": "Results are presented in Table 7. BERT LARGE\nperforms competitively with state-of-the-art meth-\nods. The best performing method concatenates the\ntoken representations from the top four hidden lay-\ners of the pre-trained Transformer, which is only\n0.3 F1 behind fine-tuning the entire model. This\ndemonstrates that BERT is effective for both fine-\ntuning and feature-based approaches."
+    },
+    {
+      "id": "p009b0018",
+      "page": 9,
+      "block_index": 18,
+      "xMin": 325.2088,
+      "yMin": 588.740912,
+      "xMax": 382.342701,
+      "yMax": 599.488637,
+      "text": "Conclusion"
+    },
+    {
+      "id": "p009b0019",
+      "page": 9,
+      "block_index": 19,
+      "xMin": 196.139614,
+      "yMin": 607.688781,
+      "xMax": 261.011518,
+      "yMax": 615.704742,
+      "text": "Dev Set Accuracy"
+    },
+    {
+      "id": "p009b0020",
+      "page": 9,
+      "block_index": 20,
+      "xMin": 109.053002,
+      "yMin": 623.128781,
+      "xMax": 276.697782,
+      "yMax": 631.144742,
+      "text": "#H #A LM (ppl) MNLI-m MRPC SST-2"
+    },
+    {
+      "id": "p009b0021",
+      "page": 9,
+      "block_index": 21,
+      "xMin": 86.566,
+      "yMin": 638.568781,
+      "xMax": 137.513085,
+      "yMax": 696.397742,
+      "text": "3 768 12\n6 768 3\n6 768 12\n12 768 12\n12 1024 16\n24 1024 16"
+    },
+    {
+      "id": "p009b0022",
+      "page": 9,
+      "block_index": 22,
+      "xMin": 456.308024,
+      "yMin": 67.628781,
+      "xMax": 515.800088,
+      "yMax": 75.644742,
+      "text": "Dev F1 Test F1"
+    },
+    {
+      "id": "p009b0023",
+      "page": 9,
+      "block_index": 23,
+      "xMin": 307.276,
+      "yMin": 236.970357,
+      "xMax": 525.546603,
+      "yMax": 281.742922,
+      "text": "Table 7: CoNLL-2003 Named Entity Recognition re-\nsults. Hyperparameters were selected using the Dev\nset. The reported Dev and Test scores are averaged over\n5 random restarts using those hyperparameters."
+    },
+    {
+      "id": "p009b0024",
+      "page": 9,
+      "block_index": 24,
+      "xMin": 307.276,
+      "yMin": 588.740912,
+      "xMax": 313.2536,
+      "yMax": 599.488637,
+      "text": "6"
+    },
+    {
+      "id": "p009b0025",
+      "page": 9,
+      "block_index": 25,
+      "xMin": 89.027,
+      "yMin": 607.688781,
+      "xMax": 137.328997,
+      "yMax": 615.704742,
+      "text": "Hyperparams"
+    },
+    {
+      "id": "p009b0026",
+      "page": 9,
+      "block_index": 26,
+      "xMin": 317.015,
+      "yMin": 67.628781,
+      "xMax": 343.421048,
+      "yMax": 75.644742,
+      "text": "System"
+    },
+    {
+      "id": "p009b0027",
+      "page": 9,
+      "block_index": 27,
+      "xMin": 152.773698,
+      "yMin": 638.568781,
+      "xMax": 168.465098,
+      "yMax": 696.397742,
+      "text": "5.84\n5.24\n4.68\n3.99\n3.54\n3.23"
+    },
+    {
+      "id": "p009b0028",
+      "page": 9,
+      "block_index": 28,
+      "xMin": 192.315522,
+      "yMin": 638.568781,
+      "xMax": 208.006922,
+      "yMax": 696.397742,
+      "text": "77.9\n80.6\n81.9\n84.4\n85.7\n86.6"
+    },
+    {
+      "id": "p009b0029",
+      "page": 9,
+      "block_index": 29,
+      "xMin": 227.750734,
+      "yMin": 638.568781,
+      "xMax": 243.442134,
+      "yMax": 696.397742,
+      "text": "79.8\n82.2\n84.8\n86.7\n86.9\n87.8"
+    },
+    {
+      "id": "p009b0030",
+      "page": 9,
+      "block_index": 30,
+      "xMin": 257.806107,
+      "yMin": 638.568781,
+      "xMax": 273.497507,
+      "yMax": 696.397742,
+      "text": "88.4\n90.7\n91.3\n92.9\n93.3\n93.7"
+    },
+    {
+      "id": "p009b0031",
+      "page": 9,
+      "block_index": 31,
+      "xMin": 72.0,
+      "yMin": 716.759357,
+      "xMax": 290.270603,
+      "yMax": 761.530922,
+      "text": "Table 6: Ablation over BERT model size. #L = the\nnumber of layers; #H = hidden size; #A = number of at-\ntention heads. “LM (ppl)” is the masked LM perplexity\nof held-out training data."
+    },
+    {
+      "id": "p009b0032",
+      "page": 9,
+      "block_index": 32,
+      "xMin": 307.276,
+      "yMin": 620.07763,
+      "xMax": 525.545273,
+      "yMax": 751.772366,
+      "text": "Recent empirical improvements due to transfer\nlearning with language models have demonstrated\nthat rich, unsupervised pre-training is an integral\npart of many language understanding systems. In\nparticular, these results enable even low-resource\ntasks to benefit from deep unidirectional architec-\ntures. Our major contribution is further general-\nizing these findings to deep bidirectional architec-\ntures, allowing the same pre-trained model to suc-\ncessfully tackle a broad set of NLP tasks."
+    }
+  ]
+}

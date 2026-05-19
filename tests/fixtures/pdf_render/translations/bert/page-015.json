@@ -1,0 +1,18 @@
+{
+  "document": "bert",
+  "page": 15,
+  "translations": {
+    "p015b0009": "T 1 ’",
+    "p015b0010": "T M ’",
+    "p015b0023": "E 1 ’",
+    "p015b0025": "E M ’",
+    "p015b0097": "SST-2 Stanford Sentiment Treebank 是一项二元单句分类任务，由从电影评论中抽取的句子组成，并带有人类对其情感的标注 (Socher et al., 2013)。",
+    "p015b0098": "CoLA Corpus of Linguistic Acceptability 是一项二元单句分类任务，其目标是预测一个英语句子在语言学上是否“可接受” (Warstadt et al., 2018)。",
+    "p015b0099": "STS-B Semantic Textual Similarity Benchmark 是一个句子对集合，这些句子对取自新闻标题和其他来源 (Cer et al., 2017)。它们被标注了 1 到 5 的分数，表示两个句子在语义意义上的相似程度。",
+    "p015b0100": "MRPC Microsoft Research Paraphrase Corpus 由从在线新闻来源中自动抽取的句子对组成，并带有人类标注",
+    "p015b0101": "用于说明句子对中的句子在语义上是否等价 (Dolan and Brockett, 2005)。",
+    "p015b0102": "RTE Recognizing Textual Entailment 是一项类似于 MNLI 的二元蕴含任务，但训练数据少得多 (Bentivogli et al., 2009)。14",
+    "p015b0103": "WNLI Winograd NLI 是一个小型自然语言推理数据集 (Levesque et al., 2011)。GLUE 网页指出，该数据集的构建存在问题，15 而且提交到 GLUE 的每个已训练系统的表现都低于预测多数类这一 65.1 的基线准确率。因此，为了公平对待 OpenAI GPT，我们排除了该集合。对于我们的 GLUE 提交，我们始终预测 ma-",
+    "p015b0104": "14\n请注意，本文中我们仅报告单任务微调结果。多任务微调方法有可能进一步提升性能。例如，我们确实观察到，通过与 MNLI 进行多任务训练，RTE 上取得了显著改进。\n15\nhttps://gluebenchmark.com/faq"
+  }
+}

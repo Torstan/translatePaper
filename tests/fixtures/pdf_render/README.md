@@ -50,3 +50,17 @@ with the layout guard tests:
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/translatePaper_pycache python3 -m unittest tests.test_pdf_render_fixture_layout tests.test_pdf_render_fixtures -v
 ```
+
+## Ownership Assertions
+
+Ownership fixtures should assert the component contract, not only the visible
+render item. Use `ownership_validation_ok` on every page fixture. Use
+`component_contains` when a figure, table, formula, or code component must own
+internal labels or columns. Use `source_not_rendered_as` to prove visual-owned
+source IDs are not drawn as translated text. Use `no_text_over_component` for
+ghosting reports where a text layer previously appeared over a preserved visual
+clip.
+
+For reference continuation defects, assert both sides: reference blocks should
+be `reference` components and adjacent body or appendix blocks in another
+column should be `translated_text` components.

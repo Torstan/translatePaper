@@ -1,0 +1,55 @@
+{
+  "document": "bert",
+  "page": 12,
+  "assertions": [
+    {
+      "expect": "coverage_ledger_complete",
+      "summary": "every source block has coverage"
+    },
+    {
+      "expect": "ownership_validation_ok",
+      "summary": "page 12 ownership is exclusive"
+    },
+    {
+      "expect": "component_kind_for_source",
+      "source_id": "p012b0002",
+      "component_kind": "reference",
+      "summary": "reference continuation stays reference"
+    },
+    {
+      "expect": "component_kind_for_source",
+      "source_id": "p012b0001",
+      "component_kind": "translated_text",
+      "summary": "right-column appendix bullet is translated"
+    },
+    {
+      "expect": "component_kind_for_source",
+      "source_id": "p012b0012",
+      "component_kind": "translated_text",
+      "summary": "appendix heading is translated"
+    },
+    {
+      "expect": "source_not_rendered_as",
+      "source_id": "p012b0001",
+      "render_kind": "original_image_clip",
+      "summary": "right-column appendix bullet is not captured by the reference component"
+    },
+    {
+      "expect": "source_not_rendered_as",
+      "source_id": "p012b0012",
+      "render_kind": "original_image_clip",
+      "summary": "appendix heading is not captured by the reference component"
+    },
+    {
+      "expect": "reference_original_text",
+      "text_contains": "for natural language understanding",
+      "summary": "reference text preserved"
+    },
+    {
+      "expect": "translated_text",
+      "source_id": "p012b0012",
+      "text_contains": "BERT",
+      "summary": "appendix title remains in translated text layer"
+    }
+  ]
+}

@@ -75,6 +75,80 @@ class ParallelBatchPlanningTests(unittest.TestCase):
 
         self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0003"]])
 
+    def test_build_page_batches_consumes_pipeline_page_component_ownership(self):
+        blocks = [
+            {
+                "id": "p001b0001",
+                "text": "Figure 1: architecture",
+                "xMin": 80.0,
+                "yMin": 100.0,
+                "xMax": 260.0,
+                "yMax": 180.0,
+            },
+            {
+                "id": "p001b0002",
+                "text": "short diagram label",
+                "xMin": 100.0,
+                "yMin": 130.0,
+                "xMax": 180.0,
+                "yMax": 145.0,
+            },
+            {
+                "id": "p001b0003",
+                "text": "This body paragraph should still be translated.",
+                "xMin": 80.0,
+                "yMin": 220.0,
+                "xMax": 360.0,
+                "yMax": 245.0,
+            },
+        ]
+        visual_regions = [{"source_ids": ["p001b0001"], "bbox": (78.0, 98.0, 262.0, 182.0)}]
+        classes = {"p001b0001": "figure_region", "p001b0002": "body", "p001b0003": "body"}
+
+        with (
+            patch.object(parallel.pipeline, "build_visual_regions", return_value=visual_regions),
+            patch.object(parallel.pipeline, "classify_blocks", return_value=classes),
+        ):
+            result = parallel.pipeline.build_translation_page_components(1, blocks)
+            batches = parallel.build_page_batches([(1, blocks)], max_chars=7000)
+
+        self.assertEqual(result.translatable_ids, ["p001b0003"])
+        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0003"]])
+
+    def test_build_page_batches_routes_through_prepare_page_ownership(self):
+        blocks = [
+            {
+                "id": "p001b0001",
+                "text": "This body paragraph should be translated.",
+                "xMin": 80.0,
+                "yMin": 100.0,
+                "xMax": 360.0,
+                "yMax": 130.0,
+            }
+        ]
+        ownership_result = SimpleNamespace(translatable_ids=["p001b0001"])
+
+        with (
+            patch.object(
+                parallel.pipeline,
+                "prepare_page_ownership",
+                return_value=(ownership_result, True),
+                create=True,
+            ) as prepare_mock,
+            patch.object(
+                parallel.pipeline,
+                "build_translation_page_components",
+                side_effect=AssertionError("build_page_batches must use prepare_page_ownership"),
+            ),
+        ):
+            batches = parallel.build_page_batches([(1, blocks)], max_chars=7000, page_size=(400, 400))
+
+        prepare_mock.assert_called_once()
+        _, kwargs = prepare_mock.call_args
+        self.assertEqual(kwargs["page_size"], (400, 400))
+        self.assertFalse(kwargs["in_reference_section"])
+        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0001"]])
+
     def test_build_page_batches_excludes_text_covered_by_final_visual_clip_padding(self):
         blocks = [
             {
@@ -201,6 +275,282 @@ class ParallelBatchPlanningTests(unittest.TestCase):
 
         sent_ids = [item["id"] for batch in batches for item in batch.items]
         self.assertEqual(sent_ids, ["p001b0001", "p001b0002", "p001b0003", "p001b0004"])
+
+    def test_build_page_batches_keeps_references_untranslated_across_pages(self):
+        page_10 = [
+            {
+                "id": "p010b0012",
+                "text": "References",
+                "xMin": 108.0,
+                "yMin": 597.0,
+                "xMax": 164.0,
+                "yMax": 608.0,
+            },
+            {
+                "id": "p010b0013",
+                "text": "[1] Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton. Layer normalization.",
+                "xMin": 113.0,
+                "yMin": 616.0,
+                "xMax": 504.0,
+                "yMax": 636.0,
+            },
+        ]
+        page_11 = [
+            {
+                "id": "p011b0001",
+                "text": "[5] Kyunghyun Cho, Bart van Merrienboer, Caglar Gulcehre, and Yoshua Bengio. Learning phrase representations.",
+                "xMin": 113.0,
+                "yMin": 75.0,
+                "xMax": 505.0,
+                "yMax": 106.0,
+            },
+            {
+                "id": "p011b0002",
+                "text": "[6] Francois Chollet. Xception: Deep learning with depthwise separable convolutions.",
+                "xMin": 113.0,
+                "yMin": 117.0,
+                "xMax": 504.0,
+                "yMax": 137.0,
+            },
+            {
+                "id": "p011b0022",
+                "text": "11",
+                "xMin": 301.0,
+                "yMin": 743.0,
+                "xMax": 311.0,
+                "yMax": 752.0,
+            },
+        ]
+
+        batches = parallel.build_page_batches([(10, page_10), (11, page_11)], max_chars=7000)
+
+        sent_ids = [item["id"] for batch in batches for item in batch.items]
+        self.assertEqual(sent_ids, [])
+
+    def test_build_page_batches_keeps_wrapped_reference_continuation_untranslated(self):
+        page_10 = [
+            {
+                "id": "p010b0012",
+                "text": "References",
+                "xMin": 108.0,
+                "yMin": 597.0,
+                "xMax": 164.0,
+                "yMax": 608.0,
+            },
+            {
+                "id": "p010b0013",
+                "text": "[1] Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton. Layer normalization.",
+                "xMin": 113.0,
+                "yMin": 616.0,
+                "xMax": 504.0,
+                "yMax": 636.0,
+            },
+        ]
+        page_11 = [
+            {
+                "id": "p011b0001",
+                "text": "machine translation. CoRR, abs/1406.1078, 2014.",
+                "xMin": 130.0,
+                "yMin": 75.0,
+                "xMax": 331.0,
+                "yMax": 95.0,
+            },
+            {
+                "id": "p011b0002",
+                "text": "[6] Francois Chollet. Xception: Deep learning with depthwise separable convolutions.",
+                "xMin": 113.0,
+                "yMin": 118.0,
+                "xMax": 504.0,
+                "yMax": 138.0,
+            },
+            {
+                "id": "p011b0003",
+                "text": "11",
+                "xMin": 301.0,
+                "yMin": 743.0,
+                "xMax": 311.0,
+                "yMax": 752.0,
+            },
+        ]
+
+        batches = parallel.build_page_batches([(10, page_10), (11, page_11)], max_chars=7000)
+
+        sent_ids = [item["id"] for batch in batches for item in batch.items]
+        self.assertEqual(sent_ids, [])
+
+    def test_build_page_batches_keeps_author_year_references_untranslated_across_pages(self):
+        page_10 = [
+            {
+                "id": "p010b0001",
+                "text": "References",
+                "xMin": 72.0,
+                "yMin": 65.0,
+                "xMax": 128.0,
+                "yMax": 76.0,
+            },
+            {
+                "id": "p010b0002",
+                "text": "Alan Akbik, Duncan Blythe, and Roland Vollgraf. 2018. Contextual string embeddings for sequence labeling.",
+                "xMin": 72.0,
+                "yMin": 87.0,
+                "xMax": 290.0,
+                "yMax": 140.0,
+            },
+        ]
+        page_11 = [
+            {
+                "id": "p011b0001",
+                "text": "Mandar Joshi, Eunsol Choi, Daniel S Weld, and Luke Zettlemoyer. 2017. Triviaqa: A large scale distantly supervised challenge dataset for reading comprehension. In ACL.",
+                "xMin": 72.0,
+                "yMin": 67.0,
+                "xMax": 290.0,
+                "yMax": 109.0,
+            },
+            {
+                "id": "p011b0002",
+                "text": "Matthew Peters, Mark Neumann, Luke Zettlemoyer, and Wen-tau Yih. 2018b. Dissecting contextual word embeddings: Architecture and representation.",
+                "xMin": 307.0,
+                "yMin": 67.0,
+                "xMax": 526.0,
+                "yMax": 140.0,
+            },
+        ]
+
+        batches = parallel.build_page_batches([(10, page_10), (11, page_11)], max_chars=7000)
+
+        sent_ids = [item["id"] for batch in batches for item in batch.items]
+        self.assertEqual(sent_ids, [])
+
+    def test_build_page_batches_keeps_mixed_reference_appendix_page_selective(self):
+        page_10 = [
+            {
+                "id": "p010b0001",
+                "text": "References",
+                "xMin": 72.0,
+                "yMin": 65.0,
+                "xMax": 128.0,
+                "yMax": 76.0,
+            },
+            {
+                "id": "p010b0002",
+                "text": "Yacine Jernite, Samuel R. Bowman, and David Sontag. 2017. Discourse-based objectives for fast unsupervised sentence representation learning.",
+                "xMin": 307.0,
+                "yMin": 723.0,
+                "xMax": 526.0,
+                "yMax": 765.0,
+            },
+        ]
+        page_11 = [
+            {
+                "id": "p011b0001",
+                "text": "Mandar Joshi, Eunsol Choi, Daniel S Weld, and Luke Zettlemoyer. 2017. Triviaqa: A large scale distantly supervised challenge dataset for reading comprehension.",
+                "xMin": 72.0,
+                "yMin": 67.0,
+                "xMax": 290.0,
+                "yMax": 109.0,
+            },
+        ]
+        mixed_page_12 = [
+            {
+                "id": "p012b0001",
+                "text": "for natural language understanding. In Proceedings of the 2018 EMNLP Workshop BlackboxNLP: Analyzing and Interpreting Neural Networks for NLP, pages 353-355.",
+                "xMin": 83.0,
+                "yMin": 67.0,
+                "xMax": 290.0,
+                "yMax": 109.0,
+            },
+            {
+                "id": "p012b0002",
+                "text": "Wei Wang, Ming Yan, and Chen Wu. 2018b. Multi-granularity hierarchical attention fusion networks for reading comprehension and question answering. In Proceedings of ACL.",
+                "xMin": 72.0,
+                "yMin": 122.0,
+                "xMax": 290.0,
+                "yMax": 196.0,
+            },
+            {
+                "id": "p012b0003",
+                "text": "Appendix for BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
+                "xMin": 86.0,
+                "yMin": 670.0,
+                "xMax": 276.0,
+                "yMax": 708.0,
+            },
+            {
+                "id": "p012b0004",
+                "text": "Additional Details for BERT",
+                "xMin": 328.0,
+                "yMin": 222.0,
+                "xMax": 474.0,
+                "yMax": 233.0,
+            },
+            {
+                "id": "p012b0005",
+                "text": "We provide examples of the pre-training tasks in the following.",
+                "xMin": 307.0,
+                "yMin": 262.0,
+                "xMax": 526.0,
+                "yMax": 285.0,
+            },
+        ]
+
+        batches = parallel.build_page_batches(
+            [(10, page_10), (11, page_11), (12, mixed_page_12)],
+            max_chars=7000,
+        )
+
+        sent_ids = [item["id"] for batch in batches for item in batch.items]
+        self.assertEqual(sent_ids, ["p012b0003", "p012b0004", "p012b0005"])
+
+    def test_build_page_batches_stops_reference_carryover_on_non_reference_page(self):
+        page_10 = [
+            {
+                "id": "p010b0012",
+                "text": "References",
+                "xMin": 108.0,
+                "yMin": 597.0,
+                "xMax": 164.0,
+                "yMax": 608.0,
+            },
+            {
+                "id": "p010b0013",
+                "text": "[1] Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton. Layer normalization.",
+                "xMin": 113.0,
+                "yMin": 616.0,
+                "xMax": 504.0,
+                "yMax": 636.0,
+            },
+        ]
+        figure_page = [
+            {
+                "id": "p013b0040",
+                "text": "Figure 3: An example of the attention mechanism following long-distance dependencies.",
+                "xMin": 108.0,
+                "yMin": 313.0,
+                "xMax": 504.0,
+                "yMax": 355.0,
+            },
+            {
+                "id": "p013b0041",
+                "text": "13",
+                "xMin": 301.0,
+                "yMin": 743.0,
+                "xMax": 311.0,
+                "yMax": 752.0,
+            },
+            {
+                "id": "p013b0042",
+                "text": "This normal paragraph should be translated after the references section has ended.",
+                "xMin": 108.0,
+                "yMin": 380.0,
+                "xMax": 504.0,
+                "yMax": 410.0,
+            },
+        ]
+
+        batches = parallel.build_page_batches([(10, page_10), (13, figure_page)], max_chars=7000)
+
+        sent_ids = [item["id"] for batch in batches for item in batch.items]
+        self.assertEqual(sent_ids, ["p013b0042"])
 
 
 class ParallelArtifactReportTests(unittest.TestCase):
@@ -671,6 +1021,172 @@ class ParallelArtifactReportTests(unittest.TestCase):
             self.assertEqual(result["visual_warning_count"], 1)
             self.assertEqual(result["visual_report_json"], str(visual_report.json_path))
             self.assertEqual(result["visual_report_md"], str(visual_report.markdown_path))
+
+    def test_run_qa_strict_mode_fails_on_ownership_visual_qa_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp) / "job"
+            plans_dir = job_dir / "plans"
+            pages_dir = job_dir / "pages"
+            visual_dir = job_dir / "visual_qa"
+            job_dir.mkdir()
+            plans_dir.mkdir()
+            pages_dir.mkdir()
+            visual_dir.mkdir()
+            (plans_dir / "page-001.render-plan.json").write_text("{}", encoding="utf-8")
+            (pages_dir / "page-001.png").write_bytes(b"source png")
+            output_pdf = Path(tmp) / "translated.pdf"
+            output_pdf.write_bytes(b"%PDF-1.4\n")
+            report_json_path = visual_dir / "visual_qa_report.json"
+            report_json_path.write_text(
+                json.dumps(
+                    {
+                        "checked_pages": [1],
+                        "highest_severity": "error",
+                        "issues": [
+                            {
+                                "category": "ownership_validation",
+                                "render_kind": "ownership",
+                                "severity": "error",
+                                "page_num": 1,
+                                "message": "source block p001b0001 has no owner",
+                                "source_ids": ["p001b0001"],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            selected_pages = [(1, [{"id": "p001b0001", "text": "Body"}])]
+            job_paths = {
+                "job_dir": job_dir,
+                "plans_dir": plans_dir,
+                "pages_dir": pages_dir,
+            }
+            args = SimpleNamespace(
+                strict_qa=True,
+                qa_mode="sample",
+                qa_sample_size=10,
+                qa_batch_chars=7000,
+                model="test-model",
+                reasoning_effort="low",
+                retries=1,
+                render_mode="vector",
+                strict_body_flow=False,
+            )
+            visual_report = SimpleNamespace(
+                json_path=report_json_path,
+                markdown_path=visual_dir / "visual_qa_report.md",
+                issue_count=1,
+                error_count=1,
+                warning_count=0,
+            )
+
+            with (
+                patch.object(parallel.pipeline, "validate_document_quality", return_value=[]),
+                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(parallel.qa, "run_backtranslation", return_value={}),
+                patch.object(parallel.qa, "build_report", return_value=[]),
+                patch.object(parallel.qa, "write_markdown"),
+                patch.object(parallel.qa_visual, "generate_visual_qa_report", return_value=visual_report),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "strict QA failed with 1 ownership error"):
+                    parallel.run_qa_for_job(
+                        selected_pages,
+                        translations={},
+                        job_paths=job_paths,
+                        page_size=(612, 792),
+                        args=args,
+                        output_pdf_path=output_pdf,
+                    )
+
+    def test_run_qa_non_strict_reports_ownership_visual_qa_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job_dir = Path(tmp) / "job"
+            plans_dir = job_dir / "plans"
+            pages_dir = job_dir / "pages"
+            visual_dir = job_dir / "visual_qa"
+            job_dir.mkdir()
+            plans_dir.mkdir()
+            pages_dir.mkdir()
+            visual_dir.mkdir()
+            (plans_dir / "page-001.render-plan.json").write_text("{}", encoding="utf-8")
+            (pages_dir / "page-001.png").write_bytes(b"source png")
+            output_pdf = Path(tmp) / "translated.pdf"
+            output_pdf.write_bytes(b"%PDF-1.4\n")
+            report_json_path = visual_dir / "visual_qa_report.json"
+            report_json_path.write_text(
+                json.dumps(
+                    {
+                        "checked_pages": [1],
+                        "highest_severity": "warning",
+                        "issues": [
+                            {
+                                "category": "ownership_validation",
+                                "render_kind": "ownership",
+                                "severity": "error",
+                                "page_num": 1,
+                                "message": "source block p001b0001 has no owner",
+                                "source_ids": ["p001b0001"],
+                            },
+                            {
+                                "category": "ownership_validation",
+                                "render_kind": "ownership",
+                                "severity": "warning",
+                                "page_num": 1,
+                                "message": "ownership split is conservative",
+                                "source_ids": ["p001b0002"],
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            selected_pages = [(1, [{"id": "p001b0001", "text": "Body"}])]
+            job_paths = {
+                "job_dir": job_dir,
+                "plans_dir": plans_dir,
+                "pages_dir": pages_dir,
+            }
+            args = SimpleNamespace(
+                strict_qa=False,
+                qa_mode="sample",
+                qa_sample_size=10,
+                qa_batch_chars=7000,
+                model="test-model",
+                reasoning_effort="low",
+                retries=1,
+                render_mode="vector",
+                strict_body_flow=False,
+            )
+            visual_report = SimpleNamespace(
+                json_path=report_json_path,
+                markdown_path=visual_dir / "visual_qa_report.md",
+                issue_count=2,
+                error_count=1,
+                warning_count=1,
+            )
+
+            with (
+                patch.object(parallel.pipeline, "validate_document_quality", return_value=[]),
+                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(parallel.qa, "run_backtranslation", return_value={}),
+                patch.object(parallel.qa, "build_report", return_value=[]),
+                patch.object(parallel.qa, "write_markdown"),
+                patch.object(parallel.qa_visual, "generate_visual_qa_report", return_value=visual_report),
+            ):
+                result = parallel.run_qa_for_job(
+                    selected_pages,
+                    translations={},
+                    job_paths=job_paths,
+                    page_size=(612, 792),
+                    args=args,
+                    output_pdf_path=output_pdf,
+                )
+
+            self.assertEqual(result["ownership_issue_count"], 2)
+            self.assertEqual(result["ownership_error_count"], 1)
 
 
 class ParallelCliIntegrationTests(unittest.TestCase):

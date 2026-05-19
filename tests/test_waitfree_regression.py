@@ -790,6 +790,58 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
         self.assertNotIn("for Q in 1 .. n", body_text)
         self.assertNotIn("enddecide", body_text)
 
+    def test_page17_mixed_code_body_block_still_enters_translation_batches(self):
+        bbox_lines = [
+            line
+            for line in pdf.parse_bbox_lines(JOB / "source_bbox.html")
+            if line["page"] == 17
+        ]
+        ownership_result = pdf.build_translation_page_components(
+            17,
+            self.pages[16],
+            page_size=(623, 801),
+            bbox_lines=bbox_lines,
+            source_image_path=JOB / "pages" / "page-017.png",
+        )
+
+        self.assertIn("p017b0002", ownership_result.translatable_ids)
+
+    def test_page17_mixed_code_body_tail_has_original_fallback_when_translation_tail_missing(self):
+        bbox_lines = [
+            line
+            for line in pdf.parse_bbox_lines(JOB / "source_bbox.html")
+            if line["page"] == 17
+        ]
+        translations = dict(self.translations)
+        translations["p017b0002"] = "decide(input:value)returns(value)\nenddecide"
+        plan = pdf.build_page_render_plan(
+            17,
+            self.pages[16],
+            translations,
+            page_size=(623, 801),
+            bbox_lines=bbox_lines,
+            source_image_path=JOB / "pages" / "page-017.png",
+        )
+        fallback_items = [
+            item
+            for item in plan.items
+            if item.kind == "original_selectable_text"
+            and item.fallback_reason == "mixed_visual_body_original"
+            and "p017b0002" in item.source_ids
+        ]
+        ledger_entries = [
+            entry
+            for entry in plan.ledger
+            if entry.block_id == "p017b0002"
+            and entry.render_kind == "original_selectable_text"
+            and entry.fallback_reason == "mixed_visual_body_original"
+        ]
+
+        self.assertTrue(fallback_items)
+        self.assertIn("PROOF. The protocol uses", "\n".join(item.text for item in fallback_items))
+        self.assertTrue(ledger_entries)
+        self.assertEqual(pdf.validate_plan_coverage(17, self.pages[16], plan), [])
+
     def test_page17_fig13_code_clip_does_not_capture_proof_text(self):
         bbox_lines = [
             line

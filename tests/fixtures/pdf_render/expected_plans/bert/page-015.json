@@ -1,0 +1,64 @@
+{
+  "document": "bert",
+  "page": 15,
+  "assertions": [
+    {
+      "expect": "coverage_ledger_complete",
+      "summary": "every source block has coverage"
+    },
+    {
+      "expect": "ownership_validation_ok",
+      "summary": "page 15 ownership is exclusive"
+    },
+    {
+      "expect": "component_contains",
+      "component_kind": "visual",
+      "source_ids": [
+        "p015b0009",
+        "p015b0010",
+        "p015b0023",
+        "p015b0025"
+      ],
+      "summary": "figure-internal prime labels are visual-owned"
+    },
+    {
+      "expect": "component_contains",
+      "component_kind": "visual",
+      "source_ids": [
+        "p015b0093",
+        "p015b0094",
+        "p015b0095",
+        "p015b0096"
+      ],
+      "summary": "figure caption band is visual-owned"
+    },
+    {
+      "expect": "source_not_rendered_as",
+      "source_id": "p015b0009",
+      "render_kind": "translated_text",
+      "summary": "diagram label T 1 prime is not translated"
+    },
+    {
+      "expect": "source_not_rendered_as",
+      "source_id": "p015b0023",
+      "render_kind": "translated_text",
+      "summary": "diagram label E 1 prime is not translated"
+    },
+    {
+      "expect": "no_text_over_component",
+      "source_ids": [
+        "p015b0009",
+        "p015b0010",
+        "p015b0023",
+        "p015b0025"
+      ],
+      "summary": "no translated text overlaps main figure"
+    },
+    {
+      "expect": "component_kind_for_source",
+      "source_id": "p015b0097",
+      "component_kind": "translated_text",
+      "summary": "body after figure remains translated"
+    }
+  ]
+}

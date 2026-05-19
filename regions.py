@@ -24,6 +24,8 @@ from classify import (
     is_running_header_fragment,
     is_standalone_equation_label,
     is_table_caption,
+    is_non_prose_identifier_text,
+    is_reference_heading,
     is_visual_caption,
     is_visual_row_text,
     latin_words,
@@ -497,6 +499,37 @@ def cap_visual_bbox_after_preceding_text(region_bbox, visual_bbox, blocks, class
     return capped
 
 
+def cap_visual_bbox_against_adjacent_translated_text(region_bbox, visual_bbox, blocks, classes, visual_ids, page_size):
+    capped = visual_bbox
+    region_center_x = bbox_center(region_bbox)[0]
+    for block in blocks:
+        if block["id"] in visual_ids:
+            continue
+        classification = classes.get(block["id"])
+        if classification not in NORMAL_TRANSLATED_CLASSES:
+            continue
+        text = normalize_text(block.get("text", ""))
+        if not text:
+            continue
+        if classification == "body" and is_non_prose_identifier_text(text):
+            continue
+        block_box = block_bbox(block)
+        if vertical_overlap(capped, block_box) <= 6.0:
+            continue
+        if horizontal_overlap(capped, block_box) <= 0.0:
+            continue
+        x0, y0, x1, y1 = capped
+        block_center_x = bbox_center(block_box)[0]
+        if block_center_x >= region_center_x:
+            x1 = min(x1, block_box[0] - TEXT_PROTECTED_GAP_PT)
+        else:
+            x0 = max(x0, block_box[2] + TEXT_PROTECTED_GAP_PT)
+        next_box = clamp_bbox((x0, y0, x1, y1), page_size)
+        if next_box[2] - next_box[0] >= 20.0 and next_box[3] - next_box[1] >= 8.0:
+            capped = next_box
+    return capped
+
+
 def formula_region_bbox_from_lines(region, bbox_lines, page_size) -> tuple[float, float, float, float] | None:
     if not bbox_lines:
         return None
@@ -551,6 +584,8 @@ def nontranslated_blocks_covered_by_visual_region(blocks, classes, region_bbox, 
         if not text:
             continue
         if classes.get(block_id) in {"page_number", "header_footer", "journal_footer", "reference"}:
+            continue
+        if classes.get(block_id) in {"title", "heading", "subheading", "body"} and source_requires_chinese_translation(text):
             continue
         if is_large_prose_block(block, text):
             continue
@@ -639,6 +674,44 @@ def standalone_heading_number_text(text: str) -> str:
     if any(part > 99 for part in parts[1:]):
         return ""
     return number
+
+
+def standalone_appendix_heading_marker_text(text: str) -> str:
+    candidate = normalize_text(text).split("\n", 1)[0].strip().rstrip(".")
+    if not re.fullmatch(r"[A-Z](?:\.\d+){0,3}", candidate):
+        return ""
+    return candidate
+
+
+def has_appendix_heading_title_to_right(block, blocks) -> bool:
+    if not standalone_appendix_heading_marker_text(block.get("text", "")):
+        return False
+    for other in blocks:
+        if other["id"] == block["id"]:
+            continue
+        if not same_heading_line(block, other):
+            continue
+        gap = other["xMin"] - block["xMax"]
+        if gap < 0 or gap > HEADING_NUMBER_TITLE_MAX_GAP_PT:
+            continue
+        title = short_heading_text(other.get("text", ""))
+        if title and starts_like_source_heading(title) and not title.endswith("."):
+            return True
+    return False
+
+
+def is_standalone_heading_pair_member(block, blocks) -> bool:
+    text = normalize_text(block.get("text", ""))
+    if standalone_heading_number_text(text) and any(
+        same_heading_line(block, other)
+        and 0 <= other["xMin"] - block["xMax"] <= HEADING_NUMBER_TITLE_MAX_GAP_PT
+        and short_heading_text(other.get("text", ""))
+        and starts_like_source_heading(short_heading_text(other.get("text", "")))
+        for other in blocks
+        if other["id"] != block["id"]
+    ):
+        return True
+    return has_standalone_heading_number_to_left(block, blocks)
 
 
 def source_is_short_continuation_fragment(block) -> bool:
@@ -776,6 +849,28 @@ def table_cells_already_seen_above_caption(seed_box, blocks, consumed: set[str])
     return False
 
 
+def table_cells_present_above_caption(seed_box, blocks, consumed: set[str]) -> bool:
+    for other in blocks:
+        if other["id"] in consumed:
+            continue
+        other_box = block_bbox(other)
+        if other_box[3] > seed_box[1] + 8.0 or other_box[3] < seed_box[1] - 180.0:
+            continue
+        if horizontal_overlap(seed_box, other_box) <= 0:
+            continue
+        text = normalize_text(other.get("text", ""))
+        if not text:
+            continue
+        if (
+            is_table_body_candidate(seed_box, other_box, text)
+            or is_numeric_metric_cell(text)
+            or is_multiline_numeric_table_column(text)
+            or visual_label_like_text(other)
+        ):
+            return True
+    return False
+
+
 def has_standalone_heading_number_to_left(block, blocks) -> bool:
     for other in blocks:
         if other["id"] == block["id"] or not standalone_heading_number_text(other.get("text", "")):
@@ -807,6 +902,88 @@ def merge_adjacent_code_visual_regions(regions: list[dict]) -> list[dict]:
     return merged
 
 
+def visual_label_like_text(block) -> bool:
+    text = normalize_text(block.get("text", ""))
+    if not text or is_visual_caption(text) or contains_visual_caption(text):
+        return False
+    box = block_bbox(block)
+    width = box[2] - box[0]
+    height = box[3] - box[1]
+    if is_multiline_numeric_table_column(text):
+        return True
+    if is_running_header_fragment(block) or is_reference_heading(text) or standalone_heading_number_text(text):
+        return False
+    if is_heading_text(text) and not (height >= width * 1.6 or (len(text) <= 40 and width <= 180.0 and english_function_word_count(text) == 0)):
+        return False
+    if is_prose_row_text(text):
+        return False
+    if is_numeric_metric_cell(text) or is_fragmented_narrow_table_cell(block):
+        return True
+    compact = re.sub(r"\s+", "", text)
+    if re.fullmatch(r"[\d,.]+", compact):
+        return True
+    if re.search(r"[.!?][\"')\]）】”’]*\s*$", text):
+        return False
+    if len(compact) <= 28 and re.fullmatch(r"[\w\[\]#,+\-_/().·•]+", compact):
+        return True
+    if "\n" in text and len(text) <= 180 and english_function_word_count(text) == 0:
+        return True
+    if is_non_prose_identifier_text(text):
+        return True
+    words = latin_words(text)
+    return len(words) <= 8 and english_function_word_count(text) == 0 and len(text) <= 120
+
+
+def is_multiline_numeric_table_column(text: str) -> bool:
+    lines = [line.strip() for line in normalize_text(text).split("\n") if line.strip()]
+    if len(lines) < 2:
+        return False
+    numeric_lines = [
+        line
+        for line in lines
+        if re.fullmatch(r"[+-]?\d+(?:\.\d+)?(?:\s+[+-]?\d+(?:\.\d+)?){0,4}", line)
+    ]
+    return len(numeric_lines) == len(lines)
+
+
+def expand_visual_regions_with_upper_labels(blocks, regions: list[dict], *, max_gap: float = 100.0) -> list[dict]:
+    if not regions:
+        return regions
+    sorted_blocks = sorted(blocks, key=lambda item: (item["yMin"], item["xMin"]))
+    consumed = {source_id for region in regions for source_id in region["source_ids"]}
+    changed = True
+    while changed:
+        changed = False
+        for region in sorted(regions, key=lambda item: (item["bbox"][1], item["bbox"][0])):
+            region_box = region["bbox"]
+            group = []
+            for block in sorted_blocks:
+                if block["id"] in consumed or block["id"] in region["source_ids"]:
+                    continue
+                if is_standalone_heading_pair_member(block, sorted_blocks):
+                    continue
+                if not visual_label_like_text(block):
+                    continue
+                box = block_bbox(block)
+                if box[3] > region_box[1] + 8.0:
+                    continue
+                if region_box[1] - box[3] > max_gap:
+                    continue
+                required_overlap = min(4.0, max(0.5, (box[2] - box[0]) * 0.5))
+                if horizontal_overlap(region_box, box) < required_overlap:
+                    continue
+                group.append(block)
+            if not group:
+                continue
+            group.sort(key=lambda item: (item["yMin"], item["xMin"]))
+            region["source_ids"].extend(block["id"] for block in group)
+            region["source_ids"] = list(dict.fromkeys(region["source_ids"]))
+            region["bbox"] = bbox_union([region["bbox"], *(block_bbox(block) for block in group)])
+            consumed.update(block["id"] for block in group)
+            changed = True
+    return regions
+
+
 def diagram_label_candidate_above_caption(block, caption_box) -> bool:
     text = normalize_text(block.get("text", ""))
     if not text or is_page_number(text) or is_visual_caption(text) or contains_visual_caption(text):
@@ -827,6 +1004,10 @@ def diagram_label_candidate_above_caption(block, caption_box) -> bool:
     if any(0x1D400 <= ord(char) <= 0x1D7FF for char in text):
         return True
     words = latin_words(text)
+    if len(words) <= 1 and re.fullmatch(r"[A-Za-z,.;:'\"!?()<>_\-/\s]{1,18}", text):
+        return True
+    if 1 <= len(words) <= 4 and width <= 120.0 and height <= 55.0:
+        return True
     if 1 <= len(words) <= 4 and english_function_word_count(text) == 0:
         return True
     if re.fullmatch(r"[A-Za-z0-9 ._+:/%#?=&~×,;()[\]'\"!-]{1,40}", text):
@@ -843,9 +1024,10 @@ def diagram_regions_above_visual_captions(blocks, existing_regions: list[dict]) 
         if not (is_visual_caption(caption_text) or contains_visual_caption(caption_text)):
             continue
         caption_box = block_bbox(caption)
+        top_limit = max(0.0, caption_box[1] - 520.0)
         search = (
             caption_box[0] - 60.0,
-            max(0.0, caption_box[1] - 230.0),
+            top_limit,
             caption_box[2] + 60.0,
             caption_box[1] - 2.0,
         )
@@ -859,11 +1041,20 @@ def diagram_regions_above_visual_captions(blocks, existing_regions: list[dict]) 
                 continue
             if diagram_label_candidate_above_caption(block, caption_box):
                 group.append(block)
-        if len(group) < 8:
+        if len(group) < 3:
             continue
         region_box = bbox_union([block_bbox(block) for block in group])
-        if region_box[2] - region_box[0] < 160.0 or region_box[3] - region_box[1] < 80.0:
-            continue
+        region_width = region_box[2] - region_box[0]
+        region_height = region_box[3] - region_box[1]
+        gap_to_caption = caption_box[1] - region_box[3]
+        if len(group) < 8:
+            if region_width < 160.0 or gap_to_caption < 60.0 or region_height > 180.0:
+                continue
+        else:
+            if region_width < 160.0 or region_height < 80.0:
+                continue
+            if region_box[1] > caption_box[1] - 260.0 and region_height < 180.0:
+                continue
         source_ids = [block["id"] for block in group]
         existing_ids.update(source_ids)
         regions.append(
@@ -891,10 +1082,12 @@ def build_visual_regions(blocks) -> list[dict]:
         if not text:
             continue
         short_source_fragment = source_is_short_continuation_fragment(block)
+        appendix_heading_marker = has_appendix_heading_title_to_right(block, sorted_blocks)
         explicit_image = (
             (block.get("preserve_image") or should_preserve_as_image(block))
             and not is_standalone_equation_label(text)
         ) and not is_body_enumeration_line(text) and (not short_source_fragment or is_numeric_metric_cell(text))
+        explicit_image = explicit_image and not appendix_heading_marker
         has_caption = is_visual_caption(text) or contains_visual_caption(text)
         caption_seed = has_caption and not is_large_prose_block(block, text)
         row_cell_seed = is_numeric_metric_cell(text) or is_fragmented_narrow_table_cell(block)
@@ -902,12 +1095,13 @@ def build_visual_regions(blocks) -> list[dict]:
         code_seed = (
             is_code_listing_block(text)
             or (is_code_row_text(text) and not formula_like)
-        ) and not is_body_enumeration_line(text) and not short_source_fragment
+        ) and not is_body_enumeration_line(text) and not short_source_fragment and not appendix_heading_marker
         formula_seed = (
             (is_formula_or_code_block(text) or is_code_row_text(text))
             and not is_standalone_equation_label(text)
             and not is_body_enumeration_line(text)
             and not short_source_fragment
+            and not appendix_heading_marker
         )
         is_visual_seed = explicit_image or caption_seed or formula_seed
         if not is_visual_seed:
@@ -915,7 +1109,16 @@ def build_visual_regions(blocks) -> list[dict]:
         seed_box = block_bbox(block)
         table_seed = is_table_caption(text) and caption_seed
         if table_seed:
-            if table_cells_already_seen_above_caption(seed_box, sorted_blocks, consumed):
+            table_cells_above_caption = table_cells_already_seen_above_caption(
+                seed_box,
+                sorted_blocks,
+                consumed,
+            ) or table_cells_present_above_caption(
+                seed_box,
+                sorted_blocks,
+                consumed | {block["id"]},
+            )
+            if table_cells_above_caption:
                 search = (seed_box[0] - 260.0, seed_box[1] - 140.0, seed_box[2] + 260.0, seed_box[3] + 28.0)
             else:
                 search = (seed_box[0] - 260.0, seed_box[1] - 20.0, seed_box[2] + 260.0, seed_box[3] + 640.0)
@@ -933,6 +1136,8 @@ def build_visual_regions(blocks) -> list[dict]:
         for other in sorted_blocks:
             other_text = normalize_text(other.get("text", ""))
             if not other_text or other["id"] in consumed:
+                continue
+            if other["id"] != block["id"] and other["id"] in references:
                 continue
             if is_running_header_fragment(other):
                 continue
@@ -952,8 +1157,12 @@ def build_visual_regions(blocks) -> list[dict]:
                     continue
                 if table_seed:
                     if other["id"] != block["id"]:
+                        if is_standalone_heading_pair_member(other, sorted_blocks):
+                            continue
                         if is_table_region_terminator(seed_box, other_box, other_text):
                             break
+                        if table_cells_above_caption and is_large_prose_block(other, other_text):
+                            continue
                         if not is_table_body_candidate(seed_box, other_box, other_text):
                             continue
                     group.append(other)
@@ -1023,4 +1232,5 @@ def build_visual_regions(blocks) -> list[dict]:
         )
     regions = merge_adjacent_code_visual_regions(regions)
     regions.extend(diagram_regions_above_visual_captions(blocks, regions))
+    regions = expand_visual_regions_with_upper_labels(blocks, regions)
     return regions

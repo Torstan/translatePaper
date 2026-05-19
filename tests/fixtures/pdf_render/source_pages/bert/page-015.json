@@ -1,0 +1,1046 @@
+{
+  "document": "bert",
+  "page": 15,
+  "blocks": [
+    {
+      "id": "p015b0001",
+      "page": 15,
+      "block_index": 1,
+      "xMin": 114.087557,
+      "yMin": 67.282711,
+      "xMax": 130.265607,
+      "yMax": 80.979512,
+      "text": "Class\nLabel"
+    },
+    {
+      "id": "p015b0002",
+      "page": 15,
+      "block_index": 2,
+      "xMin": 122.968043,
+      "yMin": 98.430271,
+      "xMax": 126.972804,
+      "yMax": 103.633132,
+      "text": "C"
+    },
+    {
+      "id": "p015b0003",
+      "page": 15,
+      "block_index": 3,
+      "xMin": 325.074626,
+      "yMin": 68.669401,
+      "xMax": 341.252676,
+      "yMax": 82.366202,
+      "text": "Class\nLabel"
+    },
+    {
+      "id": "p015b0004",
+      "page": 15,
+      "block_index": 4,
+      "xMin": 141.782412,
+      "yMin": 98.828809,
+      "xMax": 147.226594,
+      "yMax": 105.723432,
+      "text": "T 1"
+    },
+    {
+      "id": "p015b0005",
+      "page": 15,
+      "block_index": 5,
+      "xMin": 156.520794,
+      "yMin": 97.988252,
+      "xMax": 161.898378,
+      "yMax": 104.058256,
+      "text": "..."
+    },
+    {
+      "id": "p015b0006",
+      "page": 15,
+      "block_index": 6,
+      "xMin": 180.303087,
+      "yMin": 98.828809,
+      "xMax": 186.36111,
+      "yMax": 105.723432,
+      "text": "T N"
+    },
+    {
+      "id": "p015b0007",
+      "page": 15,
+      "block_index": 7,
+      "xMin": 197.806819,
+      "yMin": 98.836065,
+      "xMax": 210.63189,
+      "yMax": 105.730688,
+      "text": "T [SEP]"
+    },
+    {
+      "id": "p015b0008",
+      "page": 15,
+      "block_index": 8,
+      "xMin": 236.948817,
+      "yMin": 97.988252,
+      "xMax": 242.326401,
+      "yMax": 104.058256,
+      "text": "..."
+    },
+    {
+      "id": "p015b0009",
+      "page": 15,
+      "block_index": 9,
+      "xMin": 221.594275,
+      "yMin": 98.828809,
+      "xMax": 228.268393,
+      "yMax": 105.723432,
+      "text": "T 1 ’"
+    },
+    {
+      "id": "p015b0010",
+      "page": 15,
+      "block_index": 10,
+      "xMin": 257.136833,
+      "yMin": 98.828809,
+      "xMax": 264.833718,
+      "yMax": 105.723432,
+      "text": "T M ’"
+    },
+    {
+      "id": "p015b0011",
+      "page": 15,
+      "block_index": 11,
+      "xMin": 333.1717,
+      "yMin": 97.562225,
+      "xMax": 337.17646,
+      "yMax": 102.765086,
+      "text": "C"
+    },
+    {
+      "id": "p015b0012",
+      "page": 15,
+      "block_index": 12,
+      "xMin": 357.317145,
+      "yMin": 97.562225,
+      "xMax": 362.761326,
+      "yMax": 104.456848,
+      "text": "T 1"
+    },
+    {
+      "id": "p015b0013",
+      "page": 15,
+      "block_index": 13,
+      "xMin": 179.802485,
+      "yMin": 125.760781,
+      "xMax": 209.355623,
+      "yMax": 136.166503,
+      "text": "BERT"
+    },
+    {
+      "id": "p015b0014",
+      "page": 15,
+      "block_index": 14,
+      "xMin": 385.816865,
+      "yMin": 97.562225,
+      "xMax": 391.265661,
+      "yMax": 104.456848,
+      "text": "T 2"
+    },
+    {
+      "id": "p015b0015",
+      "page": 15,
+      "block_index": 15,
+      "xMin": 419.159362,
+      "yMin": 95.214872,
+      "xMax": 424.536946,
+      "yMax": 101.284876,
+      "text": "..."
+    },
+    {
+      "id": "p015b0016",
+      "page": 15,
+      "block_index": 16,
+      "xMin": 461.702648,
+      "yMin": 96.704188,
+      "xMax": 467.765286,
+      "yMax": 103.598811,
+      "text": "T N"
+    },
+    {
+      "id": "p015b0017",
+      "page": 15,
+      "block_index": 17,
+      "xMin": 385.032618,
+      "yMin": 125.760781,
+      "xMax": 414.585756,
+      "yMax": 136.166503,
+      "text": "BERT"
+    },
+    {
+      "id": "p015b0018",
+      "page": 15,
+      "block_index": 18,
+      "xMin": 119.942952,
+      "yMin": 154.601942,
+      "xMax": 130.722457,
+      "yMax": 160.347461,
+      "text": "E [CLS]"
+    },
+    {
+      "id": "p015b0019",
+      "page": 15,
+      "block_index": 19,
+      "xMin": 141.62668,
+      "yMin": 154.296408,
+      "xMax": 147.382325,
+      "yMax": 161.191031,
+      "text": "E 1"
+    },
+    {
+      "id": "p015b0020",
+      "page": 15,
+      "block_index": 20,
+      "xMin": 156.520794,
+      "yMin": 153.455854,
+      "xMax": 161.898378,
+      "yMax": 159.525858,
+      "text": "..."
+    },
+    {
+      "id": "p015b0021",
+      "page": 15,
+      "block_index": 21,
+      "xMin": 180.147356,
+      "yMin": 154.296408,
+      "xMax": 186.516843,
+      "yMax": 161.191031,
+      "text": "E N"
+    },
+    {
+      "id": "p015b0022",
+      "page": 15,
+      "block_index": 22,
+      "xMin": 199.781892,
+      "yMin": 154.34687,
+      "xMax": 212.923041,
+      "yMax": 161.241493,
+      "text": "E [SEP]"
+    },
+    {
+      "id": "p015b0023",
+      "page": 15,
+      "block_index": 23,
+      "xMin": 224.211931,
+      "yMin": 154.296408,
+      "xMax": 231.197512,
+      "yMax": 161.191031,
+      "text": "E 1 ’"
+    },
+    {
+      "id": "p015b0024",
+      "page": 15,
+      "block_index": 24,
+      "xMin": 239.722197,
+      "yMin": 153.455854,
+      "xMax": 245.099781,
+      "yMax": 159.525858,
+      "text": "..."
+    },
+    {
+      "id": "p015b0025",
+      "page": 15,
+      "block_index": 25,
+      "xMin": 256.981109,
+      "yMin": 154.296408,
+      "xMax": 264.989456,
+      "yMax": 161.191031,
+      "text": "E M ’"
+    },
+    {
+      "id": "p015b0026",
+      "page": 15,
+      "block_index": 26,
+      "xMin": 328.705121,
+      "yMin": 155.803205,
+      "xMax": 341.641972,
+      "yMax": 162.697828,
+      "text": "E [CLS]"
+    },
+    {
+      "id": "p015b0027",
+      "page": 15,
+      "block_index": 27,
+      "xMin": 357.161405,
+      "yMin": 155.803205,
+      "xMax": 362.91705,
+      "yMax": 162.697828,
+      "text": "E 1"
+    },
+    {
+      "id": "p015b0028",
+      "page": 15,
+      "block_index": 28,
+      "xMin": 385.661125,
+      "yMin": 155.803205,
+      "xMax": 391.421385,
+      "yMax": 162.697828,
+      "text": "E 2"
+    },
+    {
+      "id": "p015b0029",
+      "page": 15,
+      "block_index": 29,
+      "xMin": 419.159362,
+      "yMin": 153.455854,
+      "xMax": 424.536946,
+      "yMax": 159.525858,
+      "text": "..."
+    },
+    {
+      "id": "p015b0030",
+      "page": 15,
+      "block_index": 30,
+      "xMin": 460.435525,
+      "yMin": 154.94517,
+      "xMax": 466.809626,
+      "yMax": 161.839792,
+      "text": "E N"
+    },
+    {
+      "id": "p015b0031",
+      "page": 15,
+      "block_index": 31,
+      "xMin": 120.927051,
+      "yMin": 183.395731,
+      "xMax": 129.009604,
+      "yMax": 186.430734,
+      "text": "[CLS]"
+    },
+    {
+      "id": "p015b0032",
+      "page": 15,
+      "block_index": 32,
+      "xMin": 141.424657,
+      "yMin": 180.902925,
+      "xMax": 147.585259,
+      "yMax": 188.878242,
+      "text": "Tok\n1"
+    },
+    {
+      "id": "p015b0033",
+      "page": 15,
+      "block_index": 33,
+      "xMin": 156.520794,
+      "yMin": 181.189651,
+      "xMax": 161.898378,
+      "yMax": 187.259655,
+      "text": "..."
+    },
+    {
+      "id": "p015b0034",
+      "page": 15,
+      "block_index": 34,
+      "xMin": 180.251978,
+      "yMin": 180.902925,
+      "xMax": 186.41258,
+      "yMax": 188.878242,
+      "text": "Tok\nN"
+    },
+    {
+      "id": "p015b0035",
+      "page": 15,
+      "block_index": 35,
+      "xMin": 201.37691,
+      "yMin": 183.206757,
+      "xMax": 210.813799,
+      "yMax": 186.675332,
+      "text": "[SEP]"
+    },
+    {
+      "id": "p015b0036",
+      "page": 15,
+      "block_index": 36,
+      "xMin": 224.626059,
+      "yMin": 180.902925,
+      "xMax": 230.786661,
+      "yMax": 188.878242,
+      "text": "Tok\n1"
+    },
+    {
+      "id": "p015b0037",
+      "page": 15,
+      "block_index": 37,
+      "xMin": 239.722197,
+      "yMin": 181.189651,
+      "xMax": 245.099781,
+      "yMax": 187.259655,
+      "text": "..."
+    },
+    {
+      "id": "p015b0038",
+      "page": 15,
+      "block_index": 38,
+      "xMin": 257.90662,
+      "yMin": 180.902925,
+      "xMax": 264.067222,
+      "yMax": 188.878242,
+      "text": "Tok\nM"
+    },
+    {
+      "id": "p015b0039",
+      "page": 15,
+      "block_index": 39,
+      "xMin": 329.39665,
+      "yMin": 181.070995,
+      "xMax": 340.943156,
+      "yMax": 186.045467,
+      "text": "[CLS]"
+    },
+    {
+      "id": "p015b0040",
+      "page": 15,
+      "block_index": 40,
+      "xMin": 353.102342,
+      "yMin": 180.765461,
+      "xMax": 366.963708,
+      "yMax": 186.341726,
+      "text": "Tok 1"
+    },
+    {
+      "id": "p015b0041",
+      "page": 15,
+      "block_index": 41,
+      "xMin": 381.734598,
+      "yMin": 181.771688,
+      "xMax": 395.595952,
+      "yMax": 186.974549,
+      "text": "Tok 2"
+    },
+    {
+      "id": "p015b0042",
+      "page": 15,
+      "block_index": 42,
+      "xMin": 419.159362,
+      "yMin": 181.189651,
+      "xMax": 424.536946,
+      "yMax": 187.259655,
+      "text": "..."
+    },
+    {
+      "id": "p015b0043",
+      "page": 15,
+      "block_index": 43,
+      "xMin": 456.355223,
+      "yMin": 180.913649,
+      "xMax": 471.137339,
+      "yMax": 186.11651,
+      "text": "Tok N"
+    },
+    {
+      "id": "p015b0044",
+      "page": 15,
+      "block_index": 44,
+      "xMin": 144.757799,
+      "yMin": 208.465775,
+      "xMax": 177.476287,
+      "yMax": 214.535779,
+      "text": "Sentence 1"
+    },
+    {
+      "id": "p015b0045",
+      "page": 15,
+      "block_index": 45,
+      "xMin": 225.185817,
+      "yMin": 208.812447,
+      "xMax": 257.904305,
+      "yMax": 214.882452,
+      "text": "Sentence 2"
+    },
+    {
+      "id": "p015b0046",
+      "page": 15,
+      "block_index": 46,
+      "xMin": 376.171424,
+      "yMin": 209.505792,
+      "xMax": 423.268963,
+      "yMax": 215.575797,
+      "text": "Single Sentence"
+    },
+    {
+      "id": "p015b0047",
+      "page": 15,
+      "block_index": 47,
+      "xMin": 226.006363,
+      "yMin": 261.617674,
+      "xMax": 269.848878,
+      "yMax": 267.687678,
+      "text": "Start/End Span"
+    },
+    {
+      "id": "p015b0048",
+      "page": 15,
+      "block_index": 48,
+      "xMin": 125.741424,
+      "yMin": 287.020117,
+      "xMax": 129.746184,
+      "yMax": 292.222978,
+      "text": "C"
+    },
+    {
+      "id": "p015b0049",
+      "page": 15,
+      "block_index": 49,
+      "xMin": 144.555793,
+      "yMin": 287.418651,
+      "xMax": 149.999974,
+      "yMax": 294.313274,
+      "text": "T 1"
+    },
+    {
+      "id": "p015b0050",
+      "page": 15,
+      "block_index": 50,
+      "xMin": 159.294174,
+      "yMin": 286.578094,
+      "xMax": 164.671758,
+      "yMax": 292.648099,
+      "text": "..."
+    },
+    {
+      "id": "p015b0051",
+      "page": 15,
+      "block_index": 51,
+      "xMin": 183.076467,
+      "yMin": 287.418651,
+      "xMax": 189.134491,
+      "yMax": 294.313274,
+      "text": "T N"
+    },
+    {
+      "id": "p015b0052",
+      "page": 15,
+      "block_index": 52,
+      "xMin": 200.580206,
+      "yMin": 287.425921,
+      "xMax": 213.405277,
+      "yMax": 294.320544,
+      "text": "T [SEP]"
+    },
+    {
+      "id": "p015b0053",
+      "page": 15,
+      "block_index": 53,
+      "xMin": 224.367656,
+      "yMin": 287.418651,
+      "xMax": 231.041773,
+      "yMax": 294.313274,
+      "text": "T 1 ’"
+    },
+    {
+      "id": "p015b0054",
+      "page": 15,
+      "block_index": 54,
+      "xMin": 239.722197,
+      "yMin": 286.578094,
+      "xMax": 245.099781,
+      "yMax": 292.648099,
+      "text": "..."
+    },
+    {
+      "id": "p015b0055",
+      "page": 15,
+      "block_index": 55,
+      "xMin": 259.910213,
+      "yMin": 287.418651,
+      "xMax": 267.607098,
+      "yMax": 294.313274,
+      "text": "T M ’"
+    },
+    {
+      "id": "p015b0056",
+      "page": 15,
+      "block_index": 56,
+      "xMin": 330.398319,
+      "yMin": 286.152067,
+      "xMax": 334.40308,
+      "yMax": 291.354928,
+      "text": "C"
+    },
+    {
+      "id": "p015b0057",
+      "page": 15,
+      "block_index": 57,
+      "xMin": 352.59824,
+      "yMin": 261.617674,
+      "xMax": 357.626378,
+      "yMax": 267.687678,
+      "text": "O"
+    },
+    {
+      "id": "p015b0058",
+      "page": 15,
+      "block_index": 58,
+      "xMin": 374.78528,
+      "yMin": 261.617674,
+      "xMax": 394.541915,
+      "yMax": 267.687678,
+      "text": "B-PER"
+    },
+    {
+      "id": "p015b0059",
+      "page": 15,
+      "block_index": 59,
+      "xMin": 416.385982,
+      "yMin": 258.844293,
+      "xMax": 421.763566,
+      "yMax": 264.914298,
+      "text": "..."
+    },
+    {
+      "id": "p015b0060",
+      "page": 15,
+      "block_index": 60,
+      "xMin": 457.986683,
+      "yMin": 261.617674,
+      "xMax": 463.014821,
+      "yMax": 267.687678,
+      "text": "O"
+    },
+    {
+      "id": "p015b0061",
+      "page": 15,
+      "block_index": 61,
+      "xMin": 354.543765,
+      "yMin": 286.152067,
+      "xMax": 359.987946,
+      "yMax": 293.04669,
+      "text": "T 1"
+    },
+    {
+      "id": "p015b0062",
+      "page": 15,
+      "block_index": 62,
+      "xMin": 383.043485,
+      "yMin": 286.152067,
+      "xMax": 388.492281,
+      "yMax": 293.04669,
+      "text": "T 2"
+    },
+    {
+      "id": "p015b0063",
+      "page": 15,
+      "block_index": 63,
+      "xMin": 416.385982,
+      "yMin": 283.804714,
+      "xMax": 421.763566,
+      "yMax": 289.874719,
+      "text": "..."
+    },
+    {
+      "id": "p015b0064",
+      "page": 15,
+      "block_index": 64,
+      "xMin": 458.929268,
+      "yMin": 285.294036,
+      "xMax": 464.991906,
+      "yMax": 292.188659,
+      "text": "T N"
+    },
+    {
+      "id": "p015b0065",
+      "page": 15,
+      "block_index": 65,
+      "xMin": 182.575865,
+      "yMin": 314.350631,
+      "xMax": 212.129003,
+      "yMax": 324.756353,
+      "text": "BERT"
+    },
+    {
+      "id": "p015b0066",
+      "page": 15,
+      "block_index": 66,
+      "xMin": 382.259238,
+      "yMin": 314.350631,
+      "xMax": 411.812376,
+      "yMax": 324.756353,
+      "text": "BERT"
+    },
+    {
+      "id": "p015b0067",
+      "page": 15,
+      "block_index": 67,
+      "xMin": 122.716333,
+      "yMin": 343.191791,
+      "xMax": 133.495838,
+      "yMax": 348.93731,
+      "text": "E [CLS]"
+    },
+    {
+      "id": "p015b0068",
+      "page": 15,
+      "block_index": 68,
+      "xMin": 144.40006,
+      "yMin": 342.886258,
+      "xMax": 150.155705,
+      "yMax": 349.780881,
+      "text": "E 1"
+    },
+    {
+      "id": "p015b0069",
+      "page": 15,
+      "block_index": 69,
+      "xMin": 159.294174,
+      "yMin": 342.045696,
+      "xMax": 164.671758,
+      "yMax": 348.1157,
+      "text": "..."
+    },
+    {
+      "id": "p015b0070",
+      "page": 15,
+      "block_index": 70,
+      "xMin": 182.920736,
+      "yMin": 342.886258,
+      "xMax": 189.290223,
+      "yMax": 349.780881,
+      "text": "E N"
+    },
+    {
+      "id": "p015b0071",
+      "page": 15,
+      "block_index": 71,
+      "xMin": 202.555272,
+      "yMin": 342.936716,
+      "xMax": 215.696421,
+      "yMax": 349.831339,
+      "text": "E [SEP]"
+    },
+    {
+      "id": "p015b0072",
+      "page": 15,
+      "block_index": 72,
+      "xMin": 226.985311,
+      "yMin": 342.886258,
+      "xMax": 233.970892,
+      "yMax": 349.780881,
+      "text": "E 1 ’"
+    },
+    {
+      "id": "p015b0073",
+      "page": 15,
+      "block_index": 73,
+      "xMin": 242.495577,
+      "yMin": 342.045696,
+      "xMax": 247.873161,
+      "yMax": 348.1157,
+      "text": "..."
+    },
+    {
+      "id": "p015b0074",
+      "page": 15,
+      "block_index": 74,
+      "xMin": 259.754489,
+      "yMin": 342.886258,
+      "xMax": 267.762836,
+      "yMax": 349.780881,
+      "text": "E M ’"
+    },
+    {
+      "id": "p015b0075",
+      "page": 15,
+      "block_index": 75,
+      "xMin": 325.931741,
+      "yMin": 344.393055,
+      "xMax": 338.868592,
+      "yMax": 351.287677,
+      "text": "E [CLS]"
+    },
+    {
+      "id": "p015b0076",
+      "page": 15,
+      "block_index": 76,
+      "xMin": 354.388025,
+      "yMin": 344.393055,
+      "xMax": 360.14367,
+      "yMax": 351.287677,
+      "text": "E 1"
+    },
+    {
+      "id": "p015b0077",
+      "page": 15,
+      "block_index": 77,
+      "xMin": 382.887745,
+      "yMin": 344.393055,
+      "xMax": 388.648005,
+      "yMax": 351.287677,
+      "text": "E 2"
+    },
+    {
+      "id": "p015b0078",
+      "page": 15,
+      "block_index": 78,
+      "xMin": 416.385982,
+      "yMin": 342.045696,
+      "xMax": 421.763566,
+      "yMax": 348.1157,
+      "text": "..."
+    },
+    {
+      "id": "p015b0079",
+      "page": 15,
+      "block_index": 79,
+      "xMin": 457.662145,
+      "yMin": 343.535006,
+      "xMax": 464.036246,
+      "yMax": 350.429628,
+      "text": "E N"
+    },
+    {
+      "id": "p015b0080",
+      "page": 15,
+      "block_index": 80,
+      "xMin": 123.700431,
+      "yMin": 371.985577,
+      "xMax": 131.782984,
+      "yMax": 375.02058,
+      "text": "[CLS]"
+    },
+    {
+      "id": "p015b0081",
+      "page": 15,
+      "block_index": 81,
+      "xMin": 144.198037,
+      "yMin": 369.492771,
+      "xMax": 150.358639,
+      "yMax": 377.468088,
+      "text": "Tok\n1"
+    },
+    {
+      "id": "p015b0082",
+      "page": 15,
+      "block_index": 82,
+      "xMin": 159.294174,
+      "yMin": 369.779497,
+      "xMax": 164.671758,
+      "yMax": 375.849501,
+      "text": "..."
+    },
+    {
+      "id": "p015b0083",
+      "page": 15,
+      "block_index": 83,
+      "xMin": 183.025358,
+      "yMin": 369.492771,
+      "xMax": 189.18596,
+      "yMax": 377.468088,
+      "text": "Tok\nN"
+    },
+    {
+      "id": "p015b0084",
+      "page": 15,
+      "block_index": 84,
+      "xMin": 204.15029,
+      "yMin": 371.796603,
+      "xMax": 213.587179,
+      "yMax": 375.265178,
+      "text": "[SEP]"
+    },
+    {
+      "id": "p015b0085",
+      "page": 15,
+      "block_index": 85,
+      "xMin": 227.399439,
+      "yMin": 369.492771,
+      "xMax": 233.560041,
+      "yMax": 377.468088,
+      "text": "Tok\n1"
+    },
+    {
+      "id": "p015b0086",
+      "page": 15,
+      "block_index": 86,
+      "xMin": 242.495577,
+      "yMin": 369.779497,
+      "xMax": 247.873161,
+      "yMax": 375.849501,
+      "text": "..."
+    },
+    {
+      "id": "p015b0087",
+      "page": 15,
+      "block_index": 87,
+      "xMin": 260.68,
+      "yMin": 369.492771,
+      "xMax": 266.840602,
+      "yMax": 377.468088,
+      "text": "Tok\nM"
+    },
+    {
+      "id": "p015b0088",
+      "page": 15,
+      "block_index": 88,
+      "xMin": 326.62327,
+      "yMin": 370.299606,
+      "xMax": 338.169776,
+      "yMax": 374.635324,
+      "text": "[CLS]"
+    },
+    {
+      "id": "p015b0089",
+      "page": 15,
+      "block_index": 89,
+      "xMin": 350.328975,
+      "yMin": 369.728711,
+      "xMax": 364.190328,
+      "yMax": 374.931572,
+      "text": "Tok 1"
+    },
+    {
+      "id": "p015b0090",
+      "page": 15,
+      "block_index": 90,
+      "xMin": 378.96123,
+      "yMin": 370.096183,
+      "xMax": 392.822584,
+      "yMax": 375.299044,
+      "text": "Tok 2"
+    },
+    {
+      "id": "p015b0091",
+      "page": 15,
+      "block_index": 91,
+      "xMin": 416.385982,
+      "yMin": 369.779497,
+      "xMax": 421.763566,
+      "yMax": 375.849501,
+      "text": "..."
+    },
+    {
+      "id": "p015b0092",
+      "page": 15,
+      "block_index": 92,
+      "xMin": 453.581843,
+      "yMin": 369.503495,
+      "xMax": 468.363959,
+      "yMax": 374.706356,
+      "text": "Tok N"
+    },
+    {
+      "id": "p015b0093",
+      "page": 15,
+      "block_index": 93,
+      "xMin": 150.949727,
+      "yMin": 397.055621,
+      "xMax": 176.834607,
+      "yMax": 403.125625,
+      "text": "Question"
+    },
+    {
+      "id": "p015b0094",
+      "page": 15,
+      "block_index": 94,
+      "xMin": 229.219244,
+      "yMin": 397.402293,
+      "xMax": 259.426899,
+      "yMax": 403.472298,
+      "text": "Paragraph"
+    },
+    {
+      "id": "p015b0095",
+      "page": 15,
+      "block_index": 95,
+      "xMin": 373.397126,
+      "yMin": 398.095638,
+      "xMax": 420.494665,
+      "yMax": 404.165643,
+      "text": "Single Sentence"
+    },
+    {
+      "id": "p015b0096",
+      "page": 15,
+      "block_index": 96,
+      "xMin": 172.417,
+      "yMin": 454.237357,
+      "xMax": 425.128312,
+      "yMax": 463.143922,
+      "text": "Figure 4: Illustrations of Fine-tuning BERT on Different Tasks."
+    },
+    {
+      "id": "p015b0097",
+      "page": 15,
+      "block_index": 97,
+      "xMin": 72.0,
+      "yMin": 487.935721,
+      "xMax": 290.269273,
+      "yMax": 552.016366,
+      "text": "SST-2 The Stanford Sentiment Treebank is a\nbinary single-sentence classification task consist-\ning of sentences extracted from movie reviews\nwith human annotations of their sentiment (Socher\net al., 2013)."
+    },
+    {
+      "id": "p015b0098",
+      "page": 15,
+      "block_index": 98,
+      "xMin": 72.0,
+      "yMin": 563.553721,
+      "xMax": 290.269513,
+      "yMax": 627.634366,
+      "text": "CoLA The Corpus of Linguistic Acceptability is\na binary single-sentence classification task, where\nthe goal is to predict whether an English sentence\nis linguistically “acceptable” or not (Warstadt\net al., 2018)."
+    },
+    {
+      "id": "p015b0099",
+      "page": 15,
+      "block_index": 99,
+      "xMin": 72.0,
+      "yMin": 639.172721,
+      "xMax": 290.269273,
+      "yMax": 716.802366,
+      "text": "STS-B The Semantic Textual Similarity Bench-\nmark is a collection of sentence pairs drawn from\nnews headlines and other sources (Cer et al.,\n2017). They were annotated with a score from 1\nto 5 denoting how similar the two sentences are in\nterms of semantic meaning."
+    },
+    {
+      "id": "p015b0100",
+      "page": 15,
+      "block_index": 100,
+      "xMin": 72.0,
+      "yMin": 728.339721,
+      "xMax": 290.269273,
+      "yMax": 765.322366,
+      "text": "MRPC Microsoft Research Paraphrase Corpus\nconsists of sentence pairs automatically extracted\nfrom online news sources, with human annotations"
+    },
+    {
+      "id": "p015b0101",
+      "page": 15,
+      "block_index": 101,
+      "xMin": 307.276,
+      "yMin": 488.06663,
+      "xMax": 525.545273,
+      "yMax": 511.368366,
+      "text": "for whether the sentences in the pair are semanti-\ncally equivalent (Dolan and Brockett, 2005)."
+    },
+    {
+      "id": "p015b0102",
+      "page": 15,
+      "block_index": 102,
+      "xMin": 307.276,
+      "yMin": 524.520721,
+      "xMax": 525.545273,
+      "yMax": 561.502366,
+      "text": "RTE Recognizing Textual Entailment is a bi-\nnary entailment task similar to MNLI, but with\nmuch less training data (Bentivogli et al., 2009). 14"
+    },
+    {
+      "id": "p015b0103",
+      "page": 15,
+      "block_index": 103,
+      "xMin": 307.276,
+      "yMin": 574.654721,
+      "xMax": 525.545273,
+      "yMax": 692.931366,
+      "text": "WNLI Winograd NLI is a small natural lan-\nguage inference dataset (Levesque et al., 2011).\nThe GLUE webpage notes that there are issues\nwith the construction of this dataset, 15 and every\ntrained system that’s been submitted to GLUE has\nperformed worse than the 65.1 baseline accuracy\nof predicting the majority class. We therefore ex-\nclude this set to be fair to OpenAI GPT. For our\nGLUE submission, we always predicted the ma-"
+    },
+    {
+      "id": "p015b0104",
+      "page": 15,
+      "block_index": 104,
+      "xMin": 307.276,
+      "yMin": 704.379187,
+      "xMax": 525.545075,
+      "yMax": 764.284061,
+      "text": "14\nNote that we only report single-task fine-tuning results\nin this paper. A multitask fine-tuning approach could poten-\ntially push the performance even further. For example, we\ndid observe substantial improvements on RTE from multi-\ntask training with MNLI.\n15\nhttps://gluebenchmark.com/faq"
+    }
+  ]
+}

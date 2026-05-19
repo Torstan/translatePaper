@@ -229,13 +229,364 @@ def is_reference_heading(text: str) -> bool:
     return bool(re.fullmatch(r"(?i)references|bibliography", normalize_text(text)))
 
 
-def starts_reference_item(text: str) -> bool:
-    return bool(
-        re.match(
-            r"^\s*(?:\[\d{1,3}\]|\d{1,3}\.)\s*[A-Z][A-Za-z-]+,",
-            normalize_text(text),
+REFERENCE_MARKER_RE = r"(?:\[\d{1,3}\]|\d{1,3}\.)"
+REFERENCE_AUTHOR_TOKEN_RE = r"[^\W\d_][^\s,;:()\[\]{}]*"
+REFERENCE_YEAR_RE = r"(?:18|19|20)\d{2}[a-z]?"
+REFERENCE_VENUE_CUES = (
+    "proceedings",
+    "conference",
+    "journal",
+    "transactions",
+    "workshop",
+    "symposium",
+    "association for computational",
+    "international conference",
+    "advances in neural",
+    "machine learning",
+    "natural language",
+    "empirical methods",
+    "technical report",
+    "arxiv",
+    "corr",
+    "acl",
+    "emnlp",
+    "naacl",
+    "conll",
+    "iclr",
+    "nips",
+    "neurips",
+    "bulletin",
+)
+
+
+def reference_marker_and_body(text: str) -> tuple[str, str] | None:
+    normalized = normalize_text(text)
+    match = re.match(
+        rf"^[^\S\n]*(?P<marker>{REFERENCE_MARKER_RE})[^\S\n]*(?P<body>.+)$",
+        normalized,
+        flags=re.S,
+    )
+    if not match:
+        return None
+    marker = match.group("marker")
+    body = match.group("body").strip()
+    if not marker.startswith("[") and not re.match(r"[^\W\d_]", body):
+        return None
+    return marker, flattened_bibliography_text(body)
+
+
+def reference_item_body_from_line(text: str) -> tuple[str, bool] | None:
+    match = re.match(
+        rf"^[^\S\n]*(?P<marker>{REFERENCE_MARKER_RE})[^\S\n]*(?P<body>[^\n]+)",
+        text,
+    )
+    if not match:
+        return None
+    body = match.group("body").strip()
+    marker = match.group("marker")
+    if not marker.startswith("[") and not re.match(r"[^\W\d_]", body):
+        return None
+    return body, marker.startswith("[")
+
+
+def looks_like_reference_item_line(text: str) -> bool:
+    parsed = reference_item_body_from_line(text)
+    if not parsed:
+        return False
+    body, bracketed_marker = parsed
+    comma_match = re.match(
+        rf"{REFERENCE_AUTHOR_TOKEN_RE}(?:[ \t]+{REFERENCE_AUTHOR_TOKEN_RE}){{0,6}}\s*,",
+        body,
+    )
+    if comma_match:
+        return True
+    period_match = re.match(
+        rf"(?P<author>{REFERENCE_AUTHOR_TOKEN_RE}(?:[ \t]+{REFERENCE_AUTHOR_TOKEN_RE}){{0,5}})\.[ \t]+\S",
+        body,
+    )
+    if not period_match:
+        return False
+    author_words = re.findall(r"[^\W\d_]+", period_match.group("author"))
+    if not author_words:
+        return False
+    if not bracketed_marker and len(author_words) < 2:
+        return False
+    if len(author_words) >= 2 and all(word.isupper() and len(word) > 1 for word in author_words):
+        return False
+    return True
+
+
+def flattened_bibliography_text(text: str) -> str:
+    normalized = normalize_text(text)
+    normalized = re.sub(r"(?<=\w)-\n(?=\w)", "", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+REFERENCE_VENUE_CUE_RE = re.compile(
+    r"\b("
+    + "|".join(re.escape(cue) for cue in sorted(REFERENCE_VENUE_CUES, key=len, reverse=True))
+    + r")\b",
+    flags=re.I,
+)
+
+
+def reference_venue_span(text: str) -> tuple[int, int] | None:
+    normalized = flattened_bibliography_text(text)
+    matches = list(REFERENCE_VENUE_CUE_RE.finditer(normalized))
+    if not matches:
+        return None
+    match = min(matches, key=lambda item: item.start())
+    prefix = normalized[: match.start()]
+    start = match.start()
+    boundary = max(prefix.rfind(". "), prefix.rfind("; "), prefix.rfind(", "), prefix.rfind(": "), prefix.rfind("\n"))
+    if boundary >= 0:
+        start = boundary + 2 if prefix[boundary : boundary + 2] in {". ", "; ", ", ", ": "} else boundary + 1
+    elif prefix.lower().startswith("in "):
+        start = max(0, prefix.lower().rfind("in "))
+    else:
+        return None
+    suffix = normalized[match.end() :]
+    end = len(normalized)
+    for punctuation in (",", ".", ";"):
+        pos = suffix.find(punctuation)
+        if pos >= 0:
+            end = min(end, match.end() + pos)
+    if start >= end:
+        start = match.start()
+    return start, end
+
+
+def extract_reference_locators(text: str) -> dict[str, str | None]:
+    normalized = flattened_bibliography_text(text)
+    data: dict[str, str | None] = {"volume_issue": None, "pages": None, "locator": None}
+    if not normalized:
+        return data
+
+    volume_issue_match = re.search(r"\b(?P<volume>\d{1,4})\s*\((?P<issue>\d{1,4})\)", normalized)
+    remainder = normalized
+    if volume_issue_match:
+        data["volume_issue"] = volume_issue_match.group(0)
+        remainder = normalized[volume_issue_match.end() :]
+        pages_after_volume = re.match(r"^[^\S\n]*:[^\S\n]*(?P<pages>\d{1,5}(?:\s*[–-]\s*\d{1,5})?)", remainder)
+        if pages_after_volume:
+            data["pages"] = pages_after_volume.group("pages")
+            remainder = remainder[pages_after_volume.end() :]
+
+    if data["pages"] is None:
+        pages_match = re.search(r"\bpages?\s+(?P<pages>\d{1,5}(?:\s*[–-]\s*\d{1,5})?)\b", normalized, flags=re.I)
+        if pages_match:
+            data["pages"] = pages_match.group("pages")
+            remainder = normalized[pages_match.end() :]
+        else:
+            pp_match = re.search(r"\bpp\.?\s*(?P<pages>\d{1,5}(?:\s*[–-]\s*\d{1,5})?)\b", normalized, flags=re.I)
+            if pp_match:
+                data["pages"] = pp_match.group("pages")
+                remainder = normalized[pp_match.end() :]
+            else:
+                range_match = re.search(r"\b(?P<pages>\d{1,5}\s*[–-]\s*\d{1,5})\b", normalized)
+                if range_match:
+                    data["pages"] = range_match.group("pages")
+                    remainder = normalized[range_match.end() :]
+
+    locator_match = re.search(
+        r"\b(?P<locator>(?:abs/\d{4}\.\d{4,5}(?:v\d+)?)|(?:arXiv:\d{4}\.\d{4,5}(?:v\d+)?)|(?:doi:\S+))\b",
+        remainder,
+        flags=re.I,
+    )
+    if locator_match:
+        data["locator"] = locator_match.group("locator")
+
+    return data
+
+
+def parse_reference_segment(text: str) -> dict[str, str | None]:
+    normalized = flattened_bibliography_text(text)
+    data: dict[str, str | None] = {"title": None, "venue": None, "pages": None, "locator": None, "volume_issue": None}
+    if not normalized:
+        return data
+    venue_span = reference_venue_span(normalized)
+    if venue_span is not None:
+        start, end = venue_span
+        title = normalized[:start].strip(" ,;.")
+        venue = normalized[start:end].strip(" ,;.")
+        data["title"] = title or None
+        data["venue"] = venue or None
+        remainder = normalized[end:].strip(" ,;.")
+    else:
+        data["title"] = normalized.strip(" ,;.") or None
+        remainder = ""
+    locators = extract_reference_locators(remainder or normalized)
+    data.update(locators)
+    return data
+
+
+def reference_signature(text: str) -> dict[str, str | bool | None]:
+    normalized = strip_journal_footer_lines(normalize_text(text))
+    flat = flattened_bibliography_text(normalized)
+    signature: dict[str, str | bool | None] = {
+        "marker": None,
+        "authors": None,
+        "title": None,
+        "venue": None,
+        "date": None,
+        "pages": None,
+        "locator": None,
+        "volume_issue": None,
+        "pattern": None,
+        "reference_like": False,
+        "start_like": False,
+    }
+    marker_body = reference_marker_and_body(normalized)
+    if marker_body is not None:
+        signature["marker"], flat = marker_body
+
+    author_year_match = re.match(
+        rf"^(?P<authors>.{{4,220}}?)\.\s*(?P<date>{REFERENCE_YEAR_RE})\.\s*(?P<rest>.+)$",
+        flat,
+    )
+    if author_year_match and author_segment_looks_like_reference(author_year_match.group("authors")):
+        signature["authors"] = author_year_match.group("authors").strip()
+        signature["date"] = author_year_match.group("date")
+        parsed = parse_reference_segment(author_year_match.group("rest"))
+        signature.update(parsed)
+        signature["start_like"] = True
+    else:
+        year_match = re.search(rf"\b(?P<date>{REFERENCE_YEAR_RE})\b", flat)
+        if year_match:
+            signature["date"] = year_match.group("date")
+            before_year = flat[: year_match.start()].strip(" ,;.")
+            after_year = flat[year_match.end() :].strip(" ,;.")
+            if len(flat) <= 240 and not is_prose_row_text(flat) and reference_venue_span(after_year) is not None:
+                signature["title"] = before_year or None
+                parsed = parse_reference_segment(after_year)
+                for key in ("venue", "pages", "locator", "volume_issue"):
+                    if parsed[key] is not None:
+                        signature[key] = parsed[key]
+            elif len(flat) <= 240 and not is_prose_row_text(flat) and reference_venue_span(before_year) is not None:
+                parsed = parse_reference_segment(before_year)
+                signature.update(parsed)
+            else:
+                if after_year and len(flat) <= 240 and not is_prose_row_text(flat):
+                    signature["title"] = before_year or None
+                    parsed = parse_reference_segment(after_year)
+                    for key in ("venue", "pages", "locator", "volume_issue"):
+                        if parsed[key] is not None:
+                            signature[key] = parsed[key]
+                elif len(flat) <= 240 and not is_prose_row_text(flat):
+                    parsed = parse_reference_segment(before_year)
+                    signature.update(parsed)
+        else:
+            parsed = parse_reference_segment(flat)
+            signature.update(parsed)
+
+    pattern_parts = [key for key in ("marker", "authors", "title", "venue", "date", "pages", "locator") if signature.get(key)]
+    signature["pattern"] = "+".join(pattern_parts) if pattern_parts else None
+    signature["reference_like"] = bool(
+        (
+            signature["authors"]
+            and signature["date"]
+            and (signature["title"] or signature["venue"] or signature["pages"] or signature["locator"])
+        )
+        or (
+            signature["title"]
+            and signature["venue"]
+            and (signature["date"] or signature["pages"] or signature["locator"])
+        )
+        or (
+            signature["marker"]
+            and (signature["authors"] or signature["title"])
+            and (signature["date"] or signature["venue"] or signature["pages"] or signature["locator"])
+        )
+        or (
+            signature["venue"]
+            and signature["date"]
+            and (signature["pages"] or signature["locator"])
+        )
+        or (
+            signature["marker"]
+            and signature["authors"]
+            and signature["title"]
+        )
+        or (
+            signature["title"]
+            and signature["venue"]
+            and (signature["pages"] or signature["locator"])
         )
     )
+    return signature
+
+
+def title_looks_like_reference_title(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized or len(normalized) < 8 or len(normalized) > 240:
+        return False
+    if re.match(r"(?i)^(the|this|that|we|our|in|for|from|appendix|table|figure)\b", normalized):
+        return False
+    words = latin_words(normalized)
+    if len(words) < 3:
+        return False
+    if english_function_word_count(normalized) >= len(words) - 1:
+        return False
+    return True
+
+
+def author_segment_looks_like_reference(authors: str) -> bool:
+    authors = authors.strip()
+    if not (4 <= len(authors) <= 220):
+        return False
+    if re.match(r"(?i)^(the|this|that|we|our|in|for|from|appendix|table|figure)\b", authors):
+        return False
+    name_words = re.findall(r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]{1,}\b", authors)
+    if len(name_words) < 2:
+        return False
+    if re.fullmatch(
+        r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]{1,}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]{1,}",
+        authors,
+    ):
+        return True
+    has_author_separator = (
+        "," in authors
+        or re.search(r"\band\b", authors, flags=re.I)
+        or re.search(r"\bet\s+al\b", authors, flags=re.I)
+        or re.search(r"\b[A-Z]\.", authors)
+    )
+    return has_author_separator or len(name_words) >= 3
+
+
+def reference_remainder_has_bibliographic_cue(rest: str) -> bool:
+    rest = rest.strip()
+    if len(rest) < 8:
+        return False
+    lower = rest.lower()
+    if any(cue in lower for cue in REFERENCE_VENUE_CUES):
+        return True
+    if re.search(r"\bpages?\s+\d", lower) or re.search(r"\bpp\.\s*\d", lower):
+        return True
+    if re.search(r"\b\d+\s*[-–]\s*\d+\b", lower):
+        return True
+    return ":" in rest and len(rest.split()) >= 4
+
+
+def looks_like_author_year_reference(text: str) -> bool:
+    signature = reference_signature(text)
+    return bool(signature["reference_like"] and signature["authors"] and signature["date"])
+
+
+def looks_like_reference_item(text: str) -> bool:
+    normalized = normalize_text(text)
+    for line in normalized.splitlines():
+        if looks_like_reference_item_line(line):
+            return True
+    signature = reference_signature(normalized)
+    return bool(signature["reference_like"])
+
+
+def starts_reference_item(text: str) -> bool:
+    normalized = normalize_text(text)
+    for line in normalized.splitlines():
+        if line.strip():
+            return looks_like_reference_item_line(line) or bool(reference_signature(normalized)["start_like"])
+    return False
 
 
 def is_decorative_update_marker(text: str) -> bool:
@@ -335,32 +686,118 @@ def is_running_header_fragment(block) -> bool:
 
 
 def contains_reference_item(text: str) -> bool:
-    return bool(
-        re.search(
-            r"(?m)(?:^|\n)\s*(?:\[\d{1,3}\]|\d{1,3}\.)\s*[A-Z][A-Za-z-]+,",
-            normalize_text(text),
-        )
-    )
+    return looks_like_reference_item(text)
 
 
 def reference_block_ids(blocks) -> set[str]:
-    first_reference_y = None
     sorted_blocks = sorted(blocks, key=lambda item: (item["yMin"], item["xMin"]))
+    first_reference_y = None
     for block in sorted_blocks:
         text = normalize_text(block.get("text", ""))
-        if is_reference_heading(text) or starts_reference_item(text) or contains_reference_item(text):
+        if is_reference_heading(text):
             first_reference_y = block["yMin"]
             break
-    if first_reference_y is None:
-        return set()
-    ids = set()
+    if first_reference_y is not None:
+        ids = set()
+        for block in sorted_blocks:
+            text = normalize_text(block.get("text", ""))
+            if not text or is_page_number(text):
+                continue
+            if block["yMin"] >= first_reference_y:
+                ids.add(block["id"])
+        return ids
+
+    seed_blocks = [
+        block
+        for block in sorted_blocks
+        if normalize_text(block.get("text", ""))
+        and not is_page_number(normalize_text(block.get("text", "")))
+        and (starts_reference_item(block.get("text", "")) or contains_reference_item(block.get("text", "")))
+    ]
+    ids = {block["id"] for block in seed_blocks}
+    if not seed_blocks:
+        return ids
+    for block in sorted_blocks:
+        text = normalize_text(block.get("text", ""))
+        if not text or is_page_number(text) or block["id"] in ids:
+            continue
+        if block_looks_like_reference_continuation(block) and any(same_reference_column(block, seed) for seed in seed_blocks):
+            ids.add(block["id"])
+    return ids
+
+
+def horizontal_overlap(a, b) -> float:
+    left = max(a["xMin"], b["xMin"])
+    right = min(a["xMax"], b["xMax"])
+    if right <= left:
+        return 0.0
+    width = min(a["xMax"] - a["xMin"], b["xMax"] - b["xMin"])
+    if width <= 0:
+        return 0.0
+    return (right - left) / width
+
+
+def same_reference_column(block, seed) -> bool:
+    return horizontal_overlap(block, seed) >= 0.35 or abs(block["xMin"] - seed["xMin"]) <= 36.0
+
+
+def block_looks_like_reference_continuation(block) -> bool:
+    text = flattened_bibliography_text(block.get("text", ""))
+    if not text or is_page_number(text):
+        return False
+    if is_heading_text(text) or is_visual_caption(text):
+        return False
+    if text.startswith(("•", "-", "–")):
+        return False
+    signature = reference_signature(text)
+    if signature["reference_like"] and not signature["authors"] and not signature["marker"]:
+        return True
+    lower = text.lower()
+    if any(cue in lower for cue in REFERENCE_VENUE_CUES):
+        return True
+    if re.search(r"\bpages?\s+\d", lower) or re.search(r"\bpp\.\s*\d", lower):
+        return True
+    if re.search(r"\barxiv:\d", lower) or re.search(r"\babs/\d", lower):
+        return True
+    return bool(re.match(r"^[a-z][^.!?]{8,}[.!?]\s+(?:in|journal|proceedings|pages?)\b", lower))
+
+
+def page_looks_like_reference_continuation(blocks) -> bool:
+    sorted_blocks = sorted(blocks, key=lambda item: (item["yMin"], item["xMin"]))
+    non_page_blocks = []
     for block in sorted_blocks:
         text = normalize_text(block.get("text", ""))
         if not text or is_page_number(text):
             continue
-        if block["yMin"] >= first_reference_y:
-            ids.add(block["id"])
-    return ids
+        non_page_blocks.append(block)
+    if not non_page_blocks:
+        return False
+    top_blocks = [block for block in non_page_blocks[:8] if block["yMin"] <= 260.0]
+    return any(
+        starts_reference_item(block.get("text", ""))
+        or contains_reference_item(block.get("text", ""))
+        or block_looks_like_reference_continuation(block)
+        for block in top_blocks
+    )
+
+
+def apply_reference_continuation(blocks, classes: dict[str, str], in_reference_section: bool):
+    force_reference_page = in_reference_section and page_looks_like_reference_continuation(blocks)
+    if force_reference_page:
+        classes = dict(classes)
+        reference_ids = reference_block_ids(blocks)
+        seed_blocks = [block for block in blocks if block["id"] in reference_ids]
+        for block in blocks:
+            text = normalize_text(block.get("text", ""))
+            if text and not is_page_number(text):
+                if block["id"] in reference_ids or (
+                    block_looks_like_reference_continuation(block)
+                    and any(same_reference_column(block, seed) for seed in seed_blocks)
+                ):
+                    classes[block["id"]] = "reference"
+    if any(classification == "reference" for classification in classes.values()):
+        return classes, True, force_reference_page
+    return classes, False, force_reference_page
 
 
 def first_reference_y(blocks) -> float | None:
@@ -714,7 +1151,6 @@ def classify_blocks(blocks, visual_regions) -> dict[str, str]:
     classes = {}
     visual_ids = {source_id for region in visual_regions for source_id in region["source_ids"]}
     references = reference_block_ids(blocks)
-    in_references = False
     for block in sorted(blocks, key=lambda item: (item["yMin"], item["xMin"])):
         text = normalize_text(block.get("text", ""))
         if not text:
@@ -736,7 +1172,6 @@ def classify_blocks(blocks, visual_regions) -> dict[str, str]:
             continue
         if block["id"] in references:
             classes[block["id"]] = "reference"
-            in_references = True
             continue
         if block["id"] in visual_ids:
             if is_formula_or_code_block(text):
@@ -744,9 +1179,8 @@ def classify_blocks(blocks, visual_regions) -> dict[str, str]:
             else:
                 classes[block["id"]] = "figure_region"
             continue
-        if is_reference_heading(text) or in_references or starts_reference_item(text):
+        if is_reference_heading(text) or starts_reference_item(text):
             classes[block["id"]] = "reference"
-            in_references = True
             continue
         if is_heading_text(text):
             classes[block["id"]] = "heading"

@@ -99,6 +99,16 @@ def assert_render_plan_fixture(fixture: RenderPlanFixture) -> None:
             _assert_translated_text_excludes(fixture, plan_json, assertion)
         elif expect == "max_visible_gap":
             _assert_max_visible_gap(fixture, plan_json, assertion)
+        elif expect == "ownership_validation_ok":
+            _assert_ownership_validation_ok(fixture, plan_json, assertion)
+        elif expect == "component_contains":
+            _assert_component_contains(fixture, plan_json, assertion)
+        elif expect == "component_kind_for_source":
+            _assert_component_kind_for_source(fixture, plan_json, assertion)
+        elif expect == "source_not_rendered_as":
+            _assert_source_not_rendered_as(fixture, plan_json, assertion)
+        elif expect == "no_text_over_component":
+            _assert_no_text_over_component(fixture, plan_json, assertion)
         else:
             _fail(fixture, assertion, f"unsupported expected plan assertion: {expect!r}")
 
@@ -144,7 +154,45 @@ def _contains_reference_text(text: str, expected: str) -> bool:
 
 
 def _ledger_by_id(plan_json: dict) -> dict[str, dict]:
-    return {entry["block_id"]: entry for entry in plan_json["coverage_ledger"]}
+    result = {}
+    for entry in plan_json["coverage_ledger"]:
+        result.setdefault(entry["block_id"], []).append(entry)
+    return result
+
+
+def _split_components_for_source(plan_json: dict, source_id: str) -> tuple[dict, dict] | None:
+    components = [
+        component
+        for component in plan_json.get("components", [])
+        if source_id in component.get("source_ids", [])
+        and "mixed_visual_body_split" in component.get("reason_codes", [])
+    ]
+    visual = [component for component in components if component.get("component_kind") == "visual"]
+    text = [component for component in components if component.get("component_kind") == "translated_text"]
+    if len(visual) != 1 or len(text) != 1:
+        return None
+    if text[0].get("parent_component_id") != visual[0].get("component_id"):
+        return None
+    return visual[0], text[0]
+
+
+def _source_has_valid_split_ledger(plan_json: dict, source_id: str) -> bool:
+    split = _split_components_for_source(plan_json, source_id)
+    if split is None:
+        return False
+    visual_component, text_component = split
+    entries = [entry for entry in plan_json["coverage_ledger"] if entry["block_id"] == source_id]
+    if len(entries) != 2:
+        return False
+    expected = {
+        ("original_image_clip", visual_component["component_id"], "visual"),
+        ("translated_text", text_component["component_id"], "translated_text"),
+    }
+    actual = {
+        (entry.get("render_kind"), entry.get("component_id"), entry.get("component_kind"))
+        for entry in entries
+    }
+    return actual == expected
 
 
 def _assert_coverage_ledger_complete(fixture: RenderPlanFixture, plan_json: dict) -> None:
@@ -155,7 +203,11 @@ def _assert_coverage_ledger_complete(fixture: RenderPlanFixture, plan_json: dict
     }
     ledger_ids = [entry["block_id"] for entry in plan_json["coverage_ledger"]]
     actual_ids = {source_id for source_id in ledger_ids if source_id}
-    duplicates = sorted(source_id for source_id in actual_ids if ledger_ids.count(source_id) > 1)
+    duplicates = sorted(
+        source_id
+        for source_id in actual_ids
+        if ledger_ids.count(source_id) > 1 and not _source_has_valid_split_ledger(plan_json, source_id)
+    )
     missing = sorted(expected_ids - actual_ids)
     extra = sorted(actual_ids - expected_ids)
     validation_errors = pdf.validate_plan_coverage(fixture.page_num, fixture.blocks, fixture.plan)
@@ -170,13 +222,19 @@ def _assert_coverage_ledger_complete(fixture: RenderPlanFixture, plan_json: dict
 
 def _assert_ledger_entry(fixture: RenderPlanFixture, plan_json: dict, assertion: dict) -> None:
     source_id = assertion["source_id"]
-    entry = _ledger_by_id(plan_json).get(source_id)
-    if entry is None:
+    entries = _ledger_by_id(plan_json).get(source_id, [])
+    if not entries:
         _fail(fixture, assertion, f"missing coverage ledger entry for {source_id}")
+    if len(entries) > 1 and not _source_has_valid_split_ledger(plan_json, source_id):
+        _fail(fixture, assertion, f"{source_id} has invalid duplicate coverage entries: {entries}")
 
     for field in ("classification", "render_kind", "fallback_reason"):
         if field not in assertion:
             continue
+        matching = [entry for entry in entries if entry.get(field) == assertion[field]]
+        if matching:
+            continue
+        entry = entries[-1]
         if entry.get(field) != assertion[field]:
             _fail(
                 fixture,
@@ -377,3 +435,92 @@ def _assert_max_visible_gap(fixture: RenderPlanFixture, plan_json: dict, asserti
     max_points = float(assertion["max_points"])
     if actual_gap > max_points:
         _fail(fixture, assertion, f"visible gap is {actual_gap:.2f}pt, expected at most {max_points:.2f}pt")
+
+
+def _ownership_components(plan_json: dict) -> list[dict]:
+    return list(plan_json.get("components") or plan_json.get("ownership_components") or [])
+
+
+def _bbox_area(bbox) -> float:
+    x0, y0, x1, y1 = (float(value) for value in bbox)
+    return max(0.0, x1 - x0) * max(0.0, y1 - y0)
+
+
+def _bbox_overlap_area(left, right) -> float:
+    left = [float(value) for value in left]
+    right = [float(value) for value in right]
+    x0 = max(left[0], right[0])
+    y0 = max(left[1], right[1])
+    x1 = min(left[2], right[2])
+    y1 = min(left[3], right[3])
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    return (x1 - x0) * (y1 - y0)
+
+
+def _assert_ownership_validation_ok(fixture: RenderPlanFixture, plan_json: dict, assertion: dict) -> None:
+    validation = plan_json.get("ownership_validation") or {}
+    errors = validation.get("errors")
+    if errors is None:
+        errors = validation.get("issues", [])
+    if errors:
+        _fail(fixture, assertion, f"ownership validation has errors: {errors}")
+
+
+def _assert_component_contains(fixture: RenderPlanFixture, plan_json: dict, assertion: dict) -> None:
+    source_ids = set(_source_ids(assertion))
+    component_kind = assertion.get("component_kind")
+    matches = [
+        component
+        for component in _ownership_components(plan_json)
+        if source_ids <= set(component.get("source_ids", []))
+        and (component_kind is None or component.get("component_kind") == component_kind)
+    ]
+    if not matches:
+        _fail(fixture, assertion, f"no {component_kind!r} component contains {sorted(source_ids)}")
+
+
+def _assert_component_kind_for_source(fixture: RenderPlanFixture, plan_json: dict, assertion: dict) -> None:
+    source_id = assertion["source_id"]
+    expected_kind = assertion["component_kind"]
+    actual = [
+        component.get("component_kind")
+        for component in _ownership_components(plan_json)
+        if source_id in component.get("source_ids", [])
+    ]
+    if actual != [expected_kind]:
+        _fail(fixture, assertion, f"{source_id} component kinds are {actual}, expected exactly {[expected_kind]}")
+
+
+def _assert_source_not_rendered_as(fixture: RenderPlanFixture, plan_json: dict, assertion: dict) -> None:
+    source_id = assertion["source_id"]
+    forbidden_kind = assertion["render_kind"]
+    matching = _render_items_for_source(plan_json, source_id, kind=forbidden_kind)
+    if matching:
+        _fail(fixture, assertion, f"{source_id} is unexpectedly rendered as {forbidden_kind}")
+
+
+def _assert_no_text_over_component(fixture: RenderPlanFixture, plan_json: dict, assertion: dict) -> None:
+    source_ids = set(_source_ids(assertion))
+    components = [
+        component
+        for component in _ownership_components(plan_json)
+        if source_ids <= set(component.get("source_ids", []))
+    ]
+    if not components:
+        _fail(fixture, assertion, f"no component contains {sorted(source_ids)}")
+
+    component_bbox = components[0].get("clip_bbox") or components[0].get("source_bbox")
+    if component_bbox is None:
+        _fail(fixture, assertion, f"component for {sorted(source_ids)} has no bbox")
+
+    offenders = []
+    for item in plan_json["render_items"]:
+        if item.get("kind") not in {"translated_text", "original_selectable_text"}:
+            continue
+        if source_ids & set(item.get("source_ids", [])):
+            continue
+        if _bbox_overlap_area(item["bbox"], component_bbox) > min(_bbox_area(item["bbox"]), _bbox_area(component_bbox)) * 0.05:
+            offenders.append(item.get("source_ids", []))
+    if offenders:
+        _fail(fixture, assertion, f"text items overlap component {sorted(source_ids)}: {offenders}")

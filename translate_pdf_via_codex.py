@@ -14,11 +14,13 @@ import textwrap
 import time
 import xml.etree.ElementTree as ET
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
 
 from PIL import Image, ImageDraw, ImageFont
 
+import ownership
 from classify import (
     ENGLISH_FUNCTION_WORDS,
     NORMAL_TRANSLATED_CLASSES,
@@ -51,6 +53,7 @@ from classify import (
     is_non_prose_identifier_text,
     is_numeric_metric_cell,
     is_page_number,
+    apply_reference_continuation,
     is_prose_row_text,
     is_publication_header_fragment,
     is_reference_heading,
@@ -67,6 +70,7 @@ from classify import (
     latin_words,
     normalize_text,
     reference_block_ids,
+    reference_signature,
     should_preserve_as_image,
     should_preserve_first_page_metadata_as_image,
     source_requires_chinese_translation,
@@ -236,6 +240,7 @@ from regions import (
     build_ocr_preserve_groups,
     build_visual_regions,
     cap_visual_bbox_after_preceding_text,
+    cap_visual_bbox_against_adjacent_translated_text,
     cap_visual_bbox_around_large_prose,
     cap_visual_bbox_before_following_text,
     clamp_bbox,
@@ -854,6 +859,14 @@ def final_visual_region_bbox(
             classes,
             visual_ids,
         )
+    region_bbox = cap_visual_bbox_against_adjacent_translated_text(
+        visual_source_bbox,
+        region_bbox,
+        blocks,
+        classes,
+        visual_ids,
+        page_size,
+    )
     region_bbox = cap_visual_bbox_around_large_prose(region_bbox, blocks, classes, visual_ids, page_size)
     return region_bbox, mixed_body_item
 
@@ -867,33 +880,336 @@ def bbox_lines_by_page(job_paths) -> dict[int, list[dict]]:
     return by_page
 
 
+@dataclass(frozen=True)
+class TranslationPageOwnership:
+    classes: dict[str, str]
+    components: list[ownership.PageComponent]
+    validation: ownership.OwnershipValidationResult
+    visual_regions: list[dict]
+    raw_visual_regions: list[dict]
+    translatable_ids: list[str]
+    in_reference_section: bool
+    force_reference_page: bool
+
+
+def final_visual_ownership_regions(
+    page,
+    classes,
+    visual_regions,
+    *,
+    page_size=None,
+    page_num: int = 1,
+    source_image_path: Path | None = None,
+    bbox_lines=None,
+    translations=None,
+) -> list[dict]:
+    raw_visual_ids = {source_id for region in visual_regions for source_id in region["source_ids"]}
+    preliminary_regions = []
+    expanded_visual_ids = set(raw_visual_ids)
+    for region in visual_regions:
+        source_bbox = region.get("bbox")
+        source_ids = set(region["source_ids"])
+        if source_bbox is not None:
+            source_ids.update(
+                nontranslated_blocks_covered_by_visual_region(
+                    page,
+                    classes,
+                    source_bbox,
+                    raw_visual_ids,
+                )
+            )
+        preliminary_regions.append((region, source_bbox, source_ids))
+        expanded_visual_ids.update(source_ids)
+
+    ownership_regions = []
+    for region, source_bbox, preliminary_source_ids in preliminary_regions:
+        region_bbox, _mixed_body_item = final_visual_region_bbox(
+            page,
+            classes,
+            region,
+            page_size=page_size,
+            page_num=page_num,
+            source_image_path=source_image_path,
+            bbox_lines=bbox_lines,
+            translations=translations,
+            visual_ids=expanded_visual_ids,
+        )
+        mixed_split = split_mixed_visual_body_rows(region["bbox"], bbox_lines) if region.get("has_code_seed") else None
+        source_ids = set(preliminary_source_ids)
+        source_ids.update(
+            nontranslated_blocks_covered_by_visual_region(
+                page,
+                classes,
+                region_bbox,
+                expanded_visual_ids,
+            )
+        )
+        ownership_region = dict(region)
+        ownership_region["source_ids"] = sorted(source_ids)
+        ownership_region["source_bbox"] = region_bbox if mixed_split is not None else source_bbox or region_bbox
+        ownership_region["bbox"] = region_bbox
+        if mixed_split is not None:
+            _visual_bbox, body_bbox = mixed_split
+            ownership_region["mixed_body_source_ids"] = sorted(region["source_ids"])
+            ownership_region["mixed_body_bbox"] = tuple(body_bbox)
+        ownership_regions.append(ownership_region)
+    return ownership.merge_visual_regions(ownership_regions)
+
+
+def build_page_components_compat(
+    page_num: int,
+    page,
+    classes: dict[str, str],
+    *,
+    visual_regions: list[dict],
+    duplicate_ids: set[str],
+    skip_ids: set[str],
+) -> list[ownership.PageComponent]:
+    try:
+        return ownership.build_page_components(
+            page_num=page_num,
+            blocks=page,
+            classes=classes,
+            visual_regions=visual_regions,
+            visual_covered_text_ids=set(),
+            duplicate_ids=duplicate_ids,
+            skip_ids=skip_ids,
+        )
+    except TypeError:
+        return ownership.build_page_components(
+            page_num,
+            page,
+            classes,
+            visual_regions=visual_regions,
+            duplicate_ids=duplicate_ids,
+            skip_ids=skip_ids,
+        )
+
+
+def validate_ownership_compat(page_num: int, page, components) -> ownership.OwnershipValidationResult:
+    try:
+        return ownership.validate_ownership(page_num=page_num, blocks=page, components=components)
+    except TypeError:
+        try:
+            return ownership.validate_ownership(page_num, page, components)
+        except TypeError:
+            return ownership.validate_ownership(page, components)
+
+
+def components_by_source_id_compat(components) -> dict[str, list[ownership.PageComponent]]:
+    helper = getattr(ownership, "components_by_source_id", None)
+    if helper is not None:
+        return helper(components)
+    result: dict[str, list[ownership.PageComponent]] = {}
+    for component in components:
+        for source_id in component.source_ids:
+            result.setdefault(str(source_id), []).append(component)
+    return result
+
+
+def component_by_source_id_compat(components) -> dict[str, ownership.PageComponent]:
+    helper = getattr(ownership, "component_by_source_id", None)
+    if helper is not None:
+        return helper(components)
+    return {
+        source_id: source_components[-1]
+        for source_id, source_components in components_by_source_id_compat(components).items()
+        if source_components
+    }
+
+
+def component_has_reason(component, reason: str) -> bool:
+    return reason in {str(code) for code in getattr(component, "reason_codes", [])}
+
+
+def visual_source_ids_from_components(components) -> set[str]:
+    return {
+        str(source_id)
+        for component in components
+        if component.component_kind == ownership.COMPONENT_KIND_VISUAL
+        for source_id in component.source_ids
+    }
+
+
+def mixed_visual_body_components(components) -> list[ownership.PageComponent]:
+    return [
+        component
+        for component in components
+        if component.component_kind == ownership.COMPONENT_KIND_TRANSLATED_TEXT
+        and component_has_reason(component, ownership.REASON_MIXED_VISUAL_BODY_SPLIT)
+    ]
+
+
+def merge_ownership_validation_results(*results) -> ownership.OwnershipValidationResult:
+    issues = []
+    for result in results:
+        issues.extend(list(getattr(result, "issues", []) or []))
+    return ownership.OwnershipValidationResult(issues=issues)
+
+
+def annotate_plan_with_component_metadata(
+    plan: PageRenderPlan,
+    components_by_source_id: dict[str, list[ownership.PageComponent]],
+) -> None:
+    def matching_component(source_id: str, render_kind: str):
+        candidates = components_by_source_id.get(source_id, [])
+        if render_kind == "original_image_clip":
+            kind = ownership.COMPONENT_KIND_VISUAL
+        elif render_kind == "translated_text":
+            kind = ownership.COMPONENT_KIND_TRANSLATED_TEXT
+        elif render_kind == "original_selectable_text":
+            kind = ownership.COMPONENT_KIND_REFERENCE
+        else:
+            kind = ""
+        if kind:
+            matches = [component for component in candidates if component.component_kind == kind]
+            if len(matches) == 1:
+                return matches[0]
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    for entry in plan.ledger:
+        if entry.component_id and entry.component_kind:
+            continue
+        component = matching_component(entry.block_id, entry.render_kind)
+        if component is None:
+            continue
+        entry.component_id = component.component_id
+        entry.component_kind = component.component_kind
+
+    for item in plan.items:
+        if item.component_id and item.component_kind:
+            continue
+        components = [
+            component
+            for source_id in item.source_ids
+            for component in [matching_component(source_id, item.kind)]
+            if component is not None
+        ]
+        component_ids = {component.component_id for component in components}
+        component_kinds = {component.component_kind for component in components}
+        if len(component_ids) == 1:
+            item.component_id = next(iter(component_ids))
+        if len(component_kinds) == 1:
+            item.component_kind = next(iter(component_kinds))
+
+
+def build_translation_page_components(
+    page_num: int,
+    page,
+    *,
+    page_size=None,
+    job_paths=None,
+    bbox_lines=None,
+    source_image_path: Path | None = None,
+    in_reference_section: bool = False,
+) -> TranslationPageOwnership:
+    raw_visual_regions = build_visual_regions(page)
+    classes = classify_blocks(page, raw_visual_regions)
+    classes, next_in_reference_section, force_reference_page = apply_reference_continuation(
+        page,
+        classes,
+        in_reference_section,
+    )
+    source_image = source_image_path
+    if source_image is None and job_paths:
+        source_image = source_page_image_path(job_paths, page_num)
+    visual_ownership_regions = final_visual_ownership_regions(
+        page,
+        classes,
+        raw_visual_regions,
+        page_size=page_size,
+        page_num=page_num,
+        source_image_path=source_image,
+        bbox_lines=bbox_lines,
+        translations={},
+    )
+    duplicate_ids = {
+        block_id
+        for block_id in nested_duplicate_block_ids(page)
+        if classes.get(block_id) in {"body", "heading", "title"}
+    }
+    duplicate_ids.update(contained_standalone_label_ids(page, classes))
+    skip_ids = {
+        block["id"]
+        for block in page
+        if should_preserve_first_page_metadata_as_image(block)
+        or should_preserve_as_image(block)
+    }
+    components = build_page_components_compat(
+        page_num,
+        page,
+        classes,
+        visual_regions=visual_ownership_regions,
+        duplicate_ids=duplicate_ids,
+        skip_ids=skip_ids,
+    )
+    validation = validate_ownership_compat(page_num, page, components)
+    translatable_ids = []
+    for component in sorted(components, key=lambda item: (item.source_bbox[1], item.source_bbox[0], item.component_id)):
+        if component.component_kind != ownership.COMPONENT_KIND_TRANSLATED_TEXT:
+            continue
+        for source_id in component.source_ids:
+            if (
+                classes.get(source_id) not in NORMAL_TRANSLATED_CLASSES
+                and not component_has_reason(component, ownership.REASON_MIXED_VISUAL_BODY_SPLIT)
+            ):
+                continue
+            if source_id not in translatable_ids:
+                translatable_ids.append(source_id)
+    return TranslationPageOwnership(
+        classes=classes,
+        components=components,
+        validation=validation,
+        visual_regions=visual_ownership_regions,
+        raw_visual_regions=raw_visual_regions,
+        translatable_ids=translatable_ids,
+        in_reference_section=next_in_reference_section,
+        force_reference_page=force_reference_page,
+    )
+
+
+def prepare_page_ownership(
+    page_num: int,
+    page,
+    *,
+    page_size=None,
+    job_paths=None,
+    bbox_lines=None,
+    source_image_path: Path | None = None,
+    in_reference_section: bool = False,
+):
+    result = build_translation_page_components(
+        page_num,
+        page,
+        page_size=page_size,
+        job_paths=job_paths,
+        bbox_lines=bbox_lines,
+        source_image_path=source_image_path,
+        in_reference_section=in_reference_section,
+    )
+    return result, result.in_reference_section
+
+
 def build_batches(pages, max_chars: int, *, page_size=None, job_paths=None, page_numbers=None):
     blocks = []
     lines_by_page = bbox_lines_by_page(job_paths)
+    in_reference_section = False
     for page_index, page in enumerate(pages, start=1):
         page_num = page_numbers[page_index - 1] if page_numbers else page_index
-        visual_regions = build_visual_regions(page)
-        classes = classify_blocks(page, visual_regions)
-        source_image = source_page_image_path(job_paths, page_num) if job_paths else None
-        visual_covered_text_ids = visual_translation_protected_ids(
+        ownership_result = build_translation_page_components(
+            page_num,
             page,
-            classes,
-            visual_regions,
             page_size=page_size,
-            page_num=page_num,
-            source_image_path=source_image,
+            job_paths=job_paths,
             bbox_lines=lines_by_page.get(page_num),
+            in_reference_section=in_reference_section,
         )
+        in_reference_section = ownership_result.in_reference_section
+        translatable_ids = set(ownership_result.translatable_ids)
         for block in page:
-            if should_preserve_first_page_metadata_as_image(block):
-                continue
-            if classes.get(block["id"]) not in NORMAL_TRANSLATED_CLASSES:
-                continue
-            if block["id"] in visual_covered_text_ids:
-                continue
-            if should_preserve_as_image(block):
-                continue
-            if is_trivial_keep(block["text"]):
+            if block["id"] not in translatable_ids:
                 continue
             blocks.append(block)
 
@@ -1119,6 +1435,8 @@ def render_line_starts_new_paragraph(line: str) -> bool:
 def render_line_is_standalone_heading(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
+        return False
+    if re.search(r"https?://|www\.|\S+@\S+", stripped, flags=re.I):
         return False
     if re.match(r"^\d+(?:\.\d+)*\.?\s+[\u4e00-\u9fffA-Za-z]", stripped):
         return len(stripped) <= 40
@@ -2126,9 +2444,37 @@ def journal_footer_render_items(bbox_lines, page_size) -> list[RenderItem]:
     return items[:1]
 
 
-def reference_line_render_items(blocks, bbox_lines, page_size) -> list[RenderItem]:
-    start_y = first_reference_y(blocks)
-    if start_y is None or not bbox_lines:
+def reference_block_ids_for_bbox_line(line: dict, reference_blocks) -> list[str]:
+    line_box = line["bbox"]
+    line_center = bbox_center(line_box)
+    line_width = max(1.0, line_box[2] - line_box[0])
+    matches = []
+    for block in reference_blocks:
+        reference_box = expanded_bbox(block_bbox(block), pad_x=4.0, pad_y=3.0)
+        if bbox_contains_point(reference_box, line_center):
+            matches.append(block["id"])
+            continue
+        if vertical_overlap(line_box, reference_box) > 0 and horizontal_overlap(line_box, reference_box) >= line_width * 0.55:
+            matches.append(block["id"])
+    return sorted(set(matches))
+
+
+def bbox_line_matches_reference_block(line: dict, reference_blocks) -> bool:
+    return bool(reference_block_ids_for_bbox_line(line, reference_blocks))
+
+
+def reference_line_render_items(blocks, bbox_lines, page_size, classes: dict[str, str] | None = None) -> list[RenderItem]:
+    if not bbox_lines:
+        return []
+    reference_ids = {
+        block_id
+        for block_id, classification in (classes or {}).items()
+        if classification == "reference"
+    }
+    if not reference_ids:
+        reference_ids = reference_block_ids(blocks)
+    reference_blocks = [block for block in blocks if block["id"] in reference_ids]
+    if not reference_blocks:
         return []
     width, height = page_size
     items = []
@@ -2137,12 +2483,14 @@ def reference_line_render_items(blocks, bbox_lines, page_size) -> list[RenderIte
         text = normalize_text(line.get("text", ""))
         if not text:
             continue
-        x0, y0, x1, y1 = line["bbox"]
-        if y0 < start_y - 4.0:
-            continue
         if is_journal_footer_text(text):
             continue
-        reference_lines.append(line)
+        source_ids = reference_block_ids_for_bbox_line(line, reference_blocks)
+        if not source_ids:
+            continue
+        reference_line = dict(line)
+        reference_line["source_ids"] = source_ids
+        reference_lines.append(reference_line)
     for line in merge_bbox_line_fragments(reference_lines):
         text = line["text"]
         if is_journal_footer_text(text):
@@ -2160,7 +2508,14 @@ def reference_line_render_items(blocks, bbox_lines, page_size) -> list[RenderIte
         items.append(
             RenderItem(
                 "original_selectable_text",
-                [],
+                sorted(
+                    set(
+                        str(source_id)
+                        for source_id in (
+                            line.get("source_ids") or reference_block_ids_for_bbox_line(line, reference_blocks)
+                        )
+                    )
+                ),
                 bbox,
                 text=text,
                 font_size=font_size,
@@ -2169,6 +2524,17 @@ def reference_line_render_items(blocks, bbox_lines, page_size) -> list[RenderIte
             )
         )
     return items
+
+
+def reference_coverage_entry(block, render_kind: str, fallback_reason: str) -> CoverageEntry:
+    return CoverageEntry(
+        block["id"],
+        "reference",
+        render_kind,
+        True,
+        fallback_reason,
+        reference_signature=reference_signature(block.get("text", "")),
+    )
 
 
 def adjusted_render_bbox(block, classification: str, page_size) -> tuple[float, float, float, float]:
@@ -2823,7 +3189,10 @@ def embedded_heading_render_items(
     if not heading_indices:
         return []
 
-    source_heading_rows = source_heading_rows_for_block(block, bbox_lines)
+    source_rows = bbox_line_rows_for_block(block, bbox_lines)
+    source_heading_rows = [row for row in source_rows if is_heading_text(row["text"])]
+    if source_rows and not source_heading_rows:
+        return []
     heading_rows = []
     for idx, _line_index in enumerate(heading_indices):
         if idx < len(source_heading_rows):
@@ -3274,6 +3643,45 @@ def mixed_visual_body_render_item(region, bbox_lines, translations, page_size):
     return visual_bbox, body_item
 
 
+def mixed_visual_body_component_render_item(component, translations, page_size, bbox_lines=None) -> RenderItem | None:
+    body_source_ids = []
+    body_texts = []
+    for source_id in component.source_ids:
+        tail = translation_tail_after_visual_prefix(translations.get(source_id, ""))
+        if not tail:
+            continue
+        body_source_ids.append(source_id)
+        body_texts.append(tail)
+    kind = "translated_text"
+    fallback_reason = "mixed_visual_body"
+    if not body_texts:
+        rows = rows_inside_bbox(bbox_lines or [], component.source_bbox)
+        body_texts = [row["text"] for row in rows if normalize_text(row.get("text", ""))]
+        body_source_ids = list(component.source_ids) if body_texts else []
+        kind = "original_selectable_text"
+        fallback_reason = "mixed_visual_body_original"
+    if not body_texts:
+        return None
+    page_width, page_height = page_size
+    x0, y0, x1, y1 = component.source_bbox
+    return RenderItem(
+        kind,
+        body_source_ids,
+        (
+            max(0.0, x0),
+            max(0.0, y0),
+            min(page_width, x1 + 2.0),
+            min(page_height, y1 + 2.0),
+        ),
+        text="\n".join(body_texts),
+        font_size=BODY_FONT_SIZE,
+        style_name="body",
+        fallback_reason=fallback_reason,
+        component_id=component.component_id,
+        component_kind=component.component_kind,
+    )
+
+
 def build_page_render_plan(
     page_num: int,
     blocks,
@@ -3281,6 +3689,7 @@ def build_page_render_plan(
     page_size,
     bbox_lines=None,
     source_image_path: Path | None = None,
+    force_reference: bool = False,
 ) -> PageRenderPlan:
     plan = PageRenderPlan(page_num=page_num)
     if not blocks and source_image_path:
@@ -3297,24 +3706,37 @@ def build_page_render_plan(
             )
             plan.protected_boxes.append(full_page_bbox)
             return plan
-    visual_regions = build_visual_regions(blocks)
-    classes = classify_blocks(blocks, visual_regions)
+    ownership_result = build_translation_page_components(
+        page_num,
+        blocks,
+        page_size=page_size,
+        bbox_lines=bbox_lines,
+        source_image_path=source_image_path,
+        in_reference_section=force_reference,
+    )
+    plan.components = list(ownership_result.components)
+    plan.ownership_ledger = ownership.ownership_ledger_for_components(page_num, plan.components)
+    plan.ownership_validation = ownership_result.validation
+    visual_regions = ownership_result.visual_regions
+    classes = dict(ownership_result.classes)
     block_by_id = {block["id"]: block for block in blocks}
     visual_ids = {source_id for region in visual_regions for source_id in region["source_ids"]}
+    components_by_source_id = components_by_source_id_compat(plan.components)
+    component_by_source_id = component_by_source_id_compat(plan.components)
+    visual_component_ids = visual_source_ids_from_components(plan.components)
     heading_pairs = standalone_heading_number_pairs(blocks, classes)
     for number_block, title_block, _number_text in heading_pairs:
         classes[number_block["id"]] = "heading"
         classes[title_block["id"]] = "heading"
     footer_items = journal_footer_render_items(bbox_lines or [], page_size)
     plan.items.extend(footer_items)
-    reference_line_items = reference_line_render_items(blocks, bbox_lines or [], page_size)
+    reference_line_items = reference_line_render_items(blocks, bbox_lines or [], page_size, classes)
     plan.items.extend(reference_line_items)
-    duplicate_ids = {
-        block_id
-        for block_id in nested_duplicate_block_ids(blocks)
-        if classes.get(block_id) in {"body", "heading", "title"}
+    reference_line_source_ids = {
+        source_id
+        for item in reference_line_items
+        for source_id in item.source_ids
     }
-    duplicate_ids.update(contained_standalone_label_ids(blocks, classes))
     visual_covered_text_ids = set()
     metadata_ids = {block["id"] for block in blocks if should_preserve_first_page_metadata_as_image(block)}
     for metadata_block in blocks:
@@ -3326,30 +3748,45 @@ def build_page_render_plan(
         )
 
     for region in visual_regions:
-        region_bbox, mixed_body_item = final_visual_region_bbox(
-            blocks,
-            classes,
-            region,
-            page_size=page_size,
-            page_num=page_num,
-            source_image_path=source_image_path,
-            bbox_lines=bbox_lines,
-            translations=translations,
-            visual_ids=visual_ids,
+        matching_component = next(
+            (
+                component
+                for component in plan.components
+                if component.component_kind == ownership.COMPONENT_KIND_VISUAL
+                and set(component.source_ids) & set(region["source_ids"])
+            ),
+            None,
         )
+        region_bbox = tuple(region.get("bbox")) if region.get("bbox") else (
+            matching_component.clip_bbox if matching_component is not None and matching_component.clip_bbox else None
+        )
+        if region_bbox is None:
+            region_bbox, _mixed_body_item = final_visual_region_bbox(
+                blocks,
+                classes,
+                region,
+                page_size=page_size,
+                page_num=page_num,
+                source_image_path=source_image_path,
+                bbox_lines=bbox_lines,
+                translations=translations,
+                visual_ids=visual_ids,
+            )
         visual_covered_text_ids.update(
             nontranslated_blocks_covered_by_visual_region(blocks, classes, region_bbox, visual_ids)
         )
         plan.items.append(
             RenderItem(
                 kind="original_image_clip",
-                source_ids=region["source_ids"],
+                source_ids=list(matching_component.source_ids if matching_component is not None else region["source_ids"]),
                 bbox=region_bbox,
                 fallback_reason="visual_region",
+                component_id="" if matching_component is None else matching_component.component_id,
+                component_kind="" if matching_component is None else matching_component.component_kind,
             )
         )
         plan.protected_boxes.append(region_bbox)
-        for source_id in region["source_ids"]:
+        for source_id in (matching_component.source_ids if matching_component is not None else region["source_ids"]):
             plan.ledger.append(
                 CoverageEntry(
                     source_id,
@@ -3357,10 +3794,27 @@ def build_page_render_plan(
                     "original_image_clip",
                     True,
                     "visual_region",
+                    component_id="" if matching_component is None else matching_component.component_id,
+                    component_kind="" if matching_component is None else matching_component.component_kind,
                 )
             )
-        if mixed_body_item is not None:
-            plan.items.append(mixed_body_item)
+    for component in mixed_visual_body_components(plan.components):
+        body_item = mixed_visual_body_component_render_item(component, translations, page_size, bbox_lines)
+        if body_item is None:
+            continue
+        plan.items.append(body_item)
+        for source_id in component.source_ids:
+            plan.ledger.append(
+                CoverageEntry(
+                    source_id,
+                    "body",
+                    body_item.kind,
+                    True,
+                    body_item.fallback_reason,
+                    component_id=component.component_id,
+                    component_kind=component.component_kind,
+                )
+            )
 
     paired_heading_ids = add_standalone_heading_pair_render_items(
         plan,
@@ -3371,7 +3825,7 @@ def build_page_render_plan(
 
     for block in blocks:
         text = normalize_text(block.get("text", ""))
-        if not text or block["id"] in visual_ids:
+        if not text or block["id"] in visual_component_ids:
             continue
         if block["id"] in paired_heading_ids:
             continue
@@ -3390,7 +3844,8 @@ def build_page_render_plan(
         bbox = adjusted_render_bbox(block, classification, page_size)
         if classification in {"body", "heading", "title", "reference"}:
             bbox = refined_text_bbox_from_lines(block, bbox, bbox_lines or [], page_size)
-        if block["id"] in duplicate_ids:
+        component = component_by_source_id.get(block["id"])
+        if component is not None and component.component_kind == ownership.COMPONENT_KIND_DUPLICATE:
             plan.ledger.append(CoverageEntry(block["id"], "nested_duplicate", "skip_explicitly", True))
             continue
         if classification == "journal_footer":
@@ -3451,16 +3906,8 @@ def build_page_render_plan(
             )
             continue
         if classification == "reference":
-            if reference_line_items:
-                plan.ledger.append(
-                    CoverageEntry(
-                        block["id"],
-                        classification,
-                        "original_selectable_text",
-                        True,
-                        "reference_original_lines",
-                    )
-                )
+            if block["id"] in reference_line_source_ids:
+                plan.ledger.append(reference_coverage_entry(block, "original_selectable_text", "reference_original_lines"))
                 continue
             plan.items.append(
                 RenderItem(
@@ -3473,15 +3920,7 @@ def build_page_render_plan(
                     fallback_reason="reference_original",
                 )
             )
-            plan.ledger.append(
-                CoverageEntry(
-                    block["id"],
-                    classification,
-                    "original_selectable_text",
-                    True,
-                    "reference_original",
-                )
-            )
+            plan.ledger.append(reference_coverage_entry(block, "original_selectable_text", "reference_original"))
             continue
         if classification in {"body", "heading", "subheading", "title"}:
             translated = clean_render_text(
@@ -3659,6 +4098,12 @@ def build_page_render_plan(
     rebalance_body_text_flows(plan, page_size)
     convert_unfit_nonprose_text_to_image_clips(plan, blocks)
     split_translated_text_around_protected(plan, page_size)
+    annotate_plan_with_component_metadata(plan, components_by_source_id)
+    validate_render_layer_exclusivity = getattr(ownership, "validate_render_layer_exclusivity", None)
+    if validate_render_layer_exclusivity is not None:
+        layer_validation = validate_render_layer_exclusivity(plan, plan.components)
+        if getattr(layer_validation, "issues", None):
+            plan.ownership_validation = merge_ownership_validation_results(plan.ownership_validation, layer_validation)
     return plan
 
 
@@ -3902,6 +4347,11 @@ def validate_plan_image_clip_content(
 
 
 def validate_plan_quality(page_num: int, blocks, translations, plan: PageRenderPlan) -> list[str]:
+    ownership_errors = [
+        issue.message
+        for issue in getattr(plan.ownership_validation, "issues", [])
+        if getattr(issue, "severity", "error") == "error"
+    ]
     return (
         validate_plan_translation_quality(page_num, blocks, translations, plan)
         + validate_plan_text_overlaps(plan)
@@ -3911,6 +4361,7 @@ def validate_plan_quality(page_num: int, blocks, translations, plan: PageRenderP
         + validate_plan_embedded_heading_policy(plan)
         + validate_plan_text_noise_policy(plan)
         + validate_plan_style_policy(plan)
+        + ownership_errors
     )
 
 
@@ -3939,6 +4390,7 @@ def validate_document_quality(selected_pages, translations, page_size, job_paths
         job_paths=job_paths,
     )
     lines_by_page = bbox_lines_by_page(job_paths)
+    in_reference_section = False
     for page_num, blocks in selected_pages:
         source_image_path = source_page_image_path(job_paths, page_num)
         plan = build_page_render_plan(
@@ -3948,7 +4400,13 @@ def validate_document_quality(selected_pages, translations, page_size, job_paths
             page_size,
             bbox_lines=lines_by_page.get(page_num),
             source_image_path=source_image_path,
+            force_reference=in_reference_section,
         )
+        plan_has_reference = any(entry.classification == "reference" for entry in plan.ledger)
+        if plan_has_reference:
+            in_reference_section = True
+        elif in_reference_section:
+            in_reference_section = False
         plans.append(plan)
         errors.extend(validate_plan_coverage(page_num, blocks, plan))
         errors.extend(validate_plan_layout(plan, page_size))
@@ -4209,8 +4667,17 @@ def block_is_dense_nonprose_image_fallback(block) -> bool:
     return len(lines) >= 4 and width <= 170.0 and not re.search(r"[.!?][\"')\]）】”’]*\s+[A-Z]", text)
 
 
-def unfit_text_item_should_be_image(item: RenderItem, blocks_by_id: dict[str, dict], fitz) -> bool:
+def unfit_text_item_should_be_image(
+    item: RenderItem,
+    blocks_by_id: dict[str, dict],
+    fitz,
+    reference_source_ids: set[str] | None = None,
+) -> bool:
     if item.kind not in {"translated_text", "original_selectable_text"} or not item.text.strip():
+        return False
+    if item.component_kind == ownership.COMPONENT_KIND_REFERENCE:
+        return False
+    if reference_source_ids and any(source_id in reference_source_ids for source_id in item.source_ids):
         return False
     style_name = render_text_style_name(item)
     if style_name not in {"body", "reference", "heading", "subheading"}:
@@ -4219,7 +4686,7 @@ def unfit_text_item_should_be_image(item: RenderItem, blocks_by_id: dict[str, di
     if fit is not None:
         return False
     if style_name == "reference":
-        return True
+        return False
     source_blocks = [blocks_by_id[source_id] for source_id in item.source_ids if source_id in blocks_by_id]
     if not source_blocks:
         return False
@@ -4249,9 +4716,14 @@ def convert_unfit_nonprose_text_to_image_clips(plan: PageRenderPlan, blocks, fit
     if fitz is None:
         fitz = load_fitz()
     blocks_by_id = {block["id"]: block for block in blocks}
+    reference_source_ids = {
+        entry.block_id
+        for entry in plan.ledger
+        if entry.classification == "reference" or entry.component_kind == ownership.COMPONENT_KIND_REFERENCE
+    }
     new_items = []
     for item in plan.items:
-        if not unfit_text_item_should_be_image(item, blocks_by_id, fitz):
+        if not unfit_text_item_should_be_image(item, blocks_by_id, fitz, reference_source_ids):
             new_items.append(item)
             continue
         new_items.append(
@@ -4277,6 +4749,7 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
     )
     lines_by_page = bbox_lines_by_page(job_paths)
     total_pages = len(selected_pages)
+    in_reference_section = False
     for output_idx, (page_num, blocks) in enumerate(selected_pages, start=1):
         if output_idx == 1 or output_idx % 50 == 0 or output_idx == total_pages:
             print(
@@ -4301,8 +4774,16 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
             (page_rect.width, page_rect.height),
             bbox_lines=lines_by_page.get(page_num),
             source_image_path=source_image,
+            force_reference=in_reference_section,
         )
-        validation_results = {}
+        plan_has_reference = any(entry.classification == "reference" for entry in plan.ledger)
+        if plan_has_reference:
+            in_reference_section = True
+        elif in_reference_section:
+            in_reference_section = False
+        validation_results = {
+            "ownership": ownership.ownership_validation_to_json(plan.ownership_validation),
+        }
         coverage_errors = validate_plan_coverage(page_num, blocks, plan)
         validation_results["coverage_errors"] = coverage_errors
         if coverage_errors:

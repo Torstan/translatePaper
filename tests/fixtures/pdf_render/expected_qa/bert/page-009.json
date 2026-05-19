@@ -1,0 +1,9 @@
+{
+  "document": "bert",
+  "page": 9,
+  "assertions": [
+    {
+      "expect": "no_errors"
+    }
+  ]
+}

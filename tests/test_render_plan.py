@@ -108,6 +108,281 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertEqual(classes["p001b0004"], "reference")
         self.assertEqual(classes["p001b0005"], "reference")
 
+    def test_reference_signature_extracts_bibliographic_components(self):
+        signature = classify.reference_signature(
+            "Wilson L Taylor. 1953. Cloze procedure: A new tool for measuring readability. "
+            "Journalism Bulletin, 30(4):415-433."
+        )
+
+        self.assertEqual(signature["authors"], "Wilson L Taylor")
+        self.assertEqual(signature["title"], "Cloze procedure: A new tool for measuring readability")
+        self.assertEqual(signature["venue"], "Journalism Bulletin")
+        self.assertEqual(signature["date"], "1953")
+        self.assertEqual(signature["volume_issue"], "30(4)")
+        self.assertEqual(signature["pages"], "415-433")
+        self.assertEqual(signature["pattern"], "authors+title+venue+date+pages")
+        self.assertTrue(signature["reference_like"])
+
+    def test_reference_signature_extracts_continuation_fragment(self):
+        signature = classify.reference_signature("machine translation. CoRR, abs/1406.1078, 2014.")
+
+        self.assertIsNone(signature["authors"])
+        self.assertEqual(signature["title"], "machine translation")
+        self.assertEqual(signature["venue"], "CoRR")
+        self.assertEqual(signature["date"], "2014")
+        self.assertEqual(signature["locator"], "abs/1406.1078")
+        self.assertTrue(signature["reference_like"])
+
+    def test_reference_coverage_entry_serializes_structured_signature(self):
+        blocks = [
+            block(
+                "p011b0001",
+                11,
+                "Wilson L Taylor. 1953. Cloze procedure: A new tool for measuring readability. "
+                "Journalism Bulletin, 30(4):415-433.",
+                x0=72,
+                y0=612,
+                x1=515,
+                y1=644,
+            )
+        ]
+
+        plan = pdf.build_page_render_plan(11, blocks, {}, page_size=(623, 801), bbox_lines=None)
+        plan_json = pdf.render_plan_to_json(plan)
+        entry = next(item for item in plan_json["coverage_ledger"] if item["block_id"] == "p011b0001")
+
+        self.assertEqual(entry["classification"], "reference")
+        self.assertEqual(entry["render_kind"], "original_selectable_text")
+        self.assertEqual(entry["fallback_reason"], "reference_original")
+        self.assertEqual(
+            entry["reference_signature"]["pattern"],
+            "authors+title+venue+date+pages",
+        )
+        self.assertEqual(entry["reference_signature"]["authors"], "Wilson L Taylor")
+        self.assertEqual(
+            entry["reference_signature"]["title"],
+            "Cloze procedure: A new tool for measuring readability",
+        )
+        self.assertEqual(entry["reference_signature"]["venue"], "Journalism Bulletin")
+        self.assertEqual(entry["reference_signature"]["date"], "1953")
+        self.assertEqual(entry["reference_signature"]["pages"], "415-433")
+
+    def test_reference_line_rendering_does_not_copy_adjacent_body_column(self):
+        blocks = [
+            block(
+                "p012b0001",
+                12,
+                "Smith, J. 2018. Reference title. In Proceedings of ACL.",
+                x0=72,
+                y0=70,
+                x1=290,
+                y1=95,
+            ),
+            block(
+                "p012b0002",
+                12,
+                "Appendix body text that should be translated, not copied as a reference line.",
+                x0=320,
+                y0=70,
+                x1=526,
+                y1=95,
+            ),
+        ]
+        bbox_lines = [
+            {
+                "page": 12,
+                "bbox": (72.0, 72.0, 290.0, 84.0),
+                "text": "Smith, J. 2018. Reference title. In Proceedings of ACL.",
+            },
+            {
+                "page": 12,
+                "bbox": (320.0, 72.0, 526.0, 84.0),
+                "text": "Appendix body text that should be translated, not copied as a reference line.",
+            },
+        ]
+
+        plan = pdf.build_page_render_plan(
+            12,
+            blocks,
+            {"p012b0002": "这段附录正文应该只作为译文呈现。"},
+            page_size=(623, 801),
+            bbox_lines=bbox_lines,
+            force_reference=True,
+        )
+
+        original_reference_text = "\n".join(
+            item.text
+            for item in plan.items
+            if item.kind == "original_selectable_text" and item.style_name == "reference"
+        )
+        translated_text = "\n".join(item.text for item in plan.items if item.kind == "translated_text")
+
+        self.assertIn("Smith, J.", original_reference_text)
+        self.assertNotIn("Appendix body text", original_reference_text)
+        self.assertIn("这段附录正文", translated_text)
+
+    def test_reference_line_rendering_falls_back_for_unmatched_reference_blocks(self):
+        blocks = [
+            block(
+                "p012b0001",
+                12,
+                "Smith, J. 2018. First reference title. In Proceedings of ACL.",
+                x0=72,
+                y0=70,
+                x1=290,
+                y1=95,
+            ),
+            block(
+                "p012b0002",
+                12,
+                "Jones, A. 2019. Second reference title. Journal of Tests.",
+                x0=72,
+                y0=112,
+                x1=290,
+                y1=137,
+            ),
+        ]
+        bbox_lines = [
+            {
+                "page": 12,
+                "bbox": (72.0, 72.0, 290.0, 84.0),
+                "text": "Smith, J. 2018. First reference title. In Proceedings of ACL.",
+            }
+        ]
+
+        plan = pdf.build_page_render_plan(
+            12,
+            blocks,
+            {},
+            page_size=(623, 801),
+            bbox_lines=bbox_lines,
+            force_reference=True,
+        )
+        reference_items_by_source = {
+            source_id: item
+            for item in plan.items
+            if item.kind == "original_selectable_text" and item.style_name == "reference"
+            for source_id in item.source_ids
+        }
+        ledger_reasons = {
+            entry.block_id: entry.fallback_reason
+            for entry in plan.ledger
+            if entry.classification == "reference"
+        }
+
+        self.assertIn("p012b0001", reference_items_by_source)
+        self.assertIn("p012b0002", reference_items_by_source)
+        self.assertIn("First reference title", reference_items_by_source["p012b0001"].text)
+        self.assertIn("Second reference title", reference_items_by_source["p012b0002"].text)
+        self.assertEqual(ledger_reasons["p012b0001"], "reference_original_lines")
+        self.assertEqual(ledger_reasons["p012b0002"], "reference_original")
+
+    def test_visual_region_does_not_group_reference_with_adjacent_appendix_heading(self):
+        blocks = [
+            block(
+                "p012b0005",
+                12,
+                "Alex Warstadt, Amanpreet Singh, and Samuel R Bowman. 2018. Neural network acceptability judgments. arXiv preprint arXiv:1805.12471.",
+                x0=72,
+                y0=209,
+                x1=290,
+                y1=240,
+            ),
+            block("p012b0017", 12, "A", x0=307, y0=222, x1=316, y1=233),
+            block("p012b0018", 12, "Additional Details for BERT", x0=328, y0=222, x1=474, y1=233),
+            block("p012b0019", 12, "A.1", x0=307, y0=244, x1=324, y1=254),
+            block("p012b0020", 12, "Illustration of the Pre-training Tasks", x0=334, y0=244, x1=506, y1=254),
+            block(
+                "p012b0021",
+                12,
+                "We provide examples of the pre-training tasks in the following.",
+                x0=307,
+                y0=262,
+                x1=526,
+                y1=286,
+            ),
+        ]
+
+        plan = pdf.build_page_render_plan(
+            12,
+            blocks,
+            {
+                "p012b0018": "BERT 的更多细节",
+                "p012b0020": "预训练任务示例",
+                "p012b0021": "我们在下文给出预训练任务的示例。",
+            },
+            page_size=(623, 801),
+            bbox_lines=None,
+            force_reference=True,
+        )
+        image_source_sets = [set(item.source_ids) for item in plan.items if item.kind == "original_image_clip"]
+        translated_ids = {
+            source_id
+            for item in plan.items
+            if item.kind == "translated_text"
+            for source_id in item.source_ids
+        }
+
+        self.assertFalse(any({"p012b0005", "p012b0018"} <= source_ids for source_ids in image_source_sets))
+        self.assertIn("p012b0018", translated_ids)
+        self.assertIn("p012b0020", translated_ids)
+        self.assertIn("p012b0021", translated_ids)
+
+    def test_reference_signature_rejects_body_sentence_with_venue_and_year(self):
+        text = "This sentence mentions ACL 2018 results in this section."
+
+        self.assertFalse(classify.reference_signature(text)["reference_like"])
+        self.assertFalse(classify.looks_like_reference_item(text))
+
+    def test_reference_signature_rejects_long_body_paragraph_with_inline_citations(self):
+        text = (
+            "Prior work showed effective transfer from supervised tasks with large datasets, "
+            "such as natural language inference (Smith et al., 2017) and machine translation "
+            "(Jones et al., 2017). Computer vision research also demonstrated the importance "
+            "of transfer learning from large pre-trained models."
+        )
+
+        self.assertFalse(classify.reference_signature(text)["reference_like"])
+        self.assertFalse(classify.looks_like_reference_item(text))
+
+    def test_reference_signature_rejects_decimal_table_cells_as_numbered_references(self):
+        text = "51.9 52.7\n59.1 59.2\n- 78.0"
+
+        self.assertFalse(classify.reference_signature(text)["reference_like"])
+        self.assertFalse(classify.looks_like_reference_item(text))
+
+    def test_numeric_section_heading_is_not_reference_item(self):
+        blocks = [
+            block(
+                "p007b0006",
+                7,
+                "3.IMPOSSIBILITYRESULTS\n"
+                "Informally, a consensus protocol is a system of n processes that communicate through shared objects.",
+                x0=124,
+                y0=284,
+                x1=484,
+                y1=632,
+            )
+        ]
+
+        plan = pdf.build_page_render_plan(
+            7,
+            blocks,
+            {"p007b0006": "3. 不可能性结果\n非正式地说，共识协议是由 n 个进程组成的系统。"},
+            page_size=(623, 801),
+            bbox_lines=None,
+        )
+        classes = {entry.block_id: entry.classification for entry in plan.ledger}
+        translated_ids = {
+            source_id
+            for item in plan.items
+            if item.kind == "translated_text"
+            for source_id in item.source_ids
+        }
+
+        self.assertNotEqual(classes["p007b0006"], "reference")
+        self.assertIn("p007b0006", translated_ids)
+
     def test_decorated_ocr_page_number_is_skipped_without_skipping_enumeration(self):
         blocks = [
             block("p006b0001", 6, "¥ · 129", x0=135, y0=42, x1=180, y1=54),
@@ -157,6 +432,61 @@ class RenderPlanClassificationTests(unittest.TestCase):
             batches = pdf.build_batches([blocks], max_chars=7000)
 
         self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0003"]])
+
+    def test_build_batches_consumes_page_component_ownership(self):
+        blocks = [
+            block("p001b0001", 1, "Figure 1: architecture", x0=80, y0=100, x1=260, y1=180),
+            block("p001b0002", 1, "short diagram label", x0=100, y0=130, x1=180, y1=145),
+            block("p001b0003", 1, "This body paragraph should still be translated.", x0=80, y0=220, x1=360, y1=245),
+        ]
+        visual_regions = [{"source_ids": ["p001b0001"], "bbox": (78.0, 98.0, 262.0, 182.0)}]
+        classes = {"p001b0001": "figure_region", "p001b0002": "body", "p001b0003": "body"}
+
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=visual_regions),
+            patch.object(pdf, "classify_blocks", return_value=classes),
+        ):
+            result = pdf.build_translation_page_components(1, blocks)
+            batches = pdf.build_batches([blocks], max_chars=7000)
+
+        self.assertEqual(result.translatable_ids, ["p001b0003"])
+        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0003"]])
+
+    def test_batch_planning_and_render_plan_use_same_page_components(self):
+        blocks = [
+            block("p001b0001", 1, "Figure 1: architecture", x0=80, y0=100, x1=260, y1=180),
+            block("p001b0002", 1, "short diagram label", x0=100, y0=130, x1=180, y1=145),
+            block("p001b0003", 1, "This body paragraph should still be translated.", x0=80, y0=220, x1=360, y1=245),
+        ]
+        visual_regions = [{"source_ids": ["p001b0001"], "bbox": (78.0, 98.0, 262.0, 182.0)}]
+        classes = {"p001b0001": "figure_region", "p001b0002": "body", "p001b0003": "body"}
+
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=visual_regions),
+            patch.object(pdf, "classify_blocks", return_value=classes),
+        ):
+            ownership_result = pdf.build_translation_page_components(1, blocks, page_size=(400, 400))
+            plan = pdf.build_page_render_plan(
+                1,
+                blocks,
+                {"p001b0003": "这段正文仍应翻译。"},
+                page_size=(400, 400),
+                bbox_lines=None,
+            )
+
+        self.assertEqual(
+            [pdf.ownership.page_component_to_json(component) for component in plan.components],
+            [pdf.ownership.page_component_to_json(component) for component in ownership_result.components],
+        )
+        translated_component_ids = {
+            component.component_id
+            for component in plan.components
+            if component.component_kind == pdf.ownership.COMPONENT_KIND_TRANSLATED_TEXT
+        }
+        translated_item_component_ids = {
+            item.component_id for item in plan.items if item.kind == "translated_text"
+        }
+        self.assertEqual(translated_item_component_ids, translated_component_ids)
 
     def test_build_batches_excludes_text_covered_by_final_visual_clip_padding(self):
         blocks = [
@@ -269,6 +599,36 @@ class RenderPlanClassificationTests(unittest.TestCase):
 
         self.assertEqual(covered_by_final_clip, {"p001b0002"})
         self.assertEqual(protected, covered_by_final_clip)
+
+    def test_final_visual_clip_does_not_intrude_into_adjacent_body_column(self):
+        blocks = [
+            block("p016b0012", 16, "MNLI Dev Accuracy", x0=75.566, y0=596.921, x1=81.801, y1=656.282),
+            block(
+                "p016b0038",
+                16,
+                "The results are presented in Table 8. In the table, MASK means that we replace the target token.",
+                x0=307.276,
+                y0=360.528,
+                x1=525.545,
+                y1=641.264,
+            ),
+        ]
+        classes = {"p016b0012": "figure_region", "p016b0038": "body"}
+        region = {
+            "source_ids": ["p016b0012"],
+            "bbox": (70.480, 564.319, 312.094, 763.124),
+        }
+
+        final_bbox, _mixed_body_item = pdf.final_visual_region_bbox(
+            blocks,
+            classes,
+            region,
+            page_size=(623.0, 801.0),
+            page_num=16,
+            visual_ids={"p016b0012"},
+        )
+
+        self.assertLess(final_bbox[2], blocks[1]["xMin"])
 
     def test_build_batches_uses_bbox_lines_for_formula_final_clip_exclusion(self):
         blocks = [
@@ -443,6 +803,110 @@ class RenderPlanClassificationTests(unittest.TestCase):
 
         sent_ids = [item["id"] for batch in batches for item in batch]
         self.assertEqual(sent_ids, ["p001b0001", "p001b0002", "p001b0003", "p001b0004"])
+
+    def test_build_batches_excludes_duplicate_components(self):
+        blocks = [
+            block("p001b0001", 1, "Duplicate extraction text.", x0=100, y0=100, x1=210, y1=118),
+            block(
+                "p001b0002",
+                1,
+                "Wrapper containing Duplicate extraction text. plus more context.",
+                x0=92,
+                y0=92,
+                x1=290,
+                y1=165,
+            ),
+        ]
+        classes = {"p001b0001": "body", "p001b0002": "body"}
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=[]),
+            patch.object(pdf, "classify_blocks", return_value=classes),
+        ):
+            result = pdf.build_translation_page_components(1, blocks)
+            batches = pdf.build_batches([blocks], max_chars=7000)
+
+        duplicate_component = next(
+            component for component in result.components if component.source_ids == ["p001b0001"]
+        )
+        self.assertEqual(duplicate_component.component_kind, "duplicate")
+        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0002"]])
+
+    def test_build_batches_excludes_preserve_image_skip_components(self):
+        blocks = [
+            block(
+                "p001b0001",
+                1,
+                "Body-looking extracted text that must stay as a source image.",
+                x0=100,
+                y0=100,
+                x1=360,
+                y1=130,
+                preserve_image=True,
+            ),
+            block(
+                "p001b0002",
+                1,
+                "This ordinary body paragraph should still be translated.",
+                x0=100,
+                y0=160,
+                x1=360,
+                y1=190,
+            ),
+        ]
+        classes = {"p001b0001": "body", "p001b0002": "body"}
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=[]),
+            patch.object(pdf, "classify_blocks", return_value=classes),
+        ):
+            result = pdf.build_translation_page_components(1, blocks)
+            batches = pdf.build_batches([blocks], max_chars=7000)
+
+        skip_component = next(
+            component for component in result.components if component.source_ids == ["p001b0001"]
+        )
+        self.assertEqual(skip_component.component_kind, pdf.ownership.COMPONENT_KIND_SKIP)
+        self.assertEqual(result.translatable_ids, ["p001b0002"])
+        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0002"]])
+
+    def test_build_batches_keeps_reference_continuation_pages_untranslated(self):
+        page_10 = [
+            block("p010b0012", 10, "References", x0=108, y0=597, x1=164, y1=608),
+            block(
+                "p010b0013",
+                10,
+                "[1] Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton. Layer normalization.",
+                x0=113,
+                y0=616,
+                x1=504,
+                y1=636,
+            ),
+        ]
+        page_11 = [
+            block(
+                "p011b0001",
+                11,
+                "machine translation. CoRR, abs/1406.1078, 2014.",
+                x0=130,
+                y0=75,
+                x1=331,
+                y1=95,
+            ),
+            block(
+                "p011b0002",
+                11,
+                "[6] Francois Chollet. Xception: Deep learning with depthwise separable convolutions.",
+                x0=113,
+                y0=118,
+                x1=504,
+                y1=138,
+            ),
+            block("p011b0003", 11, "11", x0=301, y0=743, x1=311, y1=752),
+        ]
+
+        batches = pdf.build_batches([page_10, page_11], max_chars=7000, page_numbers=[10, 11])
+
+        sent_ids = [item["id"] for batch in batches for item in batch]
+        self.assertEqual(sent_ids, [])
 
     def test_unknown_nontrivial_block_is_preserved_and_reported_as_image_clip(self):
         blocks = [
@@ -873,6 +1337,87 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertIn("3.3 队列、栈、列表等", subheadings[0].text)
         self.assertEqual(subheadings[0].font_size, pdf.DOCUMENT_STYLES["subheading"].font_size)
         self.assertNotIn("3.3 队列、栈、列表等", body_text)
+
+    def test_footnote_marker_line_is_not_split_as_embedded_heading_when_source_rows_are_present(self):
+        blocks = [
+            block(
+                "p003b0077",
+                3,
+                "https://github.com/tensorflow/tensor2tensor\n"
+                "http://nlp.seas.harvard.edu/2018/04/03/attention.html\n"
+                "3\n"
+                "In all cases we set the feed-forward/filter size to be 4H,\n"
+                "i.e., 3072 for the H = 768 and 4096 for the H = 1024.\n"
+                "4\n"
+                "We note that in the literature the bidirectional Trans-",
+                x0=307.276,
+                y0=714.300781,
+                x1=525.544555,
+                y1=764.902742,
+            )
+        ]
+        bbox_lines = [
+            {"page": 3, "text": "1", "bbox": (319.928, 712.518187, 322.9168, 717.862162)},
+            {"page": 3, "text": "https://github.com/tensorflow/tensor2tensor", "bbox": (323.415, 714.300781, 479.502091, 722.316742)},
+            {"page": 3, "text": "2", "bbox": (319.928, 723.392187, 322.9168, 728.736162)},
+            {"page": 3, "text": "http://nlp.seas.harvard.edu/2018/04/03/attention.html", "bbox": (323.415, 725.174781, 513.977899, 733.190742)},
+            {"page": 3, "text": "3", "bbox": (319.928, 734.267187, 322.9168, 739.611162)},
+            {"page": 3, "text": "In all cases we set the feed-forward/filter size to be 4H,", "bbox": (323.415, 735.906318, 525.5436, 744.065742)},
+            {"page": 3, "text": "i.e., 3072 for the H = 768 and 4096 for the H = 1024.", "bbox": (307.276, 745.868318, 508.0246, 754.027742)},
+            {"page": 3, "text": "4", "bbox": (319.928, 755.104187, 322.9168, 760.448162)},
+            {"page": 3, "text": "We note that in the literature the bidirectional Trans-", "bbox": (323.415, 756.886781, 525.544555, 764.902742)},
+        ]
+        translations = {
+            "p003b0077": "https://github.com/tensorflow/tensor2tensor\n"
+            "http://nlp.seas.harvard.edu/2018/04/03/attention.html\n"
+            "3\n"
+            "在所有情况下，我们都将前馈/滤波器大小设为 4H，即 H = 768 时为 3072，H = 1024 时为 4096。\n"
+            "4\n"
+            "我们注意到，在文献中，双向 Trans-",
+        }
+
+        plan = pdf.build_page_render_plan(
+            3,
+            blocks,
+            translations,
+            page_size=(595.276, 841.89),
+            bbox_lines=bbox_lines,
+        )
+
+        self.assertFalse(any(item.fallback_reason == "embedded_heading" for item in plan.items if "p003b0077" in item.source_ids))
+        self.assertEqual(pdf.validate_plan_text_fit(plan), [])
+
+    def test_footnote_url_line_is_not_split_as_embedded_heading_without_source_rows(self):
+        blocks = [
+            block(
+                "p015b0104",
+                15,
+                "14\n"
+                "Note that we only report single-task fine-tuning results in this paper.\n"
+                "15\n"
+                "https://gluebenchmark.com/faq",
+                x0=307,
+                y0=704,
+                x1=526,
+                y1=764,
+            )
+        ]
+        translations = {
+            "p015b0104": "14\n"
+            "请注意，本文中我们仅报告单任务微调结果。\n"
+            "15 https://gluebenchmark.com/faq",
+        }
+
+        plan = pdf.build_page_render_plan(
+            15,
+            blocks,
+            translations,
+            page_size=(623, 801),
+            bbox_lines=None,
+        )
+
+        self.assertFalse(any(item.fallback_reason == "embedded_heading" for item in plan.items))
+        self.assertEqual(pdf.validate_plan_embedded_heading_policy(plan), [])
 
     def test_quality_check_reports_body_text_with_embedded_numeric_heading(self):
         plan = pdf.PageRenderPlan(
@@ -1815,6 +2360,41 @@ class QualityValidationTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
+    def test_document_quality_keeps_reference_continuation_pages_untranslated(self):
+        page_10 = [
+            block("p010b0012", 10, "References", x0=108, y0=597, x1=164, y1=608),
+            block(
+                "p010b0013",
+                10,
+                "[1] Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E Hinton. Layer normalization.",
+                x0=113,
+                y0=616,
+                x1=504,
+                y1=636,
+            ),
+        ]
+        page_12 = [
+            block(
+                "p012b0001",
+                12,
+                "[25] Mitchell P Marcus, Mary Ann Marcinkiewicz, and Beatrice Santorini. "
+                "Building a large annotated corpus of english: The penn treebank.",
+                x0=108,
+                y0=75,
+                x1=504,
+                y1=95,
+            ),
+        ]
+
+        errors = pdf.validate_document_quality(
+            [(10, page_10), (12, page_12)],
+            {},
+            page_size=(612, 792),
+            job_paths=None,
+        )
+
+        self.assertFalse(any("p012b0001 normal text block is missing Chinese translation" in error for error in errors))
+
     def test_text_overlap_quality_detects_overlapping_translated_items(self):
         plan = pdf.PageRenderPlan(page_num=9)
         plan.items.append(pdf.RenderItem("translated_text", ["p009b0008"], (100, 100, 400, 180), text="正文"))
@@ -1887,6 +2467,75 @@ class QualityValidationTests(unittest.TestCase):
         errors = pdf.validate_plan_vertical_balance(plan)
 
         self.assertTrue(any("body flow has uneven vertical spacing" in error for error in errors))
+
+    def test_validate_plan_quality_reports_ownership_violations(self):
+        plan = pdf.PageRenderPlan(page_num=19)
+        plan.ownership_validation = pdf.ownership.OwnershipValidationResult(
+            issues=[
+                pdf.ownership.OwnershipIssue(
+                    issue_code="missing_owner",
+                    severity="error",
+                    page_num=19,
+                    message="source block p019b0001 has no ownership component",
+                    source_ids=["p019b0001"],
+                ),
+                pdf.ownership.OwnershipIssue(
+                    issue_code="conservative_split",
+                    severity="warning",
+                    page_num=19,
+                    message="split ownership is conservative",
+                    source_ids=["p019b0002"],
+                ),
+            ]
+        )
+
+        errors = pdf.validate_plan_quality(19, [], {}, plan)
+
+        self.assertIn("source block p019b0001 has no ownership component", errors)
+        self.assertNotIn("split ownership is conservative", errors)
+
+    def test_unfit_nonprose_fallback_preserves_reference_component_as_selectable_text(self):
+        block_id = "p012b0002"
+        text = "\n".join(f"[{idx}] Author {idx}. 2020. Reference title {idx}." for idx in range(1, 10))
+        blocks = [
+            block(
+                block_id,
+                12,
+                text,
+                x0=80,
+                y0=120,
+                x1=230,
+                y1=170,
+            )
+        ]
+        plan = pdf.PageRenderPlan(page_num=12)
+        plan.items.append(
+            pdf.RenderItem(
+                "original_selectable_text",
+                [block_id],
+                (80, 120, 230, 170),
+                text=text,
+                font_size=pdf.BODY_FONT_SIZE,
+                style_name="body",
+                fallback_reason="missing_translation",
+                component_kind=pdf.ownership.COMPONENT_KIND_REFERENCE,
+            )
+        )
+        plan.ledger.append(
+            pdf.CoverageEntry(
+                block_id,
+                "reference",
+                "original_selectable_text",
+                True,
+                "reference_original",
+                component_kind=pdf.ownership.COMPONENT_KIND_REFERENCE,
+            )
+        )
+
+        pdf.convert_unfit_nonprose_text_to_image_clips(plan, blocks)
+
+        self.assertEqual(plan.items[0].kind, "original_selectable_text")
+        self.assertEqual(plan.ledger[0].render_kind, "original_selectable_text")
 
     def test_moving_leading_enum_continuation_does_not_duplicate_source_ids(self):
         plan = pdf.PageRenderPlan(page_num=4)
@@ -1980,7 +2629,15 @@ class RenderPlanSerializationTests(unittest.TestCase):
         for source_id in ("p042b0001", "p042b0002"):
             self.assertEqual(
                 set(ledger_by_id[source_id]),
-                {"block_id", "classification", "render_kind", "rendered", "fallback_reason"},
+                {
+                    "block_id",
+                    "classification",
+                    "render_kind",
+                    "rendered",
+                    "fallback_reason",
+                    "component_id",
+                    "component_kind",
+                },
             )
             self.assertTrue(ledger_by_id[source_id]["rendered"])
 
@@ -1990,6 +2647,11 @@ class RenderPlanSerializationTests(unittest.TestCase):
         self.assertEqual(ledger_by_id["p042b0002"]["classification"], "figure_region")
         self.assertEqual(ledger_by_id["p042b0002"]["render_kind"], "original_image_clip")
         self.assertEqual(ledger_by_id["p042b0002"]["fallback_reason"], "visual_region")
+        self.assertEqual(ledger_by_id["p042b0001"]["component_kind"], "translated_text")
+        self.assertEqual(ledger_by_id["p042b0002"]["component_kind"], "visual")
+        self.assertEqual(len(plan_json["components"]), 2)
+        self.assertEqual(len(plan_json["ownership_ledger"]), 2)
+        self.assertEqual(plan_json["ownership_validation"], {"ok": True, "issues": []})
 
     def test_serialized_visual_fallback_reason_is_kept_on_item_and_ledger(self):
         blocks = [
@@ -2055,6 +2717,8 @@ class RenderPlanSerializationTests(unittest.TestCase):
                 "style_name": "body",
                 "color": [0.1, 0.2, 0.3],
                 "fallback_reason": "",
+                "component_id": "",
+                "component_kind": "",
             },
         )
         self.assertEqual(
@@ -2065,8 +2729,13 @@ class RenderPlanSerializationTests(unittest.TestCase):
                 "render_kind": "original_image_clip",
                 "rendered": True,
                 "fallback_reason": "visual_region",
+                "component_id": "",
+                "component_kind": "",
             },
         )
+        self.assertEqual(plan_json["components"], [])
+        self.assertEqual(plan_json["ownership_ledger"], [])
+        self.assertEqual(plan_json["ownership_validation"], {"ok": True, "issues": []})
         self.assertEqual(plan_json["protected_regions"], [{"bbox": [90.0, 190.0, 380.0, 260.0]}])
         self.assertEqual(
             plan_json["validation_results"],
@@ -2120,6 +2789,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
             expected_json = pdf.render_plan_json_dumps(
                 expected_plan,
                 validation_results={
+                    "ownership": pdf.ownership.ownership_validation_to_json(expected_plan.ownership_validation),
                     "coverage_errors": [],
                     "layout_errors": [],
                     "style_policy_errors": [],
@@ -2205,7 +2875,10 @@ class RenderPlanSerializationTests(unittest.TestCase):
             artifact = json.loads((plans_dir / "page-001.render-plan.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 artifact["validation_results"],
-                {"coverage_errors": ["coverage failed before later checks"]},
+                {
+                    "ownership": {"ok": True, "issues": []},
+                    "coverage_errors": ["coverage failed before later checks"],
+                },
             )
 
     def test_vector_pdf_rejects_and_records_style_policy_errors(self):

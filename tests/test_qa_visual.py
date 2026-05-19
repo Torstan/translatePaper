@@ -1,4 +1,5 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,19 @@ import qa_visual
 
 
 class VisualQaImageTests(unittest.TestCase):
+    def test_load_fitz_uses_repo_vendor_path(self):
+        vendor_path = str(Path(qa_visual.__file__).resolve().parent / "vendor")
+        original_path = list(sys.path)
+        try:
+            sys.path = [path for path in sys.path if path != vendor_path]
+            try:
+                qa_visual.load_fitz()
+            except SystemExit:
+                pass
+            self.assertIn(vendor_path, sys.path)
+        finally:
+            sys.path = original_path
+
     def test_load_page_image_returns_rgb_image(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             image_path = Path(tmp_dir) / "page-001.png"
@@ -402,6 +416,64 @@ class VisualQaImageTests(unittest.TestCase):
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].category, "region_overcapture")
+        self.assertEqual(issues[0].source_ids, ["p013b0004"])
+
+    def test_image_clip_boundary_checks_report_visual_owned_source_block_outside_clip(self):
+        plan = {
+            "page_num": 13,
+            "render_items": [
+                {
+                    "kind": "original_image_clip",
+                    "source_ids": ["p013b0003", "p013b0004"],
+                    "bbox": [40, 20, 80, 80],
+                    "component_id": "p013c0001",
+                    "component_kind": "visual",
+                }
+            ],
+            "coverage_ledger": [
+                {
+                    "block_id": "p013b0003",
+                    "classification": "figure_region",
+                    "component_id": "p013c0001",
+                    "component_kind": "visual",
+                    "render_kind": "original_image_clip",
+                    "rendered": True,
+                },
+                {
+                    "block_id": "p013b0004",
+                    "classification": "figure_region",
+                    "component_id": "p013c0001",
+                    "component_kind": "visual",
+                    "render_kind": "original_image_clip",
+                    "rendered": True,
+                },
+            ],
+        }
+        blocks = [
+            {
+                "id": "p013b0004",
+                "text": "A visual label outside the clip.",
+                "xMin": 10,
+                "yMin": 30,
+                "xMax": 30,
+                "yMax": 60,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_png = Path(tmp_dir) / "page-013.png"
+            image = Image.new("RGB", (100, 100), "white")
+            ImageDraw.Draw(image).rectangle((12, 32, 28, 58), fill="black")
+            image.save(source_png)
+
+            issues = qa_visual.detect_image_clip_boundary_issues(
+                plan,
+                source_png,
+                page_size=(100, 100),
+                source_blocks=blocks,
+            )
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].category, "visual_undercapture")
         self.assertEqual(issues[0].source_ids, ["p013b0004"])
 
     def test_image_clip_boundary_checks_allow_body_block_outside_clip_bbox(self):
@@ -1283,6 +1355,31 @@ class VisualQaRulePairTests(unittest.TestCase):
         self.assertCategoryReported(bad_issues, "clipped_content")
         self.assertCategoryAbsent(corrected_issues, "clipped_content")
 
+    def test_clipped_content_rule_allows_dark_content_on_inside_clip_edge(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_png = Path(tmp_dir) / "page-024.png"
+            image = Image.new("RGB", (100, 100), "white")
+            ImageDraw.Draw(image).rectangle((20, 30, 21, 40), fill="black")
+            image.save(source_png)
+            plan = {
+                "page_num": 24,
+                "render_items": [
+                    {
+                        "kind": "original_image_clip",
+                        "source_ids": ["p024b0001"],
+                        "bbox": [20, 20, 50, 50],
+                    }
+                ],
+            }
+
+            issues = qa_visual.detect_image_clip_boundary_issues(
+                plan,
+                source_png,
+                page_size=(100, 100),
+            )
+
+        self.assertCategoryAbsent(issues, "clipped_content")
+
     def test_region_overcapture_rule_fails_bad_plan_and_passes_corrected_plan(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             source_png = Path(tmp_dir) / "page-025.png"
@@ -1352,6 +1449,52 @@ class VisualQaRulePairTests(unittest.TestCase):
 
         self.assertCategoryReported(bad_issues, "region_overcapture")
         self.assertCategoryAbsent(corrected_issues, "region_overcapture")
+
+    def test_region_overcapture_rule_uses_component_ownership_before_body_classification(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_png = Path(tmp_dir) / "page-025.png"
+            Image.new("RGB", (100, 100), "white").save(source_png)
+            plan = {
+                "page_num": 25,
+                "render_items": [
+                    {
+                        "kind": "original_image_clip",
+                        "source_ids": ["p025b0001", "p025b0002"],
+                        "bbox": [20, 20, 80, 80],
+                        "component_id": "p025c0001",
+                        "component_kind": "visual",
+                    }
+                ],
+                "coverage_ledger": [
+                    {
+                        "block_id": "p025b0002",
+                        "classification": "body",
+                        "component_id": "p025c0001",
+                        "component_kind": "visual",
+                        "render_kind": "original_image_clip",
+                        "rendered": True,
+                    }
+                ],
+            }
+            blocks = [
+                {
+                    "id": "p025b0002",
+                    "text": "A diagram label classified as body by extraction.",
+                    "xMin": 30,
+                    "yMin": 30,
+                    "xMax": 70,
+                    "yMax": 60,
+                }
+            ]
+
+            issues = qa_visual.detect_image_clip_boundary_issues(
+                plan,
+                source_png,
+                page_size=(100, 100),
+                source_blocks=blocks,
+            )
+
+        self.assertCategoryAbsent(issues, "region_overcapture")
 
     def test_style_hierarchy_rule_fails_bad_plan_and_passes_corrected_plan(self):
         bad_plan = {
@@ -1556,6 +1699,114 @@ class VisualQaRenderTests(unittest.TestCase):
 
 
 class VisualQaReportTests(unittest.TestCase):
+    def test_detect_ownership_issues_maps_validation_codes(self):
+        plan = {
+            "page_num": 21,
+            "ownership_validation": {
+                "ok": False,
+                "issues": [
+                    {
+                        "issue_code": "duplicate_owner",
+                        "severity": "error",
+                        "message": "source block p021b0001 has multiple owners",
+                        "source_ids": ["p021b0001"],
+                        "component_ids": ["p021c0001", "p021c0002"],
+                        "bboxes": [[10, 20, 30, 40]],
+                    },
+                    {
+                        "issue_code": "text_over_visual_component",
+                        "severity": "warning",
+                        "message": "text overlaps visual component",
+                        "source_ids": ["p021b0002"],
+                        "component_ids": ["p021c0003", "p021c0002"],
+                        "bboxes": [[11, 21, 31, 41]],
+                    },
+                    {
+                        "issue_code": "visual_overcapture",
+                        "severity": "error",
+                        "message": "visual clip captures unrelated text",
+                        "source_ids": ["p021b0003"],
+                        "component_ids": ["p021c0004"],
+                        "bboxes": [[12, 22, 32, 42]],
+                    },
+                    {
+                        "issue_code": "missing_owner",
+                        "severity": "error",
+                        "message": "source block p021b0004 has no owner",
+                        "source_ids": ["p021b0004"],
+                    },
+                    {
+                        "issue_code": "invalid_owner",
+                        "severity": "warning",
+                        "message": "source block p021b0005 has invalid owner",
+                        "source_ids": ["p021b0005"],
+                    },
+                    {
+                        "issue_code": "ownership_violation",
+                        "severity": "error",
+                        "message": "ownership validation failed",
+                        "source_ids": ["p021b0006"],
+                    },
+                ],
+            },
+        }
+
+        issues = qa_visual.detect_ownership_issues(plan)
+
+        self.assertEqual(
+            [issue.category for issue in issues],
+            [
+                "duplicate_ownership",
+                "text_over_visual",
+                "visual_overcapture",
+                "missing_ownership",
+                "invalid_ownership",
+                "ownership_violation",
+            ],
+        )
+        self.assertEqual([issue.render_kind for issue in issues], ["ownership"] * 6)
+        self.assertEqual(issues[0].source_ids, ["p021b0001"])
+        self.assertEqual(issues[0].bbox, (10.0, 20.0, 30.0, 40.0))
+        self.assertEqual(issues[1].severity, "warning")
+        self.assertEqual(issues[1].artifact_paths, {"component_ids": "p021c0002,p021c0003"})
+        self.assertEqual(issues[3].artifact_paths, {})
+
+    def test_generate_visual_qa_report_includes_ownership_issues_when_plan_loaded(self):
+        plan = {
+            "page_num": 22,
+            "render_items": [],
+            "coverage_ledger": [],
+            "protected_regions": [],
+            "validation_results": [],
+            "ownership_validation": {
+                "ok": False,
+                "issues": [
+                    {
+                        "issue_code": "duplicate_owner",
+                        "severity": "error",
+                        "message": "source block p022b0001 has multiple owners",
+                        "source_ids": ["p022b0001"],
+                        "component_ids": ["p022c0001", "p022c0002"],
+                        "bboxes": [[10, 20, 30, 40]],
+                    }
+                ],
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plan_path = tmp_path / "page-022.render-plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+
+            report = qa_visual.generate_visual_qa_report(
+                [plan_path],
+                output_dir=tmp_path,
+            )
+            report_json = json.loads(report.json_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(report_json["issue_count"], 1)
+        self.assertEqual(report_json["issues"][0]["category"], "duplicate_ownership")
+        self.assertEqual(report_json["issues"][0]["render_kind"], "ownership")
+
     def test_generate_visual_qa_report_writes_deterministic_json_and_markdown(self):
         issues = [
             qa_visual.VisualQaIssue(

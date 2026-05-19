@@ -1,0 +1,80 @@
+{
+  "document": "bert",
+  "page": 9,
+  "assertions": [
+    {
+      "expect": "coverage_ledger_complete",
+      "summary": "every source block has coverage"
+    },
+    {
+      "expect": "ownership_validation_ok",
+      "summary": "page 9 ownership is exclusive"
+    },
+    {
+      "expect": "component_contains",
+      "component_kind": "visual",
+      "source_ids": [
+        "p009b0006",
+        "p009b0007",
+        "p009b0008",
+        "p009b0009",
+        "p009b0010",
+        "p009b0011",
+        "p009b0012",
+        "p009b0013",
+        "p009b0014",
+        "p009b0022",
+        "p009b0023",
+        "p009b0026"
+      ],
+      "summary": "top table owns all columns"
+    },
+    {
+      "expect": "source_not_rendered_as",
+      "source_id": "p009b0002",
+      "render_kind": "original_image_clip",
+      "summary": "adjacent section number is not swallowed by table image clip"
+    },
+    {
+      "expect": "source_not_rendered_as",
+      "source_id": "p009b0003",
+      "render_kind": "original_image_clip",
+      "summary": "adjacent section heading is not swallowed by table image clip"
+    },
+    {
+      "expect": "component_contains",
+      "component_kind": "visual",
+      "source_ids": [
+        "p009b0005",
+        "p009b0019",
+        "p009b0020",
+        "p009b0021",
+        "p009b0025",
+        "p009b0027",
+        "p009b0028",
+        "p009b0029",
+        "p009b0030",
+        "p009b0031"
+      ],
+      "summary": "bottom table owns all columns"
+    },
+    {
+      "expect": "source_not_rendered_as",
+      "source_id": "p009b0005",
+      "render_kind": "translated_text",
+      "summary": "table label is not translated"
+    },
+    {
+      "expect": "source_not_rendered_as",
+      "source_id": "p009b0027",
+      "render_kind": "translated_text",
+      "summary": "numeric table column is not translated"
+    },
+    {
+      "expect": "component_kind_for_source",
+      "source_id": "p009b0032",
+      "component_kind": "translated_text",
+      "summary": "body after table remains translated"
+    }
+  ]
+}

@@ -1,0 +1,286 @@
+{
+  "document": "bert",
+  "page": 12,
+  "blocks": [
+    {
+      "id": "p012b0001",
+      "page": 12,
+      "block_index": 1,
+      "xMin": 320.294,
+      "yMin": 66.37063,
+      "xMax": 525.548717,
+      "yMax": 89.672366,
+      "text": "• Additional details for our experiments are\npresented in Appendix B; and"
+    },
+    {
+      "id": "p012b0002",
+      "page": 12,
+      "block_index": 2,
+      "xMin": 82.909,
+      "yMin": 67.012357,
+      "xMax": 290.270556,
+      "yMax": 108.795922,
+      "text": "for natural language understanding. In Proceedings\nof the 2018 EMNLP Workshop BlackboxNLP: An-\nalyzing and Interpreting Neural Networks for NLP,\npages 353–355."
+    },
+    {
+      "id": "p012b0003",
+      "page": 12,
+      "block_index": 3,
+      "xMin": 320.294,
+      "yMin": 103.10063,
+      "xMax": 525.548717,
+      "yMax": 126.402366,
+      "text": "• Additional ablation studies are presented in\nAppendix C."
+    },
+    {
+      "id": "p012b0004",
+      "page": 12,
+      "block_index": 4,
+      "xMin": 72.0,
+      "yMin": 121.592357,
+      "xMax": 290.270603,
+      "yMax": 196.252922,
+      "text": "Wei Wang, Ming Yan, and Chen Wu. 2018b. Multi-\ngranularity hierarchical attention fusion networks\nfor reading comprehension and question answering.\nIn Proceedings of the 56th Annual Meeting of the As-\nsociation for Computational Linguistics (Volume 1:\nLong Papers). Association for Computational Lin-\nguistics."
+    },
+    {
+      "id": "p012b0005",
+      "page": 12,
+      "block_index": 5,
+      "xMin": 72.0,
+      "yMin": 209.049357,
+      "xMax": 290.270603,
+      "yMax": 239.872922,
+      "text": "Alex Warstadt, Amanpreet Singh, and Samuel R Bow-\nman. 2018. Neural network acceptability judg-\nments. arXiv preprint arXiv:1805.12471."
+    },
+    {
+      "id": "p012b0006",
+      "page": 12,
+      "block_index": 6,
+      "xMin": 72.0,
+      "yMin": 252.669357,
+      "xMax": 290.270603,
+      "yMax": 294.223782,
+      "text": "Adina Williams, Nikita Nangia, and Samuel R Bow-\nman. 2018. A broad-coverage challenge corpus\nfor sentence understanding through inference. In\nNAACL."
+    },
+    {
+      "id": "p012b0007",
+      "page": 12,
+      "block_index": 7,
+      "xMin": 72.0,
+      "yMin": 307.249357,
+      "xMax": 290.270603,
+      "yMax": 381.680782,
+      "text": "Yonghui Wu, Mike Schuster, Zhifeng Chen, Quoc V\nLe, Mohammad Norouzi, Wolfgang Macherey,\nMaxim Krikun, Yuan Cao, Qin Gao, Klaus\nMacherey, et al. 2016.\nGoogle’s neural ma-\nchine translation system: Bridging the gap between\nhuman and machine translation. arXiv preprint\narXiv:1609.08144."
+    },
+    {
+      "id": "p012b0008",
+      "page": 12,
+      "block_index": 8,
+      "xMin": 72.0,
+      "yMin": 394.706357,
+      "xMax": 290.270603,
+      "yMax": 436.488922,
+      "text": "Jason Yosinski, Jeff Clune, Yoshua Bengio, and Hod\nLipson. 2014. How transferable are features in deep\nneural networks? In Advances in neural information\nprocessing systems, pages 3320–3328."
+    },
+    {
+      "id": "p012b0009",
+      "page": 12,
+      "block_index": 9,
+      "xMin": 72.0,
+      "yMin": 449.286357,
+      "xMax": 290.270603,
+      "yMax": 502.027922,
+      "text": "Adams Wei Yu, David Dohan, Minh-Thang Luong, Rui\nZhao, Kai Chen, Mohammad Norouzi, and Quoc V\nLe. 2018. QANet: Combining local convolution\nwith global self-attention for reading comprehen-\nsion. In ICLR."
+    },
+    {
+      "id": "p012b0010",
+      "page": 12,
+      "block_index": 10,
+      "xMin": 72.0,
+      "yMin": 514.824357,
+      "xMax": 290.270603,
+      "yMax": 567.337782,
+      "text": "Rowan Zellers, Yonatan Bisk, Roy Schwartz, and Yejin\nChoi. 2018. Swag: A large-scale adversarial dataset\nfor grounded commonsense inference. In Proceed-\nings of the 2018 Conference on Empirical Methods\nin Natural Language Processing (EMNLP)."
+    },
+    {
+      "id": "p012b0011",
+      "page": 12,
+      "block_index": 11,
+      "xMin": 72.0,
+      "yMin": 580.363357,
+      "xMax": 290.27145,
+      "yMax": 655.022922,
+      "text": "Yukun Zhu, Ryan Kiros, Rich Zemel, Ruslan Salakhut-\ndinov, Raquel Urtasun, Antonio Torralba, and Sanja\nFidler. 2015. Aligning books and movies: Towards\nstory-like visual explanations by watching movies\nand reading books. In Proceedings of the IEEE\ninternational conference on computer vision, pages\n19–27."
+    },
+    {
+      "id": "p012b0012",
+      "page": 12,
+      "block_index": 12,
+      "xMin": 85.918,
+      "yMin": 670.133912,
+      "xMax": 276.352381,
+      "yMax": 707.979637,
+      "text": "Appendix for “BERT: Pre-training of\nDeep Bidirectional Transformers for\nLanguage Understanding”"
+    },
+    {
+      "id": "p012b0013",
+      "page": 12,
+      "block_index": 13,
+      "xMin": 82.909,
+      "yMin": 717.72663,
+      "xMax": 281.138256,
+      "yMax": 727.479366,
+      "text": "We organize the appendix into three sections:"
+    },
+    {
+      "id": "p012b0014",
+      "page": 12,
+      "block_index": 14,
+      "xMin": 85.019,
+      "yMin": 742.01963,
+      "xMax": 290.262807,
+      "yMax": 765.322366,
+      "text": "• Additional implementation details for BERT\nare presented in Appendix A;"
+    },
+    {
+      "id": "p012b0015",
+      "page": 12,
+      "block_index": 15,
+      "xMin": 329.094,
+      "yMin": 135.01463,
+      "xMax": 525.545073,
+      "yMax": 158.316366,
+      "text": "We present additional ablation studies for\nBERT including:"
+    },
+    {
+      "id": "p012b0016",
+      "page": 12,
+      "block_index": 16,
+      "xMin": 340.476,
+      "yMin": 168.955721,
+      "xMax": 525.544873,
+      "yMax": 208.096366,
+      "text": "– Effect of Number of Training Steps; and\n– Ablation for Different Masking Proce-\ndures."
+    },
+    {
+      "id": "p012b0017",
+      "page": 12,
+      "block_index": 17,
+      "xMin": 307.276,
+      "yMin": 221.832912,
+      "xMax": 315.907654,
+      "yMax": 232.580637,
+      "text": "A"
+    },
+    {
+      "id": "p012b0018",
+      "page": 12,
+      "block_index": 18,
+      "xMin": 327.862854,
+      "yMin": 221.832912,
+      "xMax": 473.548922,
+      "yMax": 232.580637,
+      "text": "Additional Details for BERT"
+    },
+    {
+      "id": "p012b0019",
+      "page": 12,
+      "block_index": 19,
+      "xMin": 307.276,
+      "yMin": 243.878721,
+      "xMax": 323.334195,
+      "yMax": 253.686002,
+      "text": "A.1"
+    },
+    {
+      "id": "p012b0020",
+      "page": 12,
+      "block_index": 20,
+      "xMin": 334.243295,
+      "yMin": 243.878721,
+      "xMax": 505.167074,
+      "yMax": 253.686002,
+      "text": "Illustration of the Pre-training Tasks"
+    },
+    {
+      "id": "p012b0021",
+      "page": 12,
+      "block_index": 21,
+      "xMin": 307.276,
+      "yMin": 261.81663,
+      "xMax": 525.545273,
+      "yMax": 285.118366,
+      "text": "We provide examples of the pre-training tasks in\nthe following."
+    },
+    {
+      "id": "p012b0022",
+      "page": 12,
+      "block_index": 22,
+      "xMin": 307.276,
+      "yMin": 296.722721,
+      "xMax": 525.545273,
+      "yMax": 374.352366,
+      "text": "Masked LM and the Masking Procedure As-\nsuming the unlabeled sentence is my dog is\nhairy , and during the random masking procedure\nwe chose the 4-th token (which corresponding to\nhairy ), our masking procedure can be further il-\nlustrated by"
+    },
+    {
+      "id": "p012b0023",
+      "page": 12,
+      "block_index": 23,
+      "xMin": 320.294,
+      "yMin": 387.77963,
+      "xMax": 525.548717,
+      "yMax": 411.082366,
+      "text": "• 80% of the time: Replace the word with the\n[MASK] token, e.g., my dog is hairy →"
+    },
+    {
+      "id": "p012b0024",
+      "page": 12,
+      "block_index": 24,
+      "xMin": 329.094,
+      "yMin": 416.671,
+      "xMax": 415.17144,
+      "yMax": 423.593061,
+      "text": "my dog is [MASK]"
+    },
+    {
+      "id": "p012b0025",
+      "page": 12,
+      "block_index": 25,
+      "xMin": 320.294,
+      "yMin": 438.05863,
+      "xMax": 525.548717,
+      "yMax": 461.360366,
+      "text": "• 10% of the time: Replace the word with a\nrandom word, e.g., my dog is hairy → my"
+    },
+    {
+      "id": "p012b0026",
+      "page": 12,
+      "block_index": 26,
+      "xMin": 329.094,
+      "yMin": 466.949,
+      "xMax": 393.65208,
+      "yMax": 473.871061,
+      "text": "dog is apple"
+    },
+    {
+      "id": "p012b0027",
+      "page": 12,
+      "block_index": 27,
+      "xMin": 320.294,
+      "yMin": 488.33763,
+      "xMax": 525.548717,
+      "yMax": 552.286366,
+      "text": "• 10% of the time: Keep the word un-\nchanged, e.g., my dog is hairy → my dog\nis hairy . The purpose of this is to bias the\nrepresentation towards the actual observed\nword."
+    },
+    {
+      "id": "p012b0028",
+      "page": 12,
+      "block_index": 28,
+      "xMin": 307.276,
+      "yMin": 565.71463,
+      "xMax": 525.545273,
+      "yMax": 765.322366,
+      "text": "The advantage of this procedure is that the\nTransformer encoder does not know which words\nit will be asked to predict or which have been re-\nplaced by random words, so it is forced to keep\na distributional contextual representation of ev-\nery input token. Additionally, because random\nreplacement only occurs for 1.5% of all tokens\n(i.e., 10% of 15%), this does not seem to harm\nthe model’s language understanding capability. In\nSection C.2, we evaluate the impact this proce-\ndure.\nCompared to standard langauge model training,\nthe masked LM only make predictions on 15% of\ntokens in each batch, which suggests that more\npre-training steps may be required for the model"
+    }
+  ]
+}
