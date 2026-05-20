@@ -100,6 +100,122 @@ class RegionExtractionModuleTests(unittest.TestCase):
             regions.cap_visual_bbox_against_adjacent_translated_text,
         )
 
+    def test_diagram_region_above_caption_ignores_distant_title_and_authors(self):
+        blocks = [
+            block(
+                "p001b0001",
+                1,
+                "Chain-of-Thought Prompting Elicits Reasoning\nin Large Language Models",
+                x0=132.0,
+                y0=101.0,
+                x1=480.0,
+                y1=137.0,
+            ),
+            block("p001b0002", 1, "Jason Wei", x0=152.0, y0=182.0, x1=195.0, y1=191.0),
+            block("p001b0003", 1, "Xuezhi Wang", x0=217.0, y0=182.0, x1=274.0, y1=191.0),
+            block("p001b0004", 1, "Brian Ichter", x0=155.0, y0=200.0, x1=208.0, y1=209.0),
+            block("p001b0005", 1, "Standard Prompting", x0=172.0, y0=455.0, x1=257.0, y1=466.0),
+            block("p001b0006", 1, "Chain-of-Thought Prompting", x0=346.0, y0=455.0, x1=467.0, y1=466.0),
+            block("p001b0007", 1, "Model Input", x0=137.0, y0=469.0, x1=172.0, y1=477.0),
+            block("p001b0008", 1, "Model Output", x0=137.0, y0=560.0, x1=177.0, y1=568.0),
+            block("p001b0009", 1, "A: The answer is 27.", x0=127.0, y0=574.0, x1=193.0, y1=582.0),
+            block(
+                "p001b0010",
+                1,
+                "Figure 1: Chain-of-thought prompting enables reasoning.",
+                x0=108.0,
+                y0=651.0,
+                x1=506.0,
+                y1=671.0,
+            ),
+        ]
+
+        visual_ids = {
+            source_id
+            for region in regions.build_visual_regions(blocks)
+            for source_id in region["source_ids"]
+        }
+
+        self.assertFalse({"p001b0001", "p001b0002", "p001b0003", "p001b0004"} & visual_ids)
+        self.assertTrue({"p001b0005", "p001b0006", "p001b0007", "p001b0008", "p001b0009"} <= visual_ids)
+
+    def test_first_page_title_authors_and_affiliation_are_not_visual_labels(self):
+        blocks = [
+            block("p001b0001", 1, "Front. Comput. Sci., 2025, 0(0): 1-42", x0=48.2, y0=32.0, x1=215.1, y1=41.8),
+            block("p001b0002", 1, "https://doi.org/10.1007/s11704-024-40231-1", x0=48.2, y0=48.4, x1=242.4, y1=58.2),
+            block("p001b0003", 1, "REVIEW ARTICLE", x0=58.9, y0=72.3, x1=165.2, y1=82.9),
+            block(
+                "p001b0004",
+                1,
+                "A Survey on Large Language Model based Autonomous\nAgents",
+                x0=51.0,
+                y0=124.3,
+                x1=543.6,
+                y1=172.5,
+            ),
+            block(
+                "p001b0005",
+                1,
+                "Lei Wang, Chen Ma * , Xueyang Feng * , Zeyu Zhang, Hao Yang, Jingsen Zhang,\n"
+                "Zhi-Yuan Chen, Jiakai Tang, Xu Chen( B ), Yankai Lin( B ), Wayne Xin Zhao,\n"
+                "Zhewei Wei, Ji-Rong Wen",
+                x0=59.0,
+                y0=211.2,
+                x1=538.2,
+                y1=266.9,
+            ),
+            block(
+                "p001b0006",
+                1,
+                "Gaoling School of Artificial Intelligence, Renmin University of China, Beijing, 100872, China",
+                x0=71.6,
+                y0=284.6,
+                x1=523.8,
+                y1=295.3,
+            ),
+        ]
+
+        visual_ids = {
+            source_id
+            for region in regions.build_visual_regions(blocks)
+            for source_id in region["source_ids"]
+        }
+
+        self.assertFalse({"p001b0004", "p001b0005", "p001b0006"} & visual_ids)
+
+    def test_first_page_doi_metadata_does_not_seed_visual_region_over_title(self):
+        blocks = [
+            block("p001b0001", 1, "Article", x0=39.7, y0=24.8, x1=85.7, y1=42.5),
+            block(
+                "p001b0002",
+                1,
+                "Detecting hallucinations in large language\nmodels using semantic entropy",
+                x0=39.7,
+                y0=44.3,
+                x1=533.7,
+                y1=104.7,
+            ),
+            block("p001b0003", 1, "https://doi.org/10.1038/s41586-024-07421-0", x0=39.7, y0=143.3, x1=202.4, y1=154.3),
+            block("p001b0004", 1, "Sebastian Farquhar, Jannik Kossen, Lorenz Kuhn & Yarin Gal", x0=217.3, y0=140.6, x1=464.7, y1=154.3),
+            block(
+                "p001b0005",
+                1,
+                "Large language model systems can show impressive reasoning and question-answering capabilities.",
+                x0=217.3,
+                y0=175.5,
+                x1=561.3,
+                y1=220.9,
+            ),
+        ]
+
+        visual_ids = {
+            source_id
+            for region in regions.build_visual_regions(blocks)
+            for source_id in region["source_ids"]
+        }
+
+        self.assertFalse({"p001b0001", "p001b0002", "p001b0003"} & visual_ids)
+
     def test_table_visual_region_includes_decimal_numeric_column_above_caption(self):
         blocks = [
             block(

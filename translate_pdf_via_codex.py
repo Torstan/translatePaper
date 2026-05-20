@@ -135,6 +135,7 @@ from layout import (
     pdf_token_uses_math_font,
     pdf_token_width,
     preferred_text_height_for_item,
+    raster_text_should_render_vertical,
     rebalance_body_text_flows,
     render_font_size_for_block,
     render_text_style_name,
@@ -2057,6 +2058,13 @@ def sample_background(img: Image.Image, box):
     return tuple(int(median(channel)) for channel in zip(*target))
 
 
+def raster_text_fill_for_background(bg) -> tuple[int, int, int, int]:
+    luminance = 0.2126 * bg[0] + 0.7152 * bg[1] + 0.0722 * bg[2]
+    if luminance < 128:
+        return (245, 245, 245, 255)
+    return (32, 32, 32, 255)
+
+
 def draw_vertical(draw_img: Image.Image, text: str, box, fill_bg, fill_text):
     x0, y0, x1, y1 = box
     width = max(1, x1 - x0)
@@ -2103,6 +2111,18 @@ def draw_block(
     protected_boxes=None,
     render_box=None,
 ):
+    if render_box is not None:
+        source_box = block_to_px_box(block, dpi, draw_img.width, draw_img.height, pad=2)
+        # Clear the complete source text box when layout moves or clips the
+        # translated text. Protected image clips are restored after all text is
+        # drawn, so clipping this cleanup to protected boxes can leave source
+        # prose visible beside the translated paragraph.
+        if source_box is not None and tuple(source_box) != tuple(render_box):
+            sx0, sy0, sx1, sy1 = source_box
+            if sx1 > sx0 and sy1 > sy0:
+                source_bg = sample_background(draw_img.convert("RGB"), source_box)
+                source_rect = Image.new("RGBA", (sx1 - sx0, sy1 - sy0), source_bg + (255,))
+                draw_img.alpha_composite(source_rect, (sx0, sy0))
     box = render_box or block_to_px_box(block, dpi, draw_img.width, draw_img.height, pad=2)
     if render_box is None:
         box = avoid_protected_boxes(box, protected_boxes)
@@ -2116,9 +2136,10 @@ def draw_block(
 
     width = max(10, x1 - x0 - 4)
     height = max(10, y1 - y0 - 4)
-    vertical = (y1 - y0) > (x1 - x0) * 3 and len(translation) > 4
+    vertical = raster_text_should_render_vertical(block.get("text", ""), box)
+    fill_text = raster_text_fill_for_background(bg)
     if vertical:
-        draw_vertical(draw_img, translation, box, bg, (32, 32, 32, 255))
+        draw_vertical(draw_img, translation, box, bg, fill_text)
         return
 
     target_font_size = target_font_size_for_block(block, dpi, vertical=False)
@@ -2136,9 +2157,40 @@ def draw_block(
     text_draw = ImageDraw.Draw(text_img)
     y = 2
     for line in lines:
-        text_draw.text((2, y), line, font=font, fill=(32, 32, 32, 255))
+        text_draw.text((2, y), line, font=font, fill=fill_text)
         y += line_height
-    draw_img.alpha_composite(text_img, (x0, y0))
+        draw_img.alpha_composite(text_img, (x0, y0))
+
+
+def bbox_to_px_box(bbox, dpi: int, page_width: int, page_height: int, pad: int = 3):
+    x0, y0, x1, y1 = bbox
+    scale = dpi / 72.0
+    return (
+        max(0, int(x0 * scale) - pad),
+        max(0, int(y0 * scale) - pad),
+        min(page_width, int(x1 * scale) + pad),
+        min(page_height, int(y1 * scale) + pad),
+    )
+
+
+def raster_protected_boxes(blocks, dpi: int, page_width: int, page_height: int):
+    visual_regions = build_visual_regions(blocks)
+    visual_source_ids = {
+        source_id
+        for region in visual_regions
+        for source_id in region.get("source_ids", [])
+    }
+    boxes = [
+        bbox_to_px_box(region["bbox"], dpi, page_width, page_height, pad=3)
+        for region in visual_regions
+        if region.get("bbox")
+    ]
+    boxes.extend(
+        protected_box_for_block(block, dpi, page_width, page_height)
+        for block in blocks
+        if should_preserve_as_image(block) and block["id"] not in visual_source_ids
+    )
+    return boxes
 
 
 def render_pages(pages, translations, dpi: int, job_paths):
@@ -2147,11 +2199,7 @@ def render_pages(pages, translations, dpi: int, job_paths):
         out = translated_page_path(page_num, job_paths)
         source_img = Image.open(src).convert("RGBA")
         img = source_img.copy()
-        protected_boxes = [
-            protected_box_for_block(block, dpi, img.width, img.height)
-            for block in blocks
-            if should_preserve_as_image(block)
-        ]
+        protected_boxes = raster_protected_boxes(blocks, dpi, img.width, img.height)
         render_boxes = build_render_boxes(blocks, translations, dpi, img.width, img.height, protected_boxes)
         for block in blocks:
             if should_preserve_as_image(block):
@@ -4630,6 +4678,16 @@ def merge_adjacent_body_text_flows(plan: PageRenderPlan) -> None:
     ]
 
 
+def is_plain_sentence_text(text: str) -> bool:
+    text = normalize_text(text)
+    words = re.findall(r"[A-Za-z]+", text)
+    return (
+        len(words) >= 3
+        and any(word.lower() in ENGLISH_FUNCTION_WORDS for word in words)
+        and bool(re.search(r"[.!?][\"')\]）】”’]*$", text))
+    )
+
+
 def block_is_dense_nonprose_image_fallback(block) -> bool:
     text = normalize_text(block.get("text", ""))
     if not text:
@@ -4651,9 +4709,9 @@ def block_is_dense_nonprose_image_fallback(block) -> bool:
         return True
     if re.search(r"(?im)^(Input Sentence and GPT-\d+ Output|Input:|Output:|Expected Output:)", text):
         return True
-    if height <= 12.0 and len(text) <= 300:
+    if height <= 12.0 and len(text) <= 300 and not is_plain_sentence_text(text):
         return True
-    if width <= 120.0 and len(text) <= 500:
+    if width <= 120.0 and len(text) <= 500 and not is_plain_sentence_text(text):
         return True
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     if len(lines) >= 8 and width <= 320.0:
@@ -4691,6 +4749,8 @@ def unfit_text_item_should_be_image(
     if not source_blocks:
         return False
     source_text = "\n".join(normalize_text(block.get("text", "")) for block in source_blocks)
+    if is_plain_sentence_text(source_text):
+        return False
     if is_prose_row_text(source_text) and not any(block_is_dense_nonprose_image_fallback(block) for block in source_blocks):
         source_lines = [line.strip() for line in source_text.split("\n") if line.strip()]
         source_width = max((block["xMax"] - block["xMin"] for block in source_blocks), default=0.0)
@@ -4823,7 +4883,50 @@ def get_pdf_page_size(pdf_path: Path):
     return float(match.group(1)), float(match.group(2))
 
 
+def write_raster_pdf(pdf_output: Path, page_numbers, pdf_size_pt, job_paths):
+    """Assemble translated raster pages without allowing TeX to add blank pages."""
+    tex_path = job_paths["tex_path"]
+    width_pt, height_pt = pdf_size_pt
+    lines = [
+        r"\documentclass{article}",
+        rf"\usepackage[paperwidth={width_pt}bp,paperheight={height_pt}bp,margin=0in]{{geometry}}",
+        r"\usepackage{graphicx}",
+        r"\pagestyle{empty}",
+        r"\setlength{\parindent}{0pt}",
+        r"\setlength{\topskip}{0pt}",
+        r"\newcommand{\fullpageimage}[1]{%",
+        r"\noindent\makebox[\paperwidth][l]{\raisebox{-\height}[0pt][0pt]{\includegraphics[width=\paperwidth,height=\paperheight]{#1}}}%",
+        r"}",
+        r"\begin{document}",
+    ]
+    for idx, page_num in enumerate(page_numbers, start=1):
+        image_path = translated_page_path(page_num, job_paths)
+        if not image_path.exists():
+            raise FileNotFoundError(f"missing translated raster page: {image_path}")
+        lines.append(r"\fullpageimage{" + str(image_path).replace("\\", "/") + r"}")
+        if idx != len(page_numbers):
+            lines.append(r"\newpage")
+    lines.append(r"\end{document}")
+    tex_path.write_text("\n".join(lines), encoding="utf-8")
+    pdf_output.parent.mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            "xelatex",
+            "-interaction=nonstopmode",
+            "-output-directory",
+            str(job_paths["job_dir"]),
+            str(tex_path),
+        ],
+        check=True,
+    )
+    shutil.copy2(job_paths["pdf_path"], pdf_output)
+
+
 def write_latex(pdf_output: Path, page_numbers, pdf_size_pt, job_paths):
+    write_raster_pdf(pdf_output, page_numbers, pdf_size_pt, job_paths)
+
+
+def write_latex_legacy(pdf_output: Path, page_numbers, pdf_size_pt, job_paths):
     tex_path = job_paths["tex_path"]
     width_pt, height_pt = pdf_size_pt
     lines = [

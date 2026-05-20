@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from PIL import Image
+
 import translate_pdf_parallel as parallel
 
 
@@ -1293,6 +1295,37 @@ class ParallelCliIntegrationTests(unittest.TestCase):
             summary_md = (work_dir / "parallel_translation_summary.md").read_text(encoding="utf-8")
             self.assertIn("- status: failed", summary_md)
             self.assertIn("- error: visual QA found 1 error(s); see visual_qa_report.md", summary_md)
+
+
+class RasterPdfAssemblyTests(unittest.TestCase):
+    def test_write_latex_assembles_one_pdf_page_per_raster_image_without_leading_blank(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            translated_pages_dir = tmp_path / "translated_pages"
+            translated_pages_dir.mkdir()
+            Image.new("RGB", (120, 160), (240, 0, 0)).save(translated_pages_dir / "page-001.png")
+            Image.new("RGB", (120, 160), (0, 0, 240)).save(translated_pages_dir / "page-002.png")
+            job_paths = {
+                "job_dir": tmp_path,
+                "translated_pages_dir": translated_pages_dir,
+                "tex_path": tmp_path / "claudeCodeChinese.tex",
+                "pdf_path": tmp_path / "claudeCodeChinese.pdf",
+            }
+            output_pdf = tmp_path / "out.pdf"
+
+            parallel.pipeline.write_latex(output_pdf, [1, 2], (120.0, 160.0), job_paths)
+
+            fitz = parallel.pipeline.load_fitz()
+            doc = fitz.open(output_pdf)
+            try:
+                self.assertEqual(doc.page_count, 2)
+                pix = doc[0].get_pixmap(alpha=False)
+                red, green, blue = pix.pixel(pix.width // 2, pix.height // 2)[:3]
+                self.assertGreater(red, 200)
+                self.assertLess(green, 40)
+                self.assertLess(blue, 40)
+            finally:
+                doc.close()
 
 
 if __name__ == "__main__":

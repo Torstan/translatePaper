@@ -52,6 +52,7 @@ IMAGE_ROW_CLIP_PAD_BOTTOM_PT = 6.0
 TEXT_PROTECTED_GAP_PT = 0.75
 LARGE_PROSE_VISUAL_AVOID_AREA_PT = 12000.0
 LARGE_PROSE_VISUAL_AVOID_HEIGHT_PT = 58.0
+DIAGRAM_LABEL_VERTICAL_CLUSTER_GAP_PT = 140.0
 VISUAL_CLIP_PIXEL_SEARCH_PAD_X_PT = 40.0
 VISUAL_CLIP_PIXEL_SEARCH_PAD_Y_PT = 20.0
 VISUAL_CLIP_PIXEL_FINAL_PAD_PT = 1.5
@@ -722,6 +723,23 @@ def source_is_short_continuation_fragment(block) -> bool:
     return 0 < len(words) <= 2 and not source_requires_chinese_translation(text)
 
 
+def is_first_page_translatable_title_area_block(block) -> bool:
+    if block.get("page") != 1:
+        return False
+    text = normalize_text(block.get("text", ""))
+    if not text:
+        return False
+    if is_heading_text(text) or source_requires_chinese_translation(text):
+        return True
+    words = latin_words(text)
+    return (
+        90.0 <= block["yMin"] <= 340.0
+        and len(words) >= 4
+        and block["xMax"] - block["xMin"] >= 220.0
+        and not re.fullmatch(r"[A-Z][A-Z0-9 /&-]{3,80}", text)
+    )
+
+
 def is_table_body_candidate(seed_box, candidate_box, text: str) -> bool:
     normalized = normalize_text(text)
     if not normalized:
@@ -906,6 +924,8 @@ def visual_label_like_text(block) -> bool:
     text = normalize_text(block.get("text", ""))
     if not text or is_visual_caption(text) or contains_visual_caption(text):
         return False
+    if is_first_page_translatable_title_area_block(block):
+        return False
     box = block_bbox(block)
     width = box[2] - box[0]
     height = box[3] - box[1]
@@ -1015,6 +1035,29 @@ def diagram_label_candidate_above_caption(block, caption_box) -> bool:
     return text in {"…", "⊕"}
 
 
+def nearest_caption_label_cluster(group: list[dict], caption_box) -> list[dict]:
+    if not group:
+        return []
+    clusters = []
+    current = []
+    current_bottom = None
+    for block in sorted(group, key=lambda item: (item["yMin"], item["xMin"])):
+        box = block_bbox(block)
+        if (
+            current
+            and current_bottom is not None
+            and box[1] - current_bottom > DIAGRAM_LABEL_VERTICAL_CLUSTER_GAP_PT
+        ):
+            clusters.append(current)
+            current = []
+            current_bottom = None
+        current.append(block)
+        current_bottom = max(current_bottom if current_bottom is not None else box[3], box[3])
+    if current:
+        clusters.append(current)
+    return max(clusters, key=lambda items: bbox_union([block_bbox(block) for block in items])[3])
+
+
 def diagram_regions_above_visual_captions(blocks, existing_regions: list[dict]) -> list[dict]:
     existing_ids = {source_id for region in existing_regions for source_id in region["source_ids"]}
     sorted_blocks = sorted(blocks, key=lambda item: (item["yMin"], item["xMin"]))
@@ -1041,6 +1084,7 @@ def diagram_regions_above_visual_captions(blocks, existing_regions: list[dict]) 
                 continue
             if diagram_label_candidate_above_caption(block, caption_box):
                 group.append(block)
+        group = nearest_caption_label_cluster(group, caption_box)
         if len(group) < 3:
             continue
         region_box = bbox_union([block_bbox(block) for block in group])
@@ -1096,6 +1140,7 @@ def build_visual_regions(blocks) -> list[dict]:
             is_code_listing_block(text)
             or (is_code_row_text(text) and not formula_like)
         ) and not is_body_enumeration_line(text) and not short_source_fragment and not appendix_heading_marker
+        code_seed = code_seed and not is_first_page_translatable_title_area_block(block)
         formula_seed = (
             (is_formula_or_code_block(text) or is_code_row_text(text))
             and not is_standalone_equation_label(text)
@@ -1103,6 +1148,7 @@ def build_visual_regions(blocks) -> list[dict]:
             and not short_source_fragment
             and not appendix_heading_marker
         )
+        formula_seed = formula_seed and not is_first_page_translatable_title_area_block(block)
         is_visual_seed = explicit_image or caption_seed or formula_seed
         if not is_visual_seed:
             continue
@@ -1142,6 +1188,8 @@ def build_visual_regions(blocks) -> list[dict]:
             if is_running_header_fragment(other):
                 continue
             if other["id"] != block["id"] and contains_visual_caption(other_text):
+                continue
+            if other["id"] != block["id"] and is_first_page_translatable_title_area_block(other):
                 continue
             other_box = block_bbox(other)
             if bbox_intersects(search, other_box) and bbox_contains_point(search, bbox_center(other_box)):

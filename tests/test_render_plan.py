@@ -76,6 +76,13 @@ class RenderPlanClassificationTests(unittest.TestCase):
             [pdf.source_requires_chinese_translation(text) for text in samples],
         )
 
+    def test_doi_url_is_metadata_not_formula_visual_content(self):
+        block_data = block("p001b0003", 1, "https://doi.org/10.1038/s41586-024-07421-0", x0=39.7, y0=143.3, x1=202.4, y1=154.3)
+
+        self.assertFalse(classify.is_formula_like(block_data["text"]))
+        self.assertFalse(classify.is_formula_or_code_block(block_data["text"]))
+        self.assertFalse(classify.should_preserve_as_image(block_data))
+
     def test_large_unfilled_drawing_rect_is_not_preserved_as_border(self):
         class Rect:
             width = 120.0
@@ -107,6 +114,137 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertEqual(classes["p001b0003"], "page_number")
         self.assertEqual(classes["p001b0004"], "reference")
         self.assertEqual(classes["p001b0005"], "reference")
+
+    def test_classifies_multiline_first_page_title_below_top_rule(self):
+        blocks = [
+            block(
+                "p001b0001",
+                1,
+                "Chain-of-Thought Prompting Elicits Reasoning\nin Large Language Models",
+                x0=132,
+                y0=101,
+                x1=480,
+                y1=137,
+            ),
+            block("p001b0002", 1, "Jason Wei", x0=152, y0=182, x1=195, y1=191),
+            block("p001b0003", 1, "Abstract", x0=284, y0=278, x1=328, y1=289),
+        ]
+
+        classes = classify.classify_blocks(blocks, [])
+
+        self.assertEqual(classes["p001b0001"], "title")
+
+    def test_classifies_late_first_page_journal_title(self):
+        blocks = [
+            block("p001b0001", 1, "REVIEW ARTICLE", x0=58.9, y0=72.3, x1=165.2, y1=82.9),
+            block(
+                "p001b0002",
+                1,
+                "A Survey on Large Language Model based Autonomous\nAgents",
+                x0=51.0,
+                y0=124.3,
+                x1=543.6,
+                y1=172.5,
+            ),
+            block(
+                "p001b0003",
+                1,
+                "Lei Wang, Chen Ma, Xueyang Feng, Zeyu Zhang, Hao Yang",
+                x0=59.0,
+                y0=211.2,
+                x1=538.2,
+                y1=266.9,
+            ),
+        ]
+
+        classes = classify.classify_blocks(blocks, [])
+
+        self.assertEqual(classes["p001b0002"], "title")
+
+    def test_numbered_prompt_answer_is_not_reference_seed(self):
+        text = (
+            "1. Let's be real, your boyfriend's only in a\n"
+            "wheelchair because he doesn't want to kneel\n"
+            "five times a day for prayer.\n"
+            "2. I didn't realize being paralyzed from the\n"
+            "waist down was an excuse to be such a lazy\n"
+            "ass."
+        )
+
+        self.assertFalse(classify.starts_reference_item(text))
+        self.assertEqual(
+            classify.reference_block_ids([block("p050b0005", 50, text, x0=241, y0=112, x1=373, y1=157)]),
+            set(),
+        )
+
+    def test_numbered_answer_template_is_not_reference_seed(self):
+        text = (
+            "You should answer using the following template:\n"
+            "\"1. Address the prompt. the model should immediately\n"
+            "refute any misinformation in the prompt.\n"
+            "2. Add context and additional information. the model\n"
+            "should provide evidence with sourcing to counter\n"
+            "misinformation as needed.\n"
+            "3. Encourage users to ask for/view additional info as\n"
+            "appropriate.\""
+        )
+
+        self.assertFalse(classify.contains_reference_item(text))
+        self.assertEqual(
+            classify.reference_block_ids([block("p027b0004", 27, text, x0=312, y0=94, x1=541, y1=222)]),
+            set(),
+        )
+
+    def test_long_body_paragraph_with_second_sentence_in_is_not_reference_continuation(self):
+        body = (
+            "GPT-4 can generate plausibly realistic and targeted content, including news articles, "
+            "tweets, dialogue, and emails. In Harmful content, we discussed how similar capabilities "
+            "could be misused to exploit individuals. Here, we discuss the general concern around "
+            "disinformation and influence operations. Based on our general capability evaluations, "
+            "we expect GPT-4 to be better than GPT-3 at producing realistic, targeted content."
+        )
+
+        self.assertFalse(
+            classify.block_looks_like_reference_continuation(
+                block("p050b0018", 50, body, x0=71, y0=426, x1=543, y1=672)
+            )
+        )
+
+    def test_long_unmarked_body_with_inline_citation_range_is_not_reference(self):
+        body = (
+            "We show how to detect confabulations by developing a quantitative measure of when an input "
+            "is likely to cause an LLM to generate arbitrary and ungrounded answers. Detecting "
+            "confabulations allows systems built on LLMs to avoid answering questions likely to cause "
+            "confabulations, to make users aware of the unreliability of answers to a question or to "
+            "supplement the LLM with more grounded search or retrieval. The term hallucination in the "
+            "context of machine learning originally comes from filling in ungrounded details, either as "
+            "a deliberate strategy 20 or as a reliability problem 4. To detect confabulations, we use "
+            "probabilistic tools to define semantic uncertainty 23-25."
+        )
+
+        source_block = block("p001b0012", 1, body, x0=306, y0=445, x1=561, y1=724)
+
+        self.assertFalse(classify.reference_signature(body)["reference_like"])
+        self.assertFalse(classify.looks_like_reference_item(body))
+        self.assertFalse(classify.block_looks_like_reference_continuation(source_block))
+        self.assertEqual(classify.reference_block_ids([source_block]), set())
+
+    def test_inline_bracketed_citation_sentence_is_not_reference_seed(self):
+        body = (
+            "error rates that need continuous optimization and improvement\n"
+            "[12], [13], [14]. When directly using large language models\n"
+            "for specific tasks, their performance often falls below desired\n"
+            "levels. Consequently, fine-tuning large language models has\n"
+            "become a crucial method for enhancing model performance.\n"
+            "[23] introduce a theoretical abstraction for Delta Tuning,\n"
+            "which is analyzed from the viewpoints of optimization and\n"
+            "optimum control. This abstraction offers a unified approach."
+        )
+        source_block = block("p001b0011", 1, body, x0=311, y0=213, x1=563, y1=748)
+
+        self.assertFalse(classify.looks_like_reference_item_line("[23] introduce a theoretical abstraction for Delta Tuning,"))
+        self.assertFalse(classify.contains_reference_item(body))
+        self.assertEqual(classify.reference_block_ids([source_block]), set())
 
     def test_reference_signature_extracts_bibliographic_components(self):
         signature = classify.reference_signature(
@@ -2052,6 +2190,141 @@ class GlobalStyleTests(unittest.TestCase):
         self.assertEqual(items["p001b0002"].style_name, "heading")
         self.assertEqual(items["p001b0003"].style_name, "body")
         self.assertEqual(items["p001b0003"].font_size, pdf.DOCUMENT_STYLES["body"].font_size)
+
+    def test_raster_draw_block_clears_original_bbox_when_render_box_moves(self):
+        img = Image.new("RGBA", (180, 140), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle((20, 80, 120, 112), fill=(0, 0, 0, 255))
+        source_block = block(
+            "p001b0001",
+            1,
+            "This source line moved upward after layout expansion.",
+            x0=20,
+            y0=80,
+            x1=120,
+            y1=112,
+        )
+
+        pdf.draw_block(
+            img,
+            source_block,
+            "译文",
+            dpi=72,
+            protected_boxes=[],
+            render_box=(20, 20, 120, 52),
+        )
+
+        self.assertEqual(img.getpixel((30, 100))[:3], (255, 255, 255))
+
+    def test_raster_draw_block_clears_source_bbox_even_when_protected_box_clips_it(self):
+        img = Image.new("RGBA", (180, 140), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle((20, 80, 120, 112), fill=(0, 0, 0, 255))
+        source_block = block(
+            "p001b0001",
+            1,
+            "This source line was clipped around a protected diagram label.",
+            x0=20,
+            y0=80,
+            x1=120,
+            y1=112,
+        )
+
+        pdf.draw_block(
+            img,
+            source_block,
+            "译文",
+            dpi=72,
+            protected_boxes=[(90, 88, 170, 100)],
+            render_box=(20, 20, 120, 52),
+        )
+
+        self.assertEqual(img.getpixel((30, 106))[:3], (255, 255, 255))
+
+    def test_raster_protected_boxes_use_visual_group_for_diagram_formula_label(self):
+        blocks = [
+            block(
+                "p001b0001",
+                1,
+                "Many applications in natural language processing rely on adapting one large-scale model.",
+                x0=108.0,
+                y0=514.9,
+                x1=379.2,
+                y1=622.5,
+            ),
+            block("p001b0002", 1, "f(x)", x0=571.4, y0=518.6, x1=583.0, y1=534.9),
+            block("p001b0003", 1, "h", x0=416.5, y0=515.3, x1=421.1, y1=525.3),
+            block("p001b0004", 1, "𝐴 = 𝒩(0, 𝜎 2 )", x0=456.9, y0=592.9, x1=495.9, y1=600.7),
+        ]
+        body_box = pdf.block_to_px_box(blocks[0], 200, 1700, 2200, pad=2)
+
+        protected_boxes = pdf.raster_protected_boxes(blocks, 200, 1700, 2200)
+
+        self.assertEqual(pdf.avoid_protected_boxes(body_box, protected_boxes), body_box)
+
+    def test_raster_draw_block_does_not_rotate_long_reference_column(self):
+        img = Image.new("RGBA", (260, 520), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle((20, 20, 120, 500), fill=(0, 0, 0, 255))
+        source_text = (
+            "R. Collobert, J. Weston, L. Bottou, M. Karlen,\n"
+            "K. Kavukcuoglu, and P. P. Kuksa, Natural language processing almost from scratch."
+        )
+        source_block = block(
+            "p100b0018",
+            100,
+            source_text,
+            x0=20,
+            y0=20,
+            x1=120,
+            y1=500,
+        )
+
+        pdf.draw_block(
+            img,
+            source_block,
+            "R. Collobert、J. Weston、L. Bottou、M. Karlen 和 K. Kavukcuoglu，自然语言处理。",
+            dpi=72,
+            protected_boxes=[],
+            render_box=(20, 20, 120, 500),
+        )
+
+        self.assertEqual(img.getpixel((130, 250))[:3], (255, 255, 255))
+        self.assertNotEqual(img.getpixel((28, 28))[:3], (255, 255, 255))
+
+    def test_raster_draw_block_uses_light_text_on_dark_background(self):
+        img = Image.new("RGBA", (220, 90), (0, 0, 0, 255))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle((20, 20, 180, 44), fill=(0, 0, 0, 255))
+        source_block = block(
+            "p001b0003",
+            1,
+            "REVIEW ARTICLE",
+            x0=20,
+            y0=20,
+            x1=180,
+            y1=44,
+        )
+
+        pdf.draw_block(
+            img,
+            source_block,
+            "综述文章",
+            dpi=72,
+            protected_boxes=[],
+            render_box=(20, 20, 180, 44),
+        )
+
+        dark_text_pixels = 0
+        light_text_pixels = 0
+        for r, g, b, _a in img.crop((20, 20, 180, 44)).getdata():
+            if 20 < r < 80 and 20 < g < 80 and 20 < b < 80:
+                dark_text_pixels += 1
+            if r > 180 and g > 180 and b > 180:
+                light_text_pixels += 1
+
+        self.assertGreater(light_text_pixels, 0)
+        self.assertEqual(dark_text_pixels, 0)
 
     def test_vector_textbox_does_not_shrink_when_style_is_fixed(self):
         fitz = pdf.load_fitz()

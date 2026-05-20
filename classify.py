@@ -138,6 +138,8 @@ def is_formula_like(text: str) -> bool:
     stripped = normalize_text(text)
     if not stripped:
         return False
+    if re.fullmatch(r"https?://\S+", stripped, flags=re.I):
+        return False
     compact = re.sub(r"\s+", "", stripped)
     if re.fullmatch(r"\(\d{1,2}\)", compact):
         return True
@@ -294,11 +296,25 @@ def looks_like_reference_item_line(text: str) -> bool:
     if not parsed:
         return False
     body, bracketed_marker = parsed
+    first_word_match = re.match(r"(?P<word>[A-Za-z][A-Za-z-]*)\b", body)
+    if bracketed_marker and first_word_match:
+        first_word = first_word_match.group("word")
+        lower_name_prefixes = {"da", "de", "del", "den", "der", "la", "le", "van", "von"}
+        if first_word[0].islower() and first_word.lower() not in lower_name_prefixes:
+            return False
     comma_match = re.match(
         rf"{REFERENCE_AUTHOR_TOKEN_RE}(?:[ \t]+{REFERENCE_AUTHOR_TOKEN_RE}){{0,6}}\s*,",
         body,
     )
     if comma_match:
+        if not bracketed_marker:
+            comma_author = comma_match.group(0).rstrip(", \t")
+            lastname_initial_match = re.match(
+                rf"{REFERENCE_AUTHOR_TOKEN_RE},[ \t]*(?:[A-Z]\.?\s*){{1,4}}",
+                body,
+            )
+            if not lastname_initial_match and not author_segment_looks_like_reference(comma_author):
+                return False
         return True
     period_match = re.match(
         rf"(?P<author>{REFERENCE_AUTHOR_TOKEN_RE}(?:[ \t]+{REFERENCE_AUTHOR_TOKEN_RE}){{0,5}})\.[ \t]+\S",
@@ -310,6 +326,8 @@ def looks_like_reference_item_line(text: str) -> bool:
     if not author_words:
         return False
     if not bracketed_marker and len(author_words) < 2:
+        return False
+    if not bracketed_marker and not author_segment_looks_like_reference(period_match.group("author")):
         return False
     if len(author_words) >= 2 and all(word.isupper() and len(word) > 1 for word in author_words):
         return False
@@ -481,7 +499,7 @@ def reference_signature(text: str) -> dict[str, str | bool | None]:
 
     pattern_parts = [key for key in ("marker", "authors", "title", "venue", "date", "pages", "locator") if signature.get(key)]
     signature["pattern"] = "+".join(pattern_parts) if pattern_parts else None
-    signature["reference_like"] = bool(
+    reference_like = bool(
         (
             signature["authors"]
             and signature["date"]
@@ -513,6 +531,10 @@ def reference_signature(text: str) -> dict[str, str | bool | None]:
             and (signature["pages"] or signature["locator"])
         )
     )
+    if reference_like and not (signature["marker"] or signature["authors"] or signature["date"]):
+        if len(flat) > 260 or is_prose_row_text(flat):
+            reference_like = False
+    signature["reference_like"] = reference_like
     return signature
 
 
@@ -752,6 +774,8 @@ def block_looks_like_reference_continuation(block) -> bool:
     signature = reference_signature(text)
     if signature["reference_like"] and not signature["authors"] and not signature["marker"]:
         return True
+    if len(text) > 360 and not signature["reference_like"]:
+        return False
     lower = text.lower()
     if any(cue in lower for cue in REFERENCE_VENUE_CUES):
         return True
@@ -759,7 +783,9 @@ def block_looks_like_reference_continuation(block) -> bool:
         return True
     if re.search(r"\barxiv:\d", lower) or re.search(r"\babs/\d", lower):
         return True
-    return bool(re.match(r"^[a-z][^.!?]{8,}[.!?]\s+(?:in|journal|proceedings|pages?)\b", lower))
+    return len(text) <= 260 and bool(
+        re.match(r"^[a-z][^.!?]{8,}[.!?]\s+(?:in|journal|proceedings|pages?)\b", lower)
+    )
 
 
 def page_looks_like_reference_continuation(blocks) -> bool:
@@ -827,7 +853,23 @@ def is_heading_text(text: str) -> bool:
 
 def is_title_block(block) -> bool:
     text = normalize_text(block.get("text", ""))
-    return block.get("page") == 1 and block["yMin"] < 90 and len(text) <= 120 and "\n" not in text
+    if block.get("page") != 1 or not text:
+        return False
+    if len(text) > 180 or block["yMin"] >= 150:
+        return False
+    if re.search(r"[@]|https?://|arxiv:", text, flags=re.I):
+        return False
+    if re.search(r"[.!?][\"')\]）】”’]*\s*$", text):
+        return False
+    words = latin_words(text)
+    if len(words) < 3 and not (block["yMin"] < 90 and len(words) >= 2):
+        return False
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) > 3:
+        return False
+    if "\n" in text:
+        return block["yMax"] <= 185 and any(len(line) >= 24 for line in lines)
+    return block["yMin"] < 120 and len(text) <= 140
 
 
 def is_first_page_author_block(block) -> bool:

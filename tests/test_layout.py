@@ -59,6 +59,21 @@ class LayoutExtractionModuleTests(unittest.TestCase):
         self.assertEqual(fit, (plan.line_height_factor, plan.paragraph_spacing))
         self.assertEqual(available, plan.available_height)
 
+    def test_reference_fit_metrics_allow_compact_line_height(self):
+        fitz = FakeFitz()
+        item = pdf.RenderItem(
+            "original_selectable_text",
+            ["ref"],
+            (0.0, 0.0, 30.0, 42.0),
+            text="referenceone referencetwo referencethree referencefour referencefive referencesix referenceseven",
+            font_size=layout.DOCUMENT_STYLES["reference"].font_size,
+            style_name="reference",
+        )
+
+        fit, _required, _available = layout.text_item_fit_metrics(item, fitz)
+
+        self.assertEqual(fit, (1.0, 0.0))
+
     def test_wrap_mixed_pdf_text_direct_api_uses_deterministic_tokens(self):
         fitz = FakeFitz()
 

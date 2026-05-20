@@ -27,6 +27,7 @@ VENDOR_ROOT = TOOL_ROOT / "vendor"
 FONT_PATH = "/usr/share/fonts/truetype/arphic/uming.ttc"
 SOURCE_FONT_SCALE = 0.94
 TEXT_BOX_MARGIN_PX = 8
+RASTER_VERTICAL_TEXT_MAX_SOURCE_CHARS = 80
 
 VECTOR_FONT = "china-s"
 MATH_VECTOR_FONT = "MathF"
@@ -78,7 +79,7 @@ DOCUMENT_STYLES = {
     "title": TextStyle(font_size=13.6, line_height_factor=1.15, paragraph_spacing=2.0, min_line_height_factor=1.10, min_paragraph_spacing=0.0),
     "metadata": TextStyle(font_size=8.4, line_height_factor=1.15, paragraph_spacing=0.8, min_line_height_factor=1.10, min_paragraph_spacing=0.0),
     "footer": TextStyle(font_size=5.2, line_height_factor=1.05),
-    "reference": TextStyle(font_size=5.9, line_height_factor=1.10),
+    "reference": TextStyle(font_size=5.9, line_height_factor=1.10, min_line_height_factor=1.0),
 }
 
 BODY_FONT_SIZE = DOCUMENT_STYLES["body"].font_size
@@ -716,6 +717,16 @@ def target_font_size_for_block(block, dpi: int, vertical: bool) -> int | None:
     return max(10, int(round(source_line_height / 1.25 * SOURCE_FONT_SCALE)))
 
 
+def raster_text_should_render_vertical(text: str, box) -> bool:
+    x0, y0, x1, y1 = box
+    normalized = normalize_text(text)
+    if len(normalized) > RASTER_VERTICAL_TEXT_MAX_SOURCE_CHARS:
+        return False
+    if "\n" in normalized:
+        return False
+    return (y1 - y0) > (x1 - x0) * 3 and len(normalized) > 4
+
+
 def target_font_size_points_for_block(block, *, max_size: float = 30.0) -> float:
     block_height_pt = max(1.0, block["yMax"] - block["yMin"])
     source_line_height = block_height_pt / source_line_count(block.get("text", ""))
@@ -803,7 +814,7 @@ def build_render_boxes(
         translation = translation_resolver(block, translations)
         x0, y0, x1, y1 = box
         width = max(10, x1 - x0 - 4)
-        vertical = (y1 - y0) > (x1 - x0) * 3 and len(translation) > 4
+        vertical = raster_text_should_render_vertical(block.get("text", ""), (x0, y0, x1, y1))
         target_font_size = target_font_size_for_block(block, dpi, vertical)
         if target_font_size is None:
             continue
