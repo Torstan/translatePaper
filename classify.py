@@ -173,6 +173,14 @@ def english_function_word_count(text: str) -> int:
     return sum(1 for word in latin_words(text) if word.lower() in ENGLISH_FUNCTION_WORDS)
 
 
+def english_function_token_count(text: str) -> int:
+    return sum(
+        1
+        for word in re.findall(r"[A-Za-z]+", normalize_text(text))
+        if word.lower() in ENGLISH_FUNCTION_WORDS
+    )
+
+
 def is_numeric_metric_cell(text: str) -> bool:
     normalized = normalize_text(text)
     if not normalized or cjk_char_count(normalized) > 0:
@@ -1032,7 +1040,7 @@ def is_code_listing_block(text: str) -> bool:
     prose_like = 0
     for line in lines:
         words = re.findall(r"[A-Za-z][A-Za-z-]{2,}", line)
-        function_words = sum(1 for word in words if word.lower() in ENGLISH_FUNCTION_WORDS)
+        function_words = english_function_token_count(line)
         if len(words) >= 5 and function_words >= 1:
             prose_like += 1
         elif re.match(r"(?i)^\s*(proof|theorem|lemma|corollary|for our|informally)\b", line):

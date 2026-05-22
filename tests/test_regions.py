@@ -139,6 +139,57 @@ class RegionExtractionModuleTests(unittest.TestCase):
         self.assertFalse({"p001b0001", "p001b0002", "p001b0003", "p001b0004"} & visual_ids)
         self.assertTrue({"p001b0005", "p001b0006", "p001b0007", "p001b0008", "p001b0009"} <= visual_ids)
 
+    def test_citation_prose_below_figure_caption_is_translatable_body(self):
+        blocks = [
+            block("p001b0008", 1, "Agent: AppWorld", x0=156.4, y0=524.5, x1=223.8, y1=538.7),
+            block(
+                "p001b0009",
+                1,
+                "Domain Knowledge: FiNER Numerical Reasoning: Formula",
+                x0=257.7,
+                y0=524.5,
+                x1=490.5,
+                y1=538.7,
+            ),
+            block("p001b0011", 1, "Accuracy (%)", x0=116.6, y0=558.6, x1=128.9, y1=601.7),
+            block(
+                "p001b0014",
+                1,
+                "Figure 1: Overall Performance Results. Our proposed framework, ACE, consistently "
+                "outperforms strong baselines across agent and domain-specific tasks.",
+                x0=108.0,
+                y0=652.7,
+                x1=504.0,
+                y1=672.7,
+            ),
+            block(
+                "p001b0015",
+                1,
+                "Modern AI applications based on large language models (LLMs), such as LLM agents "
+                "(Yao et al.,\n"
+                "2023; Yang et al., 2024) and compound AI systems (Zaharia et al., 2024), "
+                "increasingly depend on\n"
+                "context adaptation. Instead of modifying model weights, context adaptation improves "
+                "performance\n"
+                "after model training by incorporating clarified instructions, structured reasoning "
+                "steps, or domain-",
+                x0=108.0,
+                y0=690.2,
+                x1=504.0,
+                y1=732.0,
+            ),
+        ]
+
+        visual_regions = regions.build_visual_regions(blocks)
+        visual_ids = {source_id for region in visual_regions for source_id in region["source_ids"]}
+        classes = pdf.classify_blocks(blocks, visual_regions)
+        ownership_result = pdf.build_translation_page_components(1, blocks, page_size=(612.0, 792.0))
+
+        self.assertIn("p001b0014", visual_ids)
+        self.assertNotIn("p001b0015", visual_ids)
+        self.assertEqual(classes["p001b0015"], "body")
+        self.assertIn("p001b0015", ownership_result.translatable_ids)
+
     def test_first_page_title_authors_and_affiliation_are_not_visual_labels(self):
         blocks = [
             block("p001b0001", 1, "Front. Comput. Sci., 2025, 0(0): 1-42", x0=48.2, y0=32.0, x1=215.1, y1=41.8),
