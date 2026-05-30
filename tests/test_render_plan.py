@@ -1927,6 +1927,39 @@ class RenderPlanClassificationTests(unittest.TestCase):
 
         self.assertEqual(pdf.validate_plan_translation_quality(1, blocks, {}, plan), [])
 
+    def test_multiline_author_list_metadata_does_not_require_chinese_translation(self):
+        block_text = (
+            "Timo Schick Jane Dwivedi-Yu Roberto Dessì † Roberta Raileanu\n"
+            "Maria Lomeli Eric Hambro Luke Zettlemoyer Nicola Cancedda Thomas Scialom"
+        )
+        blocks = [
+            block(
+                "p001b0002",
+                1,
+                block_text,
+                x0=113.978,
+                y0=179.887,
+                x1=498.524,
+                y1=205.709,
+            )
+        ]
+        plan = pdf.PageRenderPlan(page_num=1)
+        plan.items.append(
+            pdf.RenderItem(
+                "original_selectable_text",
+                ["p001b0002"],
+                (113.978, 179.887, 498.524, 205.709),
+                text=block_text,
+                font_size=pdf.BODY_FONT_SIZE,
+                style_name="body",
+                fallback_reason="untranslated_fallback_original",
+            )
+        )
+        plan.ledger.append(pdf.CoverageEntry("p001b0002", "body", "original_selectable_text", True, "untranslated_fallback_original"))
+
+        self.assertFalse(pdf.source_requires_chinese_translation(block_text))
+        self.assertEqual(pdf.validate_plan_translation_quality(1, blocks, {"p001b0002": block_text}, plan), [])
+
     def test_translation_quality_allows_url_original_selectable_text(self):
         blocks = [
             block(

@@ -1155,6 +1155,9 @@ def is_non_prose_identifier_text(text: str) -> bool:
     if len(normalized) <= 90 and english_function_word_count(normalized) == 0:
         if not re.search(r"[.!?]\s+[A-Z]", normalized):
             return True
+    if len(normalized) <= 180 and len(words) >= 6 and english_function_word_count(normalized) == 0:
+        if not re.search(r"[.!?]", normalized) and all(re.fullmatch(r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ-]+", word) for word in words):
+            return True
     return False
 
 
