@@ -137,6 +137,7 @@ from layout import (
     preferred_text_height_for_item,
     raster_text_should_render_vertical,
     rebalance_body_text_flows,
+    release_visual_clip_overcapture_for_text_fit,
     render_font_size_for_block,
     render_text_style_name,
     shifted_boxes_around_protected,
@@ -799,6 +800,7 @@ def final_visual_region_bbox(
         and not region.get("has_code_seed")
     )
     visual_source_bbox = region["bbox"]
+    cap_source_bbox = visual_source_bbox
     mixed_body_item = None
     mixed_visual_body = False
     if region.get("has_code_seed") and bbox_lines and page_size is not None:
@@ -815,6 +817,15 @@ def final_visual_region_bbox(
         line_bbox = formula_region_bbox_from_lines(region, bbox_lines, page_size)
         if line_bbox is not None:
             visual_source_bbox = line_bbox
+            cap_source_bbox = line_bbox
+    elif formula_only:
+        formula_boxes = [
+            block_bbox(block_by_id[source_id])
+            for source_id in region["source_ids"]
+            if source_id in block_by_id
+        ]
+        if formula_boxes:
+            cap_source_bbox = bbox_union(formula_boxes)
     if page_size is None:
         return visual_source_bbox, mixed_body_item
     region_bbox = visual_clip_bbox(
@@ -843,23 +854,29 @@ def final_visual_region_bbox(
             if region.get("has_code_seed")
             else VISUAL_CLIP_PIXEL_SEARCH_PAD_Y_PT
         ),
-        pixel_final_pad=0.75 if formula_only or region.get("has_code_seed") else VISUAL_CLIP_PIXEL_FINAL_PAD_PT,
+        pixel_final_pad=VISUAL_CLIP_PIXEL_FINAL_PAD_PT if formula_only else 0.75 if region.get("has_code_seed") else VISUAL_CLIP_PIXEL_FINAL_PAD_PT,
     )
+    if formula_only:
+        region_bbox = (
+            region_bbox[0],
+            max(region_bbox[1], cap_source_bbox[1] - VISUAL_CLIP_PIXEL_FINAL_PAD_PT),
+            region_bbox[2],
+            min(region_bbox[3], cap_source_bbox[3] + VISUAL_CLIP_PIXEL_FINAL_PAD_PT),
+        )
     region_bbox = cap_visual_bbox_after_preceding_text(
-        visual_source_bbox,
+        cap_source_bbox,
         region_bbox,
         blocks,
         classes,
         visual_ids,
     )
-    if not formula_only:
-        region_bbox = cap_visual_bbox_before_following_text(
-            visual_source_bbox,
-            region_bbox,
-            blocks,
-            classes,
-            visual_ids,
-        )
+    region_bbox = cap_visual_bbox_before_following_text(
+        cap_source_bbox,
+        region_bbox,
+        blocks,
+        classes,
+        visual_ids,
+    )
     region_bbox = cap_visual_bbox_against_adjacent_translated_text(
         visual_source_bbox,
         region_bbox,
@@ -954,7 +971,27 @@ def final_visual_ownership_regions(
             ownership_region["mixed_body_source_ids"] = sorted(region["source_ids"])
             ownership_region["mixed_body_bbox"] = tuple(body_bbox)
         ownership_regions.append(ownership_region)
-    return ownership.merge_visual_regions(ownership_regions)
+    merged_regions = ownership.merge_visual_regions(ownership_regions)
+    block_by_id = {block["id"]: block for block in page}
+    for region in merged_regions:
+        if page_size is None or region.get("bbox") is None:
+            continue
+        source_boxes = [
+            block_bbox(block_by_id[source_id])
+            for source_id in region.get("source_ids", [])
+            if source_id in block_by_id
+        ]
+        if not source_boxes:
+            continue
+        cap_source_bbox = bbox_union(source_boxes)
+        region["bbox"] = cap_visual_bbox_before_following_text(
+            cap_source_bbox,
+            tuple(region["bbox"]),
+            page,
+            classes,
+            expanded_visual_ids,
+        )
+    return merged_regions
 
 
 def build_page_components_compat(
@@ -3774,6 +3811,8 @@ def build_page_render_plan(
     visual_component_ids = visual_source_ids_from_components(plan.components)
     heading_pairs = standalone_heading_number_pairs(blocks, classes)
     for number_block, title_block, _number_text in heading_pairs:
+        if number_block["id"] in visual_component_ids or title_block["id"] in visual_component_ids:
+            continue
         classes[number_block["id"]] = "heading"
         classes[title_block["id"]] = "heading"
     footer_items = journal_footer_render_items(bbox_lines or [], page_size)
@@ -3864,6 +3903,11 @@ def build_page_render_plan(
                 )
             )
 
+    heading_pairs = [
+        pair
+        for pair in heading_pairs
+        if pair[0]["id"] not in visual_component_ids and pair[1]["id"] not in visual_component_ids
+    ]
     paired_heading_ids = add_standalone_heading_pair_render_items(
         plan,
         heading_pairs,
@@ -4428,6 +4472,15 @@ def validate_footer_consistency(plans: list[PageRenderPlan]) -> list[str]:
     return []
 
 
+def normalize_vector_text_layout(plan: PageRenderPlan, page_size, fitz=None) -> None:
+    """Apply deterministic text layout repairs before validating or drawing vector text."""
+    release_visual_clip_overcapture_for_text_fit(plan, page_size, fitz=fitz)
+    expand_text_boxes_to_fit(plan, page_size, fitz=fitz)
+    rebalance_body_text_flows(plan, page_size, fitz=fitz)
+    release_visual_clip_overcapture_for_text_fit(plan, page_size, fitz=fitz)
+    expand_text_boxes_to_fit(plan, page_size, fitz=fitz)
+
+
 def validate_document_quality(selected_pages, translations, page_size, job_paths=None) -> list[str]:
     errors = []
     plans = []
@@ -4450,6 +4503,7 @@ def validate_document_quality(selected_pages, translations, page_size, job_paths
             source_image_path=source_image_path,
             force_reference=in_reference_section,
         )
+        normalize_vector_text_layout(plan, page_size, fitz=fitz)
         plan_has_reference = any(entry.classification == "reference" for entry in plan.ledger)
         if plan_has_reference:
             in_reference_section = True
@@ -4836,6 +4890,7 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
             source_image_path=source_image,
             force_reference=in_reference_section,
         )
+        normalize_vector_text_layout(plan, (page_rect.width, page_rect.height), fitz=fitz)
         plan_has_reference = any(entry.classification == "reference" for entry in plan.ledger)
         if plan_has_reference:
             in_reference_section = True

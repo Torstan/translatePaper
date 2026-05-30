@@ -1313,6 +1313,31 @@ class VisualQaRulePairTests(unittest.TestCase):
         self.assertCategoryReported(bad_issues, "page_bounds")
         self.assertCategoryAbsent(corrected_issues, "page_bounds")
 
+    def test_clipped_content_rule_passes_with_two_point_visual_padding(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_png = Path(tmp_dir) / "page-024.png"
+            image = Image.new("RGB", (100, 100), "white")
+            ImageDraw.Draw(image).rectangle((20, 30, 21, 40), fill="black")
+            image.save(source_png)
+            plan = {
+                "page_num": 24,
+                "render_items": [
+                    {
+                        "kind": "original_image_clip",
+                        "source_ids": ["p024b0001"],
+                        "bbox": [18, 20, 50, 50],
+                    }
+                ],
+            }
+
+            issues = qa_visual.detect_image_clip_boundary_issues(
+                plan,
+                source_png,
+                page_size=(100, 100),
+            )
+
+        self.assertCategoryAbsent(issues, "clipped_content")
+
     def test_clipped_content_rule_fails_bad_plan_and_passes_corrected_plan(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             source_png = Path(tmp_dir) / "page-024.png"

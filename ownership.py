@@ -802,6 +802,11 @@ def validate_render_layer_exclusivity(
     visual_components = [component for component in components if component.component_kind == COMPONENT_KIND_VISUAL]
     translated_components = [component for component in components if component.component_kind == COMPONENT_KIND_TRANSLATED_TEXT]
     component_by_id = {component.component_id: component for component in components}
+    visual_render_boxes_by_component_id: dict[str, list[tuple[float, float, float, float]]] = defaultdict(list)
+    for image_item in image_items:
+        image_component_id = _item_component_id(image_item)
+        if image_component_id:
+            visual_render_boxes_by_component_id[image_component_id].append(_item_bbox(image_item))
 
     for image_item in image_items:
         image_component_id = _item_component_id(image_item)
@@ -811,6 +816,8 @@ def validate_render_layer_exclusivity(
         image_box = _item_bbox(image_item)
         for translated_component in translated_components:
             if translated_component.component_id == image_component_id:
+                continue
+            if not (set(translated_component.source_ids) & text_ids):
                 continue
             if _allowed_visual_text_split(image_component, translated_component):
                 continue
@@ -836,23 +843,27 @@ def validate_render_layer_exclusivity(
         for visual_component in visual_components:
             if visual_component.component_id == text_component_id:
                 continue
-            visual_box = visual_component.clip_bbox or visual_component.source_bbox
-            if _significant_overlap(
-                text_box,
-                visual_box,
-                min_overlap_ratio=min_overlap_ratio,
-                min_overlap_height=min_overlap_height,
-            ):
-                issues.append(
-                    OwnershipIssue(
-                        issue_code="text_over_visual_component",
-                        severity="error",
-                        page_num=page_num,
-                        message=f"text item overlaps unrelated visual component {visual_component.component_id}",
-                        source_ids=_item_source_ids(text_item),
-                        component_ids=[text_component_id, visual_component.component_id],
-                        bboxes=[text_box, visual_box],
+            visual_boxes = visual_render_boxes_by_component_id.get(visual_component.component_id) or [
+                visual_component.clip_bbox or visual_component.source_bbox
+            ]
+            for visual_box in visual_boxes:
+                if _significant_overlap(
+                    text_box,
+                    visual_box,
+                    min_overlap_ratio=min_overlap_ratio,
+                    min_overlap_height=min_overlap_height,
+                ):
+                    issues.append(
+                        OwnershipIssue(
+                            issue_code="text_over_visual_component",
+                            severity="error",
+                            page_num=page_num,
+                            message=f"text item overlaps unrelated visual component {visual_component.component_id}",
+                            source_ids=_item_source_ids(text_item),
+                            component_ids=[text_component_id, visual_component.component_id],
+                            bboxes=[text_box, visual_box],
+                        )
                     )
-                )
+                    break
 
     return OwnershipValidationResult(issues=issues)

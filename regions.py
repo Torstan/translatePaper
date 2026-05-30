@@ -55,7 +55,7 @@ LARGE_PROSE_VISUAL_AVOID_HEIGHT_PT = 58.0
 DIAGRAM_LABEL_VERTICAL_CLUSTER_GAP_PT = 140.0
 VISUAL_CLIP_PIXEL_SEARCH_PAD_X_PT = 40.0
 VISUAL_CLIP_PIXEL_SEARCH_PAD_Y_PT = 20.0
-VISUAL_CLIP_PIXEL_FINAL_PAD_PT = 1.5
+VISUAL_CLIP_PIXEL_FINAL_PAD_PT = 3.0
 
 
 def block_to_px_box(block, dpi: int, page_width: int, page_height: int, pad: int = 2):
@@ -467,8 +467,10 @@ def cap_visual_bbox_before_following_text(region_bbox, visual_bbox, blocks, clas
         text = normalize_text(block.get("text", ""))
         if not text:
             continue
+        if not source_requires_chinese_translation(text):
+            continue
         block_box = block_bbox(block)
-        if block_box[1] < region_bbox[3] - 1.0:
+        if block_box[1] <= region_bbox[1] + 1.0:
             continue
         if block_box[1] >= capped[3]:
             continue

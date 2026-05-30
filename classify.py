@@ -1142,6 +1142,9 @@ def is_non_prose_identifier_text(text: str) -> bool:
         return True
     if re.fullmatch(r"https?://\S+", normalized, flags=re.I):
         return True
+    tokens = normalized.split()
+    if tokens and all(re.fullmatch(r"https?://\S+", token, flags=re.I) for token in tokens):
+        return True
     if normalized.startswith(("©", "Copyright ")) or "all rights reserved" in normalized.lower():
         return True
     if is_formula_or_code_block(normalized) or is_code_row_text(normalized):
@@ -1161,6 +1164,8 @@ def source_requires_chinese_translation(text: str) -> bool:
         return False
     words = latin_words(cleaned)
     if len(words) < 4:
+        return False
+    if re.fullmatch(r"\d+(?:\.\d+)*\.?\s+(?:[A-Z][A-Za-z0-9-]*\s*){2,8}", normalize_text(cleaned)):
         return False
     return len(cleaned) >= 30 or english_function_word_count(cleaned) >= 1
 

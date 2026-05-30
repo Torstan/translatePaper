@@ -7,6 +7,8 @@ from typing import Mapping
 
 from PIL import Image
 
+from classify import NORMAL_TRANSLATED_CLASSES, source_requires_chinese_translation
+
 
 TOOL_ROOT = Path(__file__).resolve().parent
 VENDOR_ROOT = TOOL_ROOT / "vendor"
@@ -322,7 +324,7 @@ def _body_source_block_overcaptured(block_bbox, clip_bbox) -> bool:
     return area > 0 and _bbox_overlap_area(block_bbox, clip_bbox) >= area * 0.35
 
 
-def _bbox_contains(inner, outer, *, tolerance: float = 1.0) -> bool:
+def _bbox_contains(inner, outer, *, tolerance: float = 1.5) -> bool:
     return (
         inner[0] >= outer[0] - tolerance
         and inner[1] >= outer[1] - tolerance
@@ -336,6 +338,57 @@ def _visual_source_block_undercaptured(block_bbox, clip_bbox) -> bool:
     if area <= 0 or _bbox_contains(block_bbox, clip_bbox):
         return False
     return _bbox_overlap_area(block_bbox, clip_bbox) < area * 0.98
+
+
+def _clip_union_for_source_ids(items) -> dict[str, tuple[float, float, float, float]]:
+    boxes_by_id: dict[str, list[tuple[float, float, float, float]]] = {}
+    for item in items:
+        if _item_value(item, "kind") != "original_image_clip":
+            continue
+        bbox = _bbox_tuple(_item_value(item, "bbox"))
+        for source_id in _source_ids_for_item(item):
+            boxes_by_id.setdefault(source_id, []).append(bbox)
+    return {
+        source_id: (
+            min(box[0] for box in boxes),
+            min(box[1] for box in boxes),
+            max(box[2] for box in boxes),
+            max(box[3] for box in boxes),
+        )
+        for source_id, boxes in boxes_by_id.items()
+        if boxes
+    }
+
+
+def _translated_block_explains_dark_excess(dark_bbox, clip_bbox, blocks_by_id, ledger_by_id, source_ids) -> bool:
+    excess_boxes = []
+    if dark_bbox[0] < clip_bbox[0]:
+        excess_boxes.append((dark_bbox[0], dark_bbox[1], min(clip_bbox[0], dark_bbox[2]), dark_bbox[3]))
+    if dark_bbox[1] < clip_bbox[1]:
+        excess_boxes.append((dark_bbox[0], dark_bbox[1], dark_bbox[2], min(clip_bbox[1], dark_bbox[3])))
+    if dark_bbox[2] > clip_bbox[2]:
+        excess_boxes.append((max(clip_bbox[2], dark_bbox[0]), dark_bbox[1], dark_bbox[2], dark_bbox[3]))
+    if dark_bbox[3] > clip_bbox[3]:
+        excess_boxes.append((dark_bbox[0], max(clip_bbox[3], dark_bbox[1]), dark_bbox[2], dark_bbox[3]))
+    if not excess_boxes:
+        return False
+    explained = 0
+    for excess in excess_boxes:
+        if _bbox_area(excess) <= 0:
+            continue
+        for block_id, block in blocks_by_id.items():
+            if block_id in source_ids:
+                continue
+            entry = ledger_by_id.get(block_id)
+            if _ledger_value(entry, "classification") not in NORMAL_TRANSLATED_CLASSES:
+                continue
+            if not source_requires_chinese_translation(str(block.get("text", ""))):
+                continue
+            block_box = _block_bbox(block)
+            if _bbox_overlap_area(excess, block_box) > 0:
+                explained += 1
+                break
+    return explained == len([box for box in excess_boxes if _bbox_area(box) > 0])
 
 
 def _expanded_bbox(bbox, page_size, amount: float) -> tuple[float, float, float, float]:
@@ -482,6 +535,7 @@ def detect_image_clip_boundary_issues(
         if str(_ledger_value(entry, "component_kind", "") or "") == "visual"
         and str(_ledger_value(entry, "render_kind", "") or "") == "original_image_clip"
     }
+    clip_union_by_source_id = _clip_union_for_source_ids(_plan_render_items(plan))
     for item in _plan_render_items(plan):
         if _item_value(item, "kind") != "original_image_clip":
             continue
@@ -495,25 +549,33 @@ def detect_image_clip_boundary_issues(
         )
         source_ids = _source_ids_for_item(item)
         if dark_bbox is not None and _dark_bbox_exceeds_clip_edge(dark_bbox, clip_bbox, edge_tolerance):
-            issues.append(
-                VisualQaIssue(
-                    category="clipped_content",
-                    severity="error",
-                    page_num=page_num,
-                    message="dark source content touches image clip boundary",
-                    source_ids=source_ids,
-                    bbox=clip_bbox,
-                    render_kind="original_image_clip",
-                    artifact_paths={"source_png": str(source_image_path)},
+            if not _translated_block_explains_dark_excess(
+                dark_bbox,
+                clip_bbox,
+                blocks_by_id,
+                ledger_by_id,
+                set(source_ids),
+            ):
+                issues.append(
+                    VisualQaIssue(
+                        category="clipped_content",
+                        severity="error",
+                        page_num=page_num,
+                        message="dark source content touches image clip boundary",
+                        source_ids=source_ids,
+                        bbox=clip_bbox,
+                        render_kind="original_image_clip",
+                        artifact_paths={"source_png": str(source_image_path)},
+                    )
                 )
-            )
 
         for source_id in sorted(set(source_ids) & visual_ledger_ids):
             block = blocks_by_id.get(source_id)
             if block is None:
                 continue
             undercapture_bbox = _block_bbox(block)
-            if not _visual_source_block_undercaptured(undercapture_bbox, clip_bbox):
+            source_clip_bbox = clip_union_by_source_id.get(source_id, clip_bbox)
+            if not _visual_source_block_undercaptured(undercapture_bbox, source_clip_bbox):
                 continue
             issues.append(
                 VisualQaIssue(

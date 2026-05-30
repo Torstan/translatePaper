@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 import layout
+import ownership
 import translate_pdf_via_codex as pdf
 
 
@@ -165,6 +166,97 @@ class LayoutExtractionModuleTests(unittest.TestCase):
         errors = layout.validate_plan_text_fit(plan, fitz=FakeFitz())
 
         self.assertTrue(errors)
+
+    def test_expand_text_boxes_to_fit_grows_tight_body_line_into_available_space(self):
+        fitz = FakeFitz()
+        plan = pdf.PageRenderPlan(page_num=2)
+        plan.items.append(
+            pdf.RenderItem(
+                "translated_text",
+                ["p002b0004"],
+                (70.0, 120.0, 520.0, 127.0),
+                text="该名称源自 la tortuga，这是西班牙语中表示 turtle 的词。",
+                font_size=layout.BODY_FONT_SIZE,
+                style_name="body",
+            )
+        )
+        plan.items.append(
+            pdf.RenderItem(
+                "translated_text",
+                ["p002b0005"],
+                (70.0, 170.0, 520.0, 190.0),
+                text="下一段中文。",
+                font_size=layout.BODY_FONT_SIZE,
+                style_name="body",
+            )
+        )
+
+        before = plan.items[0].bbox
+        layout.expand_text_boxes_to_fit(plan, page_size=(612.0, 792.0), fitz=fitz)
+
+        expanded = plan.items[0].bbox
+        self.assertEqual(expanded[:3], before[:3])
+        self.assertGreater(expanded[3], before[3])
+        self.assertLess(expanded[3], plan.items[1].bbox[1])
+        self.assertEqual(layout.validate_plan_text_fit(plan, fitz=fitz), [])
+
+    def test_normalize_vector_text_layout_releases_toolformer_visual_overcapture(self):
+        fitz = FakeFitz()
+        plan = pdf.PageRenderPlan(page_num=2)
+        plan.components.append(
+            ownership.PageComponent(
+                "p002c0002",
+                ownership.COMPONENT_KIND_VISUAL,
+                ["p002b0005", "p002b0006", "p002b0007", "p002b0008"],
+                (107.641, 152.980688, 505.242628, 226.300922),
+                (106.14, 137.909818, 506.22, 250.98),
+                ownership.CONFIDENCE_CONSERVATIVE,
+                ["visual_region", "visual_region"],
+                "original_image_clip",
+            )
+        )
+        plan.items.append(
+            pdf.RenderItem(
+                "original_image_clip",
+                ["p002b0005", "p002b0006", "p002b0007", "p002b0008"],
+                (106.14, 137.909818, 506.22, 250.98),
+                fallback_reason="visual_region",
+                component_id="p002c0002",
+                component_kind=ownership.COMPONENT_KIND_VISUAL,
+            )
+        )
+        plan.protected_boxes.append(plan.items[0].bbox)
+        plan.items.append(
+            pdf.RenderItem(
+                "translated_text",
+                ["p002b0003"],
+                (114.360956, 108.497817, 382.92205, 128.869817),
+                text="在 1400 名参与者中，有 400 人（即 [Calculator(400 / 1400) → 0.29] 29%）通过了测试。",
+                font_size=layout.BODY_FONT_SIZE,
+                style_name="body",
+            )
+        )
+        plan.items.append(
+            pdf.RenderItem(
+                "translated_text",
+                ["p002b0004"],
+                (114.361822, 130.869817, 383.581771, 137.909818),
+                text="该名称源自 “la tortuga”，这是西班牙语中表示 [MT(“tortuga”) → turtle] turtle 的词。",
+                font_size=layout.BODY_FONT_SIZE,
+                style_name="body",
+            )
+        )
+
+        self.assertTrue(layout.validate_plan_text_fit(plan, fitz=fitz))
+
+        pdf.normalize_vector_text_layout(plan, page_size=(612.0, 792.0), fitz=fitz)
+
+        visual = next(item for item in plan.items if item.kind == "original_image_clip")
+        body = next(item for item in plan.items if item.source_ids == ["p002b0004"])
+        self.assertEqual(layout.validate_plan_text_fit(plan, fitz=fitz), [])
+        self.assertGreaterEqual(visual.bbox[1], plan.components[0].source_bbox[1])
+        self.assertLess(body.bbox[3], visual.bbox[1])
+        self.assertEqual(plan.protected_boxes, [visual.bbox])
 
 
 if __name__ == "__main__":

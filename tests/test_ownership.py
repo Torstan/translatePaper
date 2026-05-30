@@ -537,6 +537,48 @@ class RenderLayerOwnershipValidationTests(unittest.TestCase):
 
         self.assertTrue(result.ok, [issue.issue_code for issue in result.issues])
 
+    def test_text_between_split_visual_clips_does_not_overlap_component_union_gap(self):
+        plan = type("Plan", (), {})()
+        plan.page_num = 3
+        plan.items = [
+            type("Item", (), {"kind": "original_image_clip", "source_ids": ["p003b0002", "p003b0003"], "bbox": (80, 120, 520, 180), "component_id": "p003c0001", "component_kind": "visual"})(),
+            type("Item", (), {"kind": "original_image_clip", "source_ids": ["p003b0004"], "bbox": (200, 200, 410, 214), "component_id": "p003c0001", "component_kind": "visual"})(),
+            type("Item", (), {"kind": "original_image_clip", "source_ids": ["p003b0005"], "bbox": (220, 260, 370, 285), "component_id": "p003c0001", "component_kind": "visual"})(),
+            type("Item", (), {"kind": "translated_text", "source_ids": ["p003b0007"], "bbox": (90, 222, 510, 246), "component_id": "p003c0002", "component_kind": "translated_text"})(),
+        ]
+        components = [
+            ownership.PageComponent(
+                "p003c0001",
+                "visual",
+                ["p003b0002", "p003b0003", "p003b0004", "p003b0005"],
+                (80, 120, 520, 285),
+                (80, 120, 520, 285),
+                "conservative",
+                ["visual_region"],
+                "original_image_clip",
+            ),
+            ownership.PageComponent("p003c0002", "translated_text", ["p003b0007"], (90, 222, 510, 246), None, "inferred", ["body"], "translated_text"),
+        ]
+
+        result = ownership.validate_render_layer_exclusivity(plan, components)
+
+        self.assertTrue(result.ok, [issue.issue_code for issue in result.issues])
+
+    def test_visual_clip_can_cover_translated_component_rendered_only_as_image(self):
+        plan = type("Plan", (), {})()
+        plan.page_num = 7
+        plan.items = [
+            type("Item", (), {"kind": "original_image_clip", "source_ids": ["p007b0001", "p007b0002"], "bbox": (100, 100, 500, 300), "component_id": "p007c0001", "component_kind": "visual"})(),
+        ]
+        components = [
+            ownership.PageComponent("p007c0001", "visual", ["p007b0001"], (100, 100, 500, 260), (100, 100, 500, 300), "conservative", ["visual_region"], "original_image_clip"),
+            ownership.PageComponent("p007c0002", "translated_text", ["p007b0002"], (180, 270, 230, 290), None, "inferred", ["body"], "translated_text"),
+        ]
+
+        result = ownership.validate_render_layer_exclusivity(plan, components)
+
+        self.assertTrue(result.ok, [issue.issue_code for issue in result.issues])
+
     def test_visual_clip_cannot_capture_translated_component(self):
         plan = type("Plan", (), {})()
         plan.page_num = 12

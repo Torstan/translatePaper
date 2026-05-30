@@ -768,6 +768,114 @@ class RenderPlanClassificationTests(unittest.TestCase):
 
         self.assertLess(final_bbox[2], blocks[1]["xMin"])
 
+    def test_formula_visual_clip_is_capped_before_following_translated_prose(self):
+        blocks = [
+            block("p003b0002", 3, "Reasoning", x0=118.262, y0=123.702, x1=180.0, y1=137.0),
+            block("p003b0003", 3, "Aha Moment", x0=118.262, y0=150.0, x1=210.0, y1=164.0),
+            block("p003b0004", 3, "reward = accuracy + format", x0=189.365, y0=187.588, x1=405.906, y1=212.645),
+            block("p003b0005", 3, "(2)", x0=512.783, y0=195.681, x1=525.503, y1=206.557),
+            block("p003b0006", 3, "where accuracy is computed by exact matching.", x0=118.262, y0=214.0, x1=490.0, y1=219.0),
+            block(
+                "p003b0007",
+                3,
+                "The training process then continues with reinforcement learning on reasoning prompts.",
+                x0=70.408,
+                y0=220.722,
+                x1=524.408,
+                y1=246.033,
+            ),
+        ]
+        classes = {
+            "p003b0002": "formula_region",
+            "p003b0003": "formula_region",
+            "p003b0004": "formula_region",
+            "p003b0005": "formula_region",
+            "p003b0006": "formula_region",
+            "p003b0007": "body",
+        }
+        region = {
+            "source_ids": ["p003b0002", "p003b0003", "p003b0004", "p003b0005", "p003b0006"],
+            "bbox": (81.277, 123.038, 526.235, 283.33),
+        }
+
+        final_bbox, _mixed_body_item = pdf.final_visual_region_bbox(
+            blocks,
+            classes,
+            region,
+            page_size=(612.0, 792.0),
+            page_num=3,
+            visual_ids={"p003b0002", "p003b0003", "p003b0004", "p003b0005", "p003b0006"},
+        )
+
+        self.assertLessEqual(final_bbox[3], blocks[-1]["yMin"] - pdf.TEXT_PROTECTED_GAP_PT)
+
+    def test_visual_ownership_keeps_metric_table_cells_with_visual_region(self):
+        blocks = [
+            block("p007b0001", 7, "Table 4: Results for datasets.", x0=107.0, y0=72.0, x1=504.0, y1=114.0),
+            block("p007b0002", 7, "0.1\n0.1", x0=427.0, y0=352.0, x1=439.0, y1=371.0),
+            block("p007b0003", 7, "24.3\n24.7", x0=285.0, y0=378.0, x1=301.0, y1=396.0),
+            block("p007b0004", 7, "Toolformer still lags behind GPT-3 in this benchmark.", x0=108.0, y0=424.0, x1=504.0, y1=466.0),
+        ]
+        classes = {
+            "p007b0001": "figure_region",
+            "p007b0002": "figure_region",
+            "p007b0003": "body",
+            "p007b0004": "body",
+        }
+        visual_regions = [
+            {"source_ids": ["p007b0001", "p007b0002"], "bbox": (106.0, 71.0, 506.0, 396.0)},
+        ]
+
+        regions = pdf.final_visual_ownership_regions(
+            blocks,
+            classes,
+            visual_regions,
+            page_size=(612.0, 792.0),
+            page_num=7,
+        )
+
+        self.assertEqual(len(regions), 1)
+        self.assertIn("p007b0003", regions[0]["source_ids"])
+        self.assertGreaterEqual(regions[0]["bbox"][3], blocks[2]["yMax"])
+        self.assertLessEqual(regions[0]["bbox"][3], blocks[3]["yMin"] - pdf.TEXT_PROTECTED_GAP_PT)
+
+    def test_merged_visual_ownership_clip_is_capped_before_following_translated_prose(self):
+        blocks = [
+            block("p003b0002", 3, "reward = accuracy + format", x0=180.0, y0=180.0, x1=400.0, y1=205.0),
+            block("p003b0003", 3, "where accuracy is computed by exact matching.", x0=120.0, y0=210.0, x1=490.0, y1=218.0),
+            block(
+                "p003b0004",
+                3,
+                "The training process then continues with reinforcement learning on reasoning prompts.",
+                x0=70.0,
+                y0=220.0,
+                x1=525.0,
+                y1=246.0,
+            ),
+            block("p003b0005", 3, "A_i = normalized reward", x0=220.0, y0=255.0, x1=380.0, y1=282.0),
+        ]
+        classes = {
+            "p003b0002": "formula_region",
+            "p003b0003": "figure_region",
+            "p003b0004": "body",
+            "p003b0005": "formula_region",
+        }
+        visual_regions = [
+            {"source_ids": ["p003b0002", "p003b0003"], "bbox": (81.0, 178.0, 526.0, 283.0)},
+            {"source_ids": ["p003b0005"], "bbox": (220.0, 254.0, 381.0, 283.0)},
+        ]
+
+        regions = pdf.final_visual_ownership_regions(
+            blocks,
+            classes,
+            visual_regions,
+            page_size=(612.0, 792.0),
+            page_num=3,
+        )
+
+        self.assertEqual(len(regions), 1)
+        self.assertLessEqual(regions[0]["bbox"][3], blocks[2]["yMin"] - pdf.TEXT_PROTECTED_GAP_PT)
+
     def test_build_batches_uses_bbox_lines_for_formula_final_clip_exclusion(self):
         blocks = [
             block("p001b0001", 1, "x + y = z", x0=100, y0=100, x1=160, y1=140),
@@ -904,6 +1012,28 @@ class RenderPlanClassificationTests(unittest.TestCase):
             "3.3 Queues, stacks, and lists",
             "subheading",
         )
+
+    def test_translation_quality_allows_numbered_titlecase_subheading_original_selectable_text(self):
+        blocks = [
+            block("p002b0007", 2, "2.1. Group Relative Policy Optimization", x0=70.0, y0=686.0, x1=273.0, y1=697.0),
+        ]
+        plan = pdf.PageRenderPlan(page_num=2)
+        plan.items.append(
+            pdf.RenderItem(
+                "original_selectable_text",
+                ["p002b0007"],
+                (70.0, 686.0, 273.0, 697.0),
+                text=blocks[0]["text"],
+                font_size=pdf.DOCUMENT_STYLES["subheading"].font_size,
+                style_name="subheading",
+                fallback_reason="untranslated_fallback_original",
+            )
+        )
+        plan.ledger.append(
+            pdf.CoverageEntry("p002b0007", "heading", "original_selectable_text", True, "untranslated_fallback_original")
+        )
+
+        self.assertEqual(pdf.validate_plan_translation_quality(2, blocks, {"p002b0007": blocks[0]["text"]}, plan), [])
 
     def test_build_batches_excludes_translation_ineligible_classes(self):
         class_by_id = {
@@ -1768,6 +1898,96 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertFalse(pdf.source_requires_chinese_translation("Copyright © 2026 Flux Capacitor, LLC. All rights reserved."))
         self.assertFalse(pdf.source_requires_chinese_translation("https://oreilly.com/about/contact.html"))
         self.assertFalse(pdf.source_requires_chinese_translation("NVIDIA Blackwell “Dual-Die” GPU"))
+
+    def test_translation_quality_allows_author_list_original_selectable_text(self):
+        blocks = [
+            block(
+                "p001b0002",
+                1,
+                "Timo Schick Jane Dwivedi-Yu Roberto Dessì Roberta Raileanu Maria Lomeli Eric Hambro",
+                x0=113.978,
+                y0=179.887,
+                x1=498.524,
+                y1=205.709,
+            )
+        ]
+        plan = pdf.PageRenderPlan(page_num=1)
+        plan.items.append(
+            pdf.RenderItem(
+                "original_selectable_text",
+                ["p001b0002"],
+                (113.978, 179.887, 498.524, 205.709),
+                text=blocks[0]["text"],
+                font_size=pdf.BODY_FONT_SIZE,
+                style_name="body",
+                fallback_reason="untranslated_fallback_original",
+            )
+        )
+        plan.ledger.append(pdf.CoverageEntry("p001b0002", "body", "original_selectable_text", True, "untranslated_fallback_original"))
+
+        self.assertEqual(pdf.validate_plan_translation_quality(1, blocks, {}, plan), [])
+
+    def test_translation_quality_allows_url_original_selectable_text(self):
+        blocks = [
+            block(
+                "p001b0004",
+                1,
+                "https://qwenlm.github.io/blog/qwen3/ https://github.com/QwenLM/Qwen3",
+                x0=90.0,
+                y0=150.0,
+                x1=520.0,
+                y1=170.0,
+            )
+        ]
+        plan = pdf.PageRenderPlan(page_num=1)
+        plan.items.append(
+            pdf.RenderItem(
+                "original_selectable_text",
+                ["p001b0004"],
+                (90.0, 150.0, 520.0, 170.0),
+                text=blocks[0]["text"],
+                font_size=pdf.BODY_FONT_SIZE,
+                style_name="body",
+                fallback_reason="untranslated_fallback_original",
+            )
+        )
+        plan.ledger.append(pdf.CoverageEntry("p001b0004", "body", "original_selectable_text", True, "untranslated_fallback_original"))
+
+        self.assertEqual(pdf.validate_plan_translation_quality(1, blocks, {}, plan), [])
+
+    def test_translation_quality_allows_multiline_url_original_selectable_text(self):
+        block_text = (
+            "https://huggingface.co/Qwen\n"
+            "https://modelscope.cn/organization/qwen\n"
+            "https://github.com/QwenLM/Qwen3"
+        )
+        blocks = [
+            block(
+                "p001b0004",
+                1,
+                block_text,
+                x0=90.0,
+                y0=150.0,
+                x1=520.0,
+                y1=190.0,
+            )
+        ]
+        plan = pdf.PageRenderPlan(page_num=1)
+        plan.items.append(
+            pdf.RenderItem(
+                "original_selectable_text",
+                ["p001b0004"],
+                (90.0, 150.0, 520.0, 190.0),
+                text=block_text,
+                font_size=pdf.BODY_FONT_SIZE,
+                style_name="body",
+                fallback_reason="untranslated_fallback_original",
+            )
+        )
+        plan.ledger.append(pdf.CoverageEntry("p001b0004", "body", "original_selectable_text", True, "untranslated_fallback_original"))
+
+        self.assertEqual(pdf.validate_plan_translation_quality(1, blocks, {}, plan), [])
+        self.assertFalse(pdf.source_requires_chinese_translation(block_text))
 
     def test_yaml_config_block_is_preserved_as_image(self):
         blocks = [

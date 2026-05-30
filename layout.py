@@ -47,6 +47,7 @@ BODY_FLOW_TOP_MAX_GAP_PT = 14.0
 BODY_FLOW_INTERNAL_SLACK_WARN_PT = 24.0
 BODY_FLOW_VISIBLE_GAP_WARN_PT = 32.0
 TEXT_FIT_EPSILON_PT = 0.01
+TEXT_VERTICAL_EXPANSION_GAP_PT = 2.0
 SHRINK_FIT_MIN_FONT_SIZE = 5.0
 EXPANDABLE_TEXT_STYLE_NAMES = {"body", "heading", "subheading", "title"}
 
@@ -396,14 +397,80 @@ def vertical_expansion_limits(item: RenderItem, items: list[RenderItem], page_si
         if other is item or not layout_horizontal_conflict(item.bbox, other.bbox):
             continue
         if other.bbox[3] <= item.bbox[1]:
-            top_limit = max(top_limit, other.bbox[3] + 2.0)
+            top_limit = max(top_limit, other.bbox[3] + TEXT_VERTICAL_EXPANSION_GAP_PT)
         elif other.bbox[1] >= item.bbox[3]:
-            bottom_limit = min(bottom_limit, other.bbox[1] - 2.0)
+            bottom_limit = min(bottom_limit, other.bbox[1] - TEXT_VERTICAL_EXPANSION_GAP_PT)
         elif bbox_center(other.bbox)[1] < item_center_y:
-            top_limit = max(top_limit, other.bbox[3] + 2.0)
+            top_limit = max(top_limit, other.bbox[3] + TEXT_VERTICAL_EXPANSION_GAP_PT)
         else:
-            bottom_limit = min(bottom_limit, other.bbox[1] - 2.0)
+            bottom_limit = min(bottom_limit, other.bbox[1] - TEXT_VERTICAL_EXPANSION_GAP_PT)
     return top_limit, bottom_limit
+
+
+def _visual_component_source_boxes(plan: PageRenderPlan) -> dict[str, tuple[float, float, float, float]]:
+    boxes = {}
+    for component in getattr(plan, "components", []) or []:
+        if getattr(component, "component_kind", "") != "visual":
+            continue
+        component_id = getattr(component, "component_id", "")
+        source_bbox = getattr(component, "source_bbox", None)
+        if component_id and source_bbox is not None:
+            boxes[component_id] = tuple(float(value) for value in source_bbox)
+    return boxes
+
+
+def _replace_protected_box(plan: PageRenderPlan, old_box, new_box) -> None:
+    old_key = tuple(round(float(value), 6) for value in old_box)
+    for idx, box in enumerate(plan.protected_boxes):
+        if tuple(round(float(value), 6) for value in box) == old_key:
+            plan.protected_boxes[idx] = new_box
+
+
+def release_visual_clip_overcapture_for_text_fit(plan: PageRenderPlan, page_size, fitz=None) -> None:
+    """Trim visual padding only where it blocks a translated text box from fitting."""
+    source_by_component = _visual_component_source_boxes(plan)
+    if not source_by_component:
+        return
+    if fitz is None:
+        fitz = _load_fitz()
+    visual_items = [
+        item
+        for item in plan.items
+        if item.kind == "original_image_clip" and item.component_id in source_by_component
+    ]
+    if not visual_items:
+        return
+    for text_item in sorted(plan.items, key=lambda candidate: (candidate.bbox[1], candidate.bbox[0])):
+        if not item_is_expandable_body_text(text_item):
+            continue
+        fit, required, _available = text_item_fit_metrics(text_item, fitz)
+        if fit is not None:
+            continue
+        desired_bottom = text_item.bbox[1] + required + TEXT_FIT_EPSILON_PT
+        desired_top = text_item.bbox[3] - required - TEXT_FIT_EPSILON_PT
+        for visual in visual_items:
+            if not layout_horizontal_conflict(text_item.bbox, visual.bbox):
+                continue
+            source_bbox = source_by_component[visual.component_id]
+            x0, y0, x1, y1 = visual.bbox
+            next_y0, next_y1 = y0, y1
+            if (
+                y0 >= text_item.bbox[3] - TEXT_FIT_EPSILON_PT
+                and y0 < desired_bottom + TEXT_VERTICAL_EXPANSION_GAP_PT
+                and source_bbox[1] > y0 + TEXT_FIT_EPSILON_PT
+            ):
+                next_y0 = min(source_bbox[1], y1)
+            if (
+                y1 <= text_item.bbox[1] + TEXT_FIT_EPSILON_PT
+                and y1 > desired_top - TEXT_VERTICAL_EXPANSION_GAP_PT
+                and source_bbox[3] < y1 - TEXT_FIT_EPSILON_PT
+            ):
+                next_y1 = max(source_bbox[3], y0)
+            if next_y0 == y0 and next_y1 == y1:
+                continue
+            old_box = visual.bbox
+            visual.bbox = clamp_bbox((x0, next_y0, x1, next_y1), page_size)
+            _replace_protected_box(plan, old_box, visual.bbox)
 
 
 def expand_text_boxes_to_fit(plan: PageRenderPlan, page_size, fitz=None) -> None:
@@ -415,7 +482,7 @@ def expand_text_boxes_to_fit(plan: PageRenderPlan, page_size, fitz=None) -> None
         fit, required, available = text_item_fit_metrics(item, fitz)
         if fit is not None:
             continue
-        target_height = required + 0.5
+        target_height = required + TEXT_FIT_EPSILON_PT
         needed = target_height - available
         if needed <= 0:
             continue
