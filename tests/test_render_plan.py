@@ -856,6 +856,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
             visual_regions,
             page_size=(612.0, 792.0),
             page_num=7,
+            translations={},
         )
 
         self.assertEqual(len(regions), 1)
@@ -926,6 +927,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
             visual_regions,
             page_size=(612.0, 792.0),
             page_num=3,
+            translations={},
         )
 
         self.assertEqual(len(regions), 1)
@@ -1007,6 +1009,82 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertFalse({"p003b0005", "p003b0007"} & image_ids)
         self.assertEqual(pdf.validate_plan_translation_quality(3, blocks, translations, plan), [])
 
+    def test_toolformer_prompt_clip_image_preserves_untranslated_structural_body_rows(self):
+        blocks = [
+            block("p003b0003", 3, "some examples of API calls:", x0=114.7, y0=100.3, x1=199.4, y1=107.4),
+            block(
+                "p003b0005",
+                3,
+                'Output: Joe Biden was born in [QA("Where was Joe Biden born?")] Scranton, [QA("In which state is Scranton?")]',
+                x0=114.7,
+                y0=127.7,
+                x1=459.0,
+                y1=134.8,
+            ),
+            block(
+                "p003b0007",
+                3,
+                "Output: Joe Biden was born in Scranton, Pennsylvania, which is located in Lackawanna County.",
+                x0=114.7,
+                y0=149.0,
+                x1=459.0,
+                y1=156.0,
+            ),
+            block(
+                "p003b0008",
+                3,
+                'Output: Coca-Cola, or [QA("What other name is Coca-Cola known by?")] Coke, is a soft drink.',
+                x0=114.7,
+                y0=166.0,
+                x1=488.5,
+                y1=173.0,
+            ),
+            block("p003b0010", 3, "Input: x", x0=114.7, y0=192.1, x1=139.3, y1=200.4),
+            block(
+                "p003b0012",
+                3,
+                "Figure 3: An exemplary prompt P(x) used to generate API calls.",
+                x0=112.7,
+                y0=224.4,
+                x1=499.2,
+                y1=233.5,
+            ),
+            block(
+                "p003b0013",
+                3,
+                "The model is trained on the generated examples in the following section.",
+                x0=107.6,
+                y0=260.0,
+                x1=504.1,
+                y1=285.0,
+            ),
+        ]
+        visual_regions = [
+            {
+                "source_ids": ["p003b0003", "p003b0008", "p003b0010", "p003b0012"],
+                "bbox": (112.7, 100.3, 499.2, 233.5),
+                "has_caption_seed": True,
+            }
+        ]
+        translations = {
+            "p003b0005": "输出：乔·拜登出生在斯克兰顿，宾夕法尼亚州。",
+            "p003b0013": "模型在生成的示例上训练。",
+        }
+
+        with patch.object(pdf, "build_visual_regions", return_value=visual_regions):
+            plan = pdf.build_page_render_plan(3, blocks, translations, page_size=(612.0, 792.0), bbox_lines=None)
+
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+        translated_ids = {source_id for item in plan.items if item.kind == "translated_text" for source_id in item.source_ids}
+        ledger_by_id = {entry.block_id: entry for entry in plan.ledger}
+
+        self.assertIn("p003b0005", translated_ids)
+        self.assertIn("p003b0007", image_ids)
+        self.assertNotIn("p003b0005", image_ids)
+        self.assertNotIn("p003b0007", translated_ids)
+        self.assertEqual(ledger_by_id["p003b0007"].render_kind, "original_image_clip")
+        self.assertEqual(ledger_by_id["p003b0007"].fallback_reason, "visual_region")
+
     def test_toolformer_table_clip_keeps_untranslated_body_cells_before_lower_owned_rows(self):
         blocks = [
             block("p004b0001", 4, "Table 1: Examples of inputs and outputs for all APIs used.", x0=189.3, y0=72.8, x1=422.3, y1=81.7),
@@ -1056,6 +1134,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
             visual_regions,
             page_size=(612.0, 792.0),
             page_num=4,
+            translations={},
         )
 
         self.assertEqual(len(regions), 1)
@@ -1154,6 +1233,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
             visual_regions,
             page_size=(612.0, 792.0),
             page_num=3,
+            translations={},
         )
 
         self.assertEqual(len(regions), 1)

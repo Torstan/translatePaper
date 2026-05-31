@@ -77,6 +77,155 @@ class ParallelBatchPlanningTests(unittest.TestCase):
 
         self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0003"]])
 
+
+    def test_build_page_batches_keeps_toolformer_body_rows_inside_visual_bbox_before_translation(self):
+        blocks = [
+            {
+                "id": "p003b0003",
+                "text": "some examples of API calls:",
+                "xMin": 114.7,
+                "yMin": 100.3,
+                "xMax": 199.4,
+                "yMax": 107.4,
+            },
+            {
+                "id": "p003b0005",
+                "text": 'Output: Joe Biden was born in [QA("Where was Joe Biden born?")] Scranton, [QA("In which state is Scranton?")]',
+                "xMin": 114.7,
+                "yMin": 127.7,
+                "xMax": 459.0,
+                "yMax": 134.8,
+            },
+            {
+                "id": "p003b0007",
+                "text": "Output: Joe Biden was born in Scranton, Pennsylvania, which is located in Lackawanna County.",
+                "xMin": 114.7,
+                "yMin": 149.0,
+                "xMax": 459.0,
+                "yMax": 156.0,
+            },
+            {
+                "id": "p003b0008",
+                "text": 'Output: Coca-Cola, or [QA("What other name is Coca-Cola known by?")] Coke, is a soft drink.',
+                "xMin": 114.7,
+                "yMin": 166.0,
+                "xMax": 488.5,
+                "yMax": 173.0,
+            },
+            {
+                "id": "p003b0010",
+                "text": "Input: x",
+                "xMin": 114.7,
+                "yMin": 192.1,
+                "xMax": 139.3,
+                "yMax": 200.4,
+            },
+            {
+                "id": "p003b0012",
+                "text": "Figure 3: An exemplary prompt P(x) used to generate API calls.",
+                "xMin": 112.7,
+                "yMin": 224.4,
+                "xMax": 499.2,
+                "yMax": 233.5,
+            },
+            {
+                "id": "p003b0013",
+                "text": "The model is trained on the generated examples in the following section.",
+                "xMin": 107.6,
+                "yMin": 260.0,
+                "xMax": 504.1,
+                "yMax": 285.0,
+            },
+        ]
+        visual_regions = [
+            {
+                "source_ids": ["p003b0003", "p003b0008", "p003b0010", "p003b0012"],
+                "bbox": (112.7, 100.3, 499.2, 233.5),
+                "has_caption_seed": True,
+            }
+        ]
+        classes = {
+            "p003b0003": "figure_region",
+            "p003b0005": "body",
+            "p003b0007": "body",
+            "p003b0008": "figure_region",
+            "p003b0010": "figure_region",
+            "p003b0012": "figure_region",
+            "p003b0013": "body",
+        }
+
+        with (
+            patch.object(parallel.pipeline, "build_visual_regions", return_value=visual_regions),
+            patch.object(parallel.pipeline, "classify_blocks", return_value=classes),
+        ):
+            ownership_result = parallel.pipeline.build_translation_page_components(3, blocks, page_size=(612.0, 792.0))
+            batches = parallel.build_page_batches([(3, blocks)], max_chars=7000, page_size=(612.0, 792.0))
+
+        batch_ids = {item["id"] for batch in batches for item in batch.items}
+        self.assertTrue({"p003b0005", "p003b0007", "p003b0013"} <= batch_ids)
+        self.assertTrue({"p003b0005", "p003b0007", "p003b0013"} <= set(ownership_result.translatable_ids))
+
+    def test_build_page_batches_keeps_toolformer_table_body_cells_inside_visual_bbox_before_translation(self):
+        blocks = [
+            {"id": "p004b0001", "text": "Table 1: Examples of inputs and outputs for all APIs used.", "xMin": 189.3, "yMin": 72.8, "xMax": 422.3, "yMax": 81.7},
+            {"id": "p004b0002", "text": "API Name", "xMin": 113.9, "yMin": 94.3, "xMax": 154.0, "yMax": 102.4},
+            {"id": "p004b0005", "text": "Question Answering", "xMin": 113.9, "yMin": 109.6, "xMax": 187.9, "yMax": 117.6},
+            {
+                "id": "p004b0008",
+                "text": "Where was the Knights\nof Columbus founded?\nFishing Reel Types",
+                "xMin": 200.0,
+                "yMin": 109.6,
+                "xMax": 285.1,
+                "yMax": 137.5,
+            },
+            {"id": "p004b0009", "text": "Calculator\nCalendar\nMachine Translation", "xMin": 113.9, "yMin": 169.4, "xMax": 188.1, "yMax": 197.3},
+            {"id": "p004b0010", "text": "27 + 4 * 2\nepsilon\nsurete nucleaire", "xMin": 200.0, "yMin": 169.4, "xMax": 256.5, "yMax": 197.3},
+            {
+                "id": "p004b0011",
+                "text": "The calendar API converts date expressions into absolute dates for downstream tools.",
+                "xMin": 289.0,
+                "yMin": 169.4,
+                "xMax": 420.0,
+                "yMax": 197.3,
+            },
+            {
+                "id": "p004b0012",
+                "text": "Model Finetuning After sampling and filtering calls for all APIs, we merge the data.",
+                "xMin": 107.6,
+                "yMin": 221.6,
+                "xMax": 504.1,
+                "yMax": 328.8,
+            },
+        ]
+        visual_regions = [
+            {
+                "source_ids": ["p004b0001", "p004b0002", "p004b0005", "p004b0009", "p004b0010"],
+                "bbox": (113.9, 72.8, 422.3, 197.3),
+                "has_caption_seed": True,
+            }
+        ]
+        classes = {
+            "p004b0001": "figure_region",
+            "p004b0002": "figure_region",
+            "p004b0005": "figure_region",
+            "p004b0008": "body",
+            "p004b0009": "figure_region",
+            "p004b0010": "figure_region",
+            "p004b0011": "body",
+            "p004b0012": "body",
+        }
+
+        with (
+            patch.object(parallel.pipeline, "build_visual_regions", return_value=visual_regions),
+            patch.object(parallel.pipeline, "classify_blocks", return_value=classes),
+        ):
+            ownership_result = parallel.pipeline.build_translation_page_components(4, blocks, page_size=(612.0, 792.0))
+            batches = parallel.build_page_batches([(4, blocks)], max_chars=7000, page_size=(612.0, 792.0))
+
+        batch_ids = {item["id"] for batch in batches for item in batch.items}
+        self.assertTrue({"p004b0008", "p004b0011", "p004b0012"} <= batch_ids)
+        self.assertTrue({"p004b0008", "p004b0011", "p004b0012"} <= set(ownership_result.translatable_ids))
+
     def test_build_page_batches_consumes_pipeline_page_component_ownership(self):
         blocks = [
             {

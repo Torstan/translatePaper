@@ -922,6 +922,7 @@ def final_visual_ownership_regions(
     bbox_lines=None,
     translations=None,
 ) -> list[dict]:
+    translations_known = translations is not None
     translations = translations or {}
     block_by_id = {block["id"]: block for block in page}
 
@@ -954,7 +955,10 @@ def final_visual_ownership_regions(
                 source_ids,
             )
             cap_guard_visual_ids.update(structural_ids)
-            source_ids.update(source_id for source_id in structural_ids if not has_renderable_translation(source_id))
+            # Batch planning has no translations yet, so keep prose rows translatable
+            # while still using them to cap visual clip growth.
+            if translations_known:
+                source_ids.update(source_id for source_id in structural_ids if not has_renderable_translation(source_id))
         preliminary_regions.append((region, source_bbox, source_ids))
         expanded_visual_ids.update(source_ids)
 
@@ -1195,7 +1199,7 @@ def build_translation_page_components(
         page_num=page_num,
         source_image_path=source_image,
         bbox_lines=bbox_lines,
-        translations=translations or {},
+        translations=translations,
     )
     duplicate_ids = {
         block_id
