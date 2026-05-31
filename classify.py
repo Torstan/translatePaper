@@ -37,6 +37,29 @@ ENGLISH_FUNCTION_WORDS = {
     "with",
 }
 VISUAL_CAPTION_NUMBER_PATTERN = r"\d+[0-9il]*(?:[-‐‑‒–—.]\d+[0-9il]*)?"
+STRUCTURAL_ALL_CAPS_HEADINGS = {
+    "ABSTRACT",
+    "ACKNOWLEDGEMENTS",
+    "ACKNOWLEDGMENTS",
+    "APPENDIX",
+    "BACKGROUND",
+    "BIBLIOGRAPHY",
+    "CONCLUSION",
+    "CONCLUSIONS",
+    "DISCUSSION",
+    "EVALUATION",
+    "EXPERIMENTS",
+    "IMPLEMENTATION",
+    "IMPLEMENTATIONS",
+    "INTRODUCTION",
+    "LIMITATIONS",
+    "METHODOLOGY",
+    "METHODS",
+    "PRELIMINARIES",
+    "REFERENCES",
+    "RELATED WORK",
+    "RESULTS",
+}
 
 
 def normalize_text(text: str) -> str:
@@ -854,8 +877,12 @@ def is_heading_text(text: str) -> bool:
         return True
     if re.match(r"^\d+(?:\.\d+)*\.?\s+[A-Z][A-Za-z0-9 /&-]+$", first):
         return True
-    if re.fullmatch(r"[A-Z][A-Z0-9 /&-]{3,80}", first) and len(first.split()) <= 8:
-        return True
+    if re.fullmatch(r"[A-Z][A-Z0-9 /&-]{3,80}", first):
+        tokens = first.split()
+        # Single-token all-caps identifiers are common dataset/model labels; only
+        # widen unnumbered headings when the text has structural heading shape.
+        if 2 <= len(tokens) <= 8 or first in STRUCTURAL_ALL_CAPS_HEADINGS:
+            return True
     return False
 
 

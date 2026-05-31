@@ -115,6 +115,30 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertEqual(classes["p001b0004"], "reference")
         self.assertEqual(classes["p001b0005"], "reference")
 
+    def test_adjacent_all_caps_dataset_labels_remain_body_sized(self):
+        blocks = [
+            block("p006b0009", 6, "SVAMP", x0=422.198, y0=152.986184, x1=452.863088, y1=161.046978),
+            block("p006b0010", 6, "MAWPS", x0=464.824266, y0=152.986184, x1=498.026845, y1=161.046978),
+            block("p006b0011", 6, "2.3 IMPLEMENTATIONS", x0=72.0, y0=190.0, x1=180.0, y1=202.0),
+            block("p006b0012", 6, "ABSTRACT", x0=72.0, y0=220.0, x1=120.0, y1=232.0),
+        ]
+
+        classes = classify.classify_blocks(blocks, [])
+
+        self.assertEqual(classes["p006b0009"], "body")
+        self.assertEqual(classes["p006b0010"], "body")
+        self.assertEqual(classes["p006b0011"], "heading")
+        self.assertEqual(classes["p006b0012"], "heading")
+
+        plan = pdf.build_page_render_plan(6, blocks, {}, page_size=(612.0, 792.0), bbox_lines=None)
+        items = {item.source_ids[0]: item for item in plan.items if item.source_ids}
+
+        self.assertNotEqual(items["p006b0009"].style_name, "heading")
+        self.assertNotEqual(items["p006b0010"].style_name, "heading")
+        self.assertLess(items["p006b0009"].bbox[2] - items["p006b0009"].bbox[0], 140.0)
+        self.assertLess(items["p006b0010"].bbox[2] - items["p006b0010"].bbox[0], 140.0)
+        self.assertLessEqual(items["p006b0009"].bbox[2], items["p006b0010"].bbox[0])
+
     def test_classifies_multiline_first_page_title_below_top_rule(self):
         blocks = [
             block(
