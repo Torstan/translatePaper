@@ -504,6 +504,56 @@ def _dark_bbox_exceeds_clip_edge(dark_bbox, clip_bbox, tolerance: float) -> bool
     )
 
 
+def _dark_excess_boxes(dark_bbox, clip_bbox) -> list[tuple[float, float, float, float]]:
+    excess_boxes = []
+    if dark_bbox[0] < clip_bbox[0]:
+        excess_boxes.append((dark_bbox[0], dark_bbox[1], min(clip_bbox[0], dark_bbox[2]), dark_bbox[3]))
+    if dark_bbox[1] < clip_bbox[1]:
+        excess_boxes.append((dark_bbox[0], dark_bbox[1], dark_bbox[2], min(clip_bbox[1], dark_bbox[3])))
+    if dark_bbox[2] > clip_bbox[2]:
+        excess_boxes.append((max(clip_bbox[2], dark_bbox[0]), dark_bbox[1], dark_bbox[2], dark_bbox[3]))
+    if dark_bbox[3] > clip_bbox[3]:
+        excess_boxes.append((dark_bbox[0], max(clip_bbox[3], dark_bbox[1]), dark_bbox[2], dark_bbox[3]))
+    return [box for box in excess_boxes if _bbox_area(box) > 0]
+
+
+def _image_clip_items_are_siblings(left, right) -> bool:
+    left_component_id = str(_item_value(left, "component_id", "") or "")
+    right_component_id = str(_item_value(right, "component_id", "") or "")
+    if left_component_id and left_component_id == right_component_id:
+        return True
+
+    left_source_ids = set(_source_ids_for_item(left))
+    right_source_ids = set(_source_ids_for_item(right))
+    if not left_source_ids or not right_source_ids:
+        return False
+    if left_source_ids == right_source_ids:
+        return True
+    overlap = len(left_source_ids & right_source_ids)
+    return overlap > 0 and overlap / min(len(left_source_ids), len(right_source_ids)) >= 0.5
+
+
+def _sibling_image_clips_explain_dark_excess(dark_bbox, clip_bbox, current_item, item_index: int, items) -> bool:
+    excess_boxes = _dark_excess_boxes(dark_bbox, clip_bbox)
+    if not excess_boxes:
+        return False
+
+    sibling_boxes = [
+        _bbox_tuple(_item_value(item, "bbox"))
+        for index, item in enumerate(items)
+        if index != item_index
+        and _item_value(item, "kind") == "original_image_clip"
+        and _image_clip_items_are_siblings(current_item, item)
+    ]
+    if not sibling_boxes:
+        return False
+    # Check real sibling boxes, not their union, so dark content in split gaps still fails.
+    return all(
+        any(_bbox_contains(excess_box, sibling_box, tolerance=0.0) for sibling_box in sibling_boxes)
+        for excess_box in excess_boxes
+    )
+
+
 def detect_image_clip_boundary_issues(
     plan,
     source_image_path: str | Path,
@@ -516,6 +566,7 @@ def detect_image_clip_boundary_issues(
 ) -> list[VisualQaIssue]:
     page_num = _plan_page_num(plan)
     issues = []
+    items = _plan_render_items(plan)
     ledger_by_id = _ledger_by_block_id(plan)
     blocks_by_id = {str(block["id"]): block for block in (source_blocks or [])}
     ownership_aware = _has_component_ownership_metadata(plan)
@@ -535,8 +586,8 @@ def detect_image_clip_boundary_issues(
         if str(_ledger_value(entry, "component_kind", "") or "") == "visual"
         and str(_ledger_value(entry, "render_kind", "") or "") == "original_image_clip"
     }
-    clip_union_by_source_id = _clip_union_for_source_ids(_plan_render_items(plan))
-    for item in _plan_render_items(plan):
+    clip_union_by_source_id = _clip_union_for_source_ids(items)
+    for item_index, item in enumerate(items):
         if _item_value(item, "kind") != "original_image_clip":
             continue
         clip_bbox = _bbox_tuple(_item_value(item, "bbox"))
@@ -549,7 +600,13 @@ def detect_image_clip_boundary_issues(
         )
         source_ids = _source_ids_for_item(item)
         if dark_bbox is not None and _dark_bbox_exceeds_clip_edge(dark_bbox, clip_bbox, edge_tolerance):
-            if not _translated_block_explains_dark_excess(
+            if not _sibling_image_clips_explain_dark_excess(
+                dark_bbox,
+                clip_bbox,
+                item,
+                item_index,
+                items,
+            ) and not _translated_block_explains_dark_excess(
                 dark_bbox,
                 clip_bbox,
                 blocks_by_id,

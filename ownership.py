@@ -37,6 +37,7 @@ HEADER_FOOTER_CLASSES = {"header_footer", "journal_footer"}
 TEXT_RENDER_KINDS = {"translated_text", "original_selectable_text"}
 IMAGE_RENDER_KINDS = {"original_image_clip"}
 REASON_MIXED_VISUAL_BODY_SPLIT = "mixed_visual_body_split"
+VISUAL_CONTAINMENT_TOLERANCE = 1.5
 
 
 @dataclass(frozen=True)
@@ -297,7 +298,7 @@ def validate_ownership(*args, **kwargs) -> OwnershipValidationResult:
             if component.component_kind in NON_DUPLICATE_COMPONENT_KINDS:
                 non_duplicate_owners[source_id].append(component)
         if component.component_kind == COMPONENT_KIND_VISUAL and component.clip_bbox is not None:
-            if not _bbox_contained(component.source_bbox, component.clip_bbox):
+            if not _bbox_contained(component.source_bbox, component.clip_bbox, tolerance=VISUAL_CONTAINMENT_TOLERANCE):
                 issues.append(
                     OwnershipIssue(
                         issue_code="visual_clip_undercaptures_source",
@@ -315,7 +316,7 @@ def validate_ownership(*args, **kwargs) -> OwnershipValidationResult:
                     if block is None:
                         continue
                     owned_block_bbox = block_bbox(block)
-                    if _bbox_contained(owned_block_bbox, component.clip_bbox):
+                    if _bbox_contained(owned_block_bbox, component.clip_bbox, tolerance=VISUAL_CONTAINMENT_TOLERANCE):
                         continue
                     issues.append(
                         OwnershipIssue(

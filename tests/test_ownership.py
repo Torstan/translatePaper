@@ -317,6 +317,47 @@ class OwnershipValidationTests(unittest.TestCase):
         self.assertEqual(result.issues[0].issue_code, "visual_clip_undercaptures_source")
         self.assertEqual(result.issues[0].component_ids, ["p021c0001"])
 
+    def test_visual_clip_allows_tiny_source_bbox_whitespace_overhang(self):
+        result = ownership.validate_ownership(
+            21,
+            [block("p021b0001", "Figure content.", 100, 100, 200, 201.1)],
+            [
+                ownership.PageComponent(
+                    "p021c0001",
+                    ownership.COMPONENT_KIND_VISUAL,
+                    ["p021b0001"],
+                    (100, 100, 200, 201.1),
+                    (100, 100, 200, 200),
+                    ownership.CONFIDENCE_CONSERVATIVE,
+                    ["figure_region"],
+                    "original_image_clip",
+                )
+            ],
+        )
+
+        self.assertTrue(result.ok, [issue.issue_code for issue in result.issues])
+
+    def test_visual_clip_reports_meaningful_source_bbox_overhang(self):
+        result = ownership.validate_ownership(
+            21,
+            [block("p021b0001", "Figure content.", 100, 100, 200, 202.1)],
+            [
+                ownership.PageComponent(
+                    "p021c0001",
+                    ownership.COMPONENT_KIND_VISUAL,
+                    ["p021b0001"],
+                    (100, 100, 200, 202.1),
+                    (100, 100, 200, 200),
+                    ownership.CONFIDENCE_CONSERVATIVE,
+                    ["figure_region"],
+                    "original_image_clip",
+                )
+            ],
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.issues[0].issue_code, "visual_clip_undercaptures_source")
+
     def test_visual_clip_must_cover_owned_block_boxes(self):
         result = ownership.validate_ownership(
             22,
@@ -338,6 +379,47 @@ class OwnershipValidationTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.issues[0].issue_code, "visual_clip_undercaptures_owned_block")
         self.assertEqual(result.issues[0].source_ids, ["p022b0001"])
+
+    def test_visual_clip_allows_tiny_owned_block_whitespace_overhang(self):
+        result = ownership.validate_ownership(
+            22,
+            [block("p022b0001", "Figure content.", 100, 100, 200, 201.1)],
+            [
+                ownership.PageComponent(
+                    "p022c0001",
+                    ownership.COMPONENT_KIND_VISUAL,
+                    ["p022b0001"],
+                    (100, 100, 200, 200),
+                    (100, 100, 200, 200),
+                    ownership.CONFIDENCE_CONSERVATIVE,
+                    ["figure_region"],
+                    "original_image_clip",
+                )
+            ],
+        )
+
+        self.assertTrue(result.ok, [issue.issue_code for issue in result.issues])
+
+    def test_visual_clip_reports_meaningful_owned_block_overhang(self):
+        result = ownership.validate_ownership(
+            22,
+            [block("p022b0001", "Figure content.", 100, 100, 200, 202.1)],
+            [
+                ownership.PageComponent(
+                    "p022c0001",
+                    ownership.COMPONENT_KIND_VISUAL,
+                    ["p022b0001"],
+                    (100, 100, 200, 200),
+                    (100, 100, 200, 200),
+                    ownership.CONFIDENCE_CONSERVATIVE,
+                    ["figure_region"],
+                    "original_image_clip",
+                )
+            ],
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.issues[0].issue_code, "visual_clip_undercaptures_owned_block")
 
 
 class OwnershipBuilderTests(unittest.TestCase):

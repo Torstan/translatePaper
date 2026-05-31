@@ -285,6 +285,70 @@ class VisualQaImageTests(unittest.TestCase):
         self.assertEqual(issues[0].render_kind, "original_image_clip")
         self.assertEqual(issues[0].artifact_paths["source_png"], str(source_png))
 
+    def test_image_clip_boundary_checks_allow_dark_excess_covered_by_sibling_clip(self):
+        plan = {
+            "page_num": 12,
+            "render_items": [
+                {
+                    "kind": "original_image_clip",
+                    "component_id": "p012c0001",
+                    "source_ids": ["p012b0003"],
+                    "bbox": [20, 20, 50, 50],
+                },
+                {
+                    "kind": "original_image_clip",
+                    "component_id": "p012c0001",
+                    "source_ids": ["p012b0003"],
+                    "bbox": [18, 20, 50, 50],
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_png = Path(tmp_dir) / "page-012.png"
+            image = Image.new("RGB", (100, 100), "white")
+            ImageDraw.Draw(image).rectangle((19, 30, 20, 40), fill="black")
+            image.save(source_png)
+
+            issues = qa_visual.detect_image_clip_boundary_issues(
+                plan,
+                source_png,
+                page_size=(100, 100),
+            )
+
+        self.assertNotIn("clipped_content", {issue.category for issue in issues})
+
+    def test_image_clip_boundary_checks_report_dark_excess_in_sibling_gap(self):
+        plan = {
+            "page_num": 12,
+            "render_items": [
+                {
+                    "kind": "original_image_clip",
+                    "component_id": "p012c0001",
+                    "source_ids": ["p012b0003"],
+                    "bbox": [20, 20, 50, 50],
+                },
+                {
+                    "kind": "original_image_clip",
+                    "component_id": "p012c0001",
+                    "source_ids": ["p012b0003"],
+                    "bbox": [54, 20, 80, 50],
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_png = Path(tmp_dir) / "page-012.png"
+            image = Image.new("RGB", (100, 100), "white")
+            ImageDraw.Draw(image).rectangle((51, 30, 52, 40), fill="black")
+            image.save(source_png)
+
+            issues = qa_visual.detect_image_clip_boundary_issues(
+                plan,
+                source_png,
+                page_size=(100, 100),
+            )
+
+        self.assertIn("clipped_content", {issue.category for issue in issues})
+
     def test_image_clip_boundary_checks_allow_content_away_from_clip_edges(self):
         plan = {
             "page_num": 12,
