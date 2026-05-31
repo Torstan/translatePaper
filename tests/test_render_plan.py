@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 import classify
+import qa_visual
 import translate_pdf_via_codex as pdf
 
 
@@ -864,6 +865,157 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertGreaterEqual(regions[0]["bbox"][3], blocks[2]["yMax"])
         self.assertLessEqual(regions[0]["bbox"][3], blocks[3]["yMin"] - pdf.TEXT_PROTECTED_GAP_PT)
 
+    def test_merged_table_visual_ownership_adopts_covered_metric_columns(self):
+        blocks = [
+            block("p006b0001", 6, "Table 3: Results on LAMA and math benchmarks.", x0=107.0, y0=72.0, x1=505.0, y1=125.0),
+            block("p006b0002", 6, "LAMA", x0=278.0, y0=138.0, x1=305.0, y1=146.0),
+            block("p006b0003", 6, "Model", x0=113.0, y0=153.0, x1=138.0, y1=161.0),
+            block("p006b0004", 6, "Math Benchmarks", x0=406.0, y0=138.0, x1=477.0, y1=146.0),
+            block("p006b0011", 6, "GPT-J\nGPT-J + CC\nToolformer (disabled)\nToolformer", x0=114.0, y0=168.0, x1=193.0, y1=206.0),
+            block("p006b0012", 6, "17.8\n19.2\n22.1\n33.8", x0=238.0, y0=168.0, x1=254.0, y1=206.0),
+            block("p006b0013", 6, "4.9\n5.6\n6.3\n11.5", x0=286.0, y0=168.0, x1=302.0, y1=206.0),
+            block("p006b0018", 6, "OPT (66B)\nGPT-3 (175B)", x0=114.0, y0=213.0, x1=165.0, y1=231.0),
+            block("p006b0019", 6, "21.6\n26.8", x0=238.0, y0=213.0, x1=254.0, y1=231.0),
+            block(
+                "p006b0025",
+                6,
+                "We use greedy decoding, but with one modification for Toolformer.",
+                x0=107.0,
+                y0=259.0,
+                x1=505.0,
+                y1=312.0,
+            ),
+        ]
+        classes = {
+            "p006b0001": "figure_region",
+            "p006b0002": "figure_region",
+            "p006b0003": "figure_region",
+            "p006b0004": "figure_region",
+            "p006b0011": "figure_region",
+            "p006b0012": "body",
+            "p006b0013": "body",
+            "p006b0018": "figure_region",
+            "p006b0019": "body",
+            "p006b0025": "body",
+        }
+        visual_regions = [
+            {
+                "source_ids": ["p006b0001", "p006b0002", "p006b0004"],
+                "bbox": (107.0, 72.0, 505.0, 146.0),
+            },
+            {
+                "source_ids": ["p006b0011", "p006b0018", "p006b0003"],
+                "bbox": (113.0, 153.0, 193.0, 231.0),
+                "has_row_cell_seed": True,
+            },
+        ]
+
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=visual_regions),
+            patch.object(pdf, "classify_blocks", return_value=classes),
+            tempfile.TemporaryDirectory() as tmp_dir,
+        ):
+            source_png = Path(tmp_dir) / "page-006.png"
+            Image.new("RGB", (612, 792), "white").save(source_png)
+            ownership_result = pdf.build_translation_page_components(
+                6,
+                blocks,
+                page_size=(612.0, 792.0),
+                source_image_path=source_png,
+                translations={},
+            )
+            plan = pdf.build_page_render_plan(
+                6,
+                blocks,
+                {},
+                page_size=(612.0, 792.0),
+                source_image_path=source_png,
+            )
+            issues = qa_visual.detect_image_clip_boundary_issues(
+                pdf.render_plan_to_json(plan),
+                source_png,
+                page_size=(612.0, 792.0),
+                source_blocks=blocks,
+            )
+
+        visual_source_ids = {
+            source_id
+            for component in ownership_result.components
+            if component.component_kind == pdf.ownership.COMPONENT_KIND_VISUAL
+            for source_id in component.source_ids
+        }
+        ledger_by_id = {entry.block_id: entry for entry in plan.ledger}
+
+        self.assertTrue({"p006b0012", "p006b0013", "p006b0019"} <= visual_source_ids)
+        for source_id in ["p006b0012", "p006b0013", "p006b0019"]:
+            self.assertEqual(ledger_by_id[source_id].component_kind, pdf.ownership.COMPONENT_KIND_VISUAL)
+            self.assertEqual(ledger_by_id[source_id].render_kind, "original_image_clip")
+        self.assertNotIn("p006b0025", visual_source_ids)
+        self.assertNotIn("region_overcapture", {issue.category for issue in issues})
+
+    def test_visual_ownership_completes_bottom_metric_row_when_one_cell_is_visual(self):
+        blocks = [
+            block("p007b0032", 7, "Toolformer", x0=173.0, y0=352.0, x1=229.0, y1=371.0),
+            block("p007b0041", 7, "0.2\n1.7", x0=372.0, y0=352.0, x1=383.0, y1=371.0),
+            block("p007b0043", 7, "0.1\n0.1", x0=427.0, y0=352.0, x1=439.0, y1=371.0),
+            block("p007b0044", 7, "GPT-J (All En)\nGPT-3 (All En)", x0=173.0, y0=378.0, x1=229.0, y1=396.0),
+            block("p007b0045", 7, "24.3\n24.7", x0=285.0, y0=378.0, x1=300.0, y1=396.0),
+            block("p007b0046", 7, "27.0\n27.2", x0=312.0, y0=378.0, x1=328.0, y1=396.0),
+            block("p007b0047", 7, "23.9\n26.1", x0=340.0, y0=378.0, x1=356.0, y1=396.0),
+            block("p007b0048", 7, "23.3\n24.9", x0=368.0, y0=378.0, x1=383.0, y1=396.0),
+            block("p007b0049", 7, "23.1\n23.6", x0=395.0, y0=378.0, x1=411.0, y1=396.0),
+            block("p007b0050", 7, "23.6\n24.0", x0=423.0, y0=378.0, x1=439.0, y1=396.0),
+            block(
+                "p007b0051",
+                7,
+                "Toolformer still lags behind the much larger GPT-3 model.",
+                x0=107.0,
+                y0=424.0,
+                x1=504.0,
+                y1=466.0,
+            ),
+        ]
+        classes = {
+            "p007b0032": "figure_region",
+            "p007b0041": "figure_region",
+            "p007b0043": "figure_region",
+            "p007b0044": "body",
+            "p007b0045": "body",
+            "p007b0046": "figure_region",
+            "p007b0047": "body",
+            "p007b0048": "body",
+            "p007b0049": "body",
+            "p007b0050": "body",
+            "p007b0051": "body",
+        }
+        visual_regions = [
+            {
+                "source_ids": ["p007b0032", "p007b0041", "p007b0043", "p007b0046"],
+                "bbox": (173.0, 352.0, 439.0, 371.0),
+                "has_row_cell_seed": True,
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_png = Path(tmp_dir) / "page-007.png"
+            image = Image.new("RGB", (612, 792), "white")
+            ImageDraw.Draw(image).rectangle((104, 131, 507, 397), fill="black")
+            image.save(source_png)
+            regions = pdf.final_visual_ownership_regions(
+                blocks,
+                classes,
+                visual_regions,
+                page_size=(612.0, 792.0),
+                page_num=7,
+                source_image_path=source_png,
+                translations={},
+            )
+
+        source_ids = set().union(*(set(region["source_ids"]) for region in regions))
+
+        self.assertTrue({"p007b0044", "p007b0045", "p007b0047", "p007b0048", "p007b0049", "p007b0050"} <= source_ids)
+        self.assertNotIn("p007b0051", source_ids)
+
     def test_toolformer_prompt_clip_keeps_untranslated_body_rows_inside_visual_source_bbox(self):
         blocks = [
             block("p003b0003", 3, "some examples of API calls:", x0=114.7, y0=100.3, x1=199.4, y1=107.4),
@@ -1008,6 +1160,100 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertTrue({"p003b0005", "p003b0007"} <= translated_ids)
         self.assertFalse({"p003b0005", "p003b0007"} & image_ids)
         self.assertEqual(pdf.validate_plan_translation_quality(3, blocks, translations, plan), [])
+
+    def test_build_batches_includes_structurally_covered_body_rows_for_translation(self):
+        blocks = [
+            block("p003b0003", 3, "some examples of API calls:", x0=114.7, y0=100.3, x1=199.4, y1=107.4),
+            block(
+                "p003b0005",
+                3,
+                'Output: Joe Biden was born in [QA("Where was Joe Biden born?")] Scranton, [QA("In which state is Scranton?")]',
+                x0=114.7,
+                y0=127.7,
+                x1=459.0,
+                y1=134.8,
+            ),
+            block(
+                "p003b0007",
+                3,
+                "Output: Joe Biden was born in Scranton, Pennsylvania, which is located in Lackawanna County.",
+                x0=114.7,
+                y0=149.0,
+                x1=459.0,
+                y1=156.0,
+            ),
+            block(
+                "p003b0008",
+                3,
+                'Output: Coca-Cola, or [QA("What other name is Coca-Cola known by?")] Coke, is a soft drink.',
+                x0=114.7,
+                y0=166.0,
+                x1=488.5,
+                y1=173.0,
+            ),
+            block("p003b0010", 3, "Input: x", x0=114.7, y0=192.1, x1=139.3, y1=200.4),
+            block(
+                "p003b0012",
+                3,
+                "Figure 3: An exemplary prompt P(x) used to generate API calls.",
+                x0=112.7,
+                y0=224.4,
+                x1=499.2,
+                y1=233.5,
+            ),
+        ]
+        visual_regions = [
+            {
+                "source_ids": ["p003b0003", "p003b0008", "p003b0010", "p003b0012"],
+                "bbox": (112.7, 100.3, 499.2, 233.5),
+                "has_caption_seed": True,
+            }
+        ]
+        classes = {
+            "p003b0003": "figure_region",
+            "p003b0005": "body",
+            "p003b0007": "body",
+            "p003b0008": "figure_region",
+            "p003b0010": "figure_region",
+            "p003b0012": "figure_region",
+        }
+
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=visual_regions),
+            patch.object(pdf, "classify_blocks", return_value=classes),
+        ):
+            ownership_result = pdf.build_translation_page_components(3, blocks, page_size=(612.0, 792.0))
+            batches = pdf.build_batches([blocks], max_chars=7000, page_size=(612.0, 792.0), page_numbers=[3])
+
+        self.assertEqual(ownership_result.translatable_ids, ["p003b0005", "p003b0007"])
+        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p003b0005", "p003b0007"]])
+
+    def test_image_fallback_ledger_does_not_inherit_translated_component_kind(self):
+        plan = pdf.PageRenderPlan(page_num=6)
+        plan.ledger.append(
+            pdf.CoverageEntry(
+                "p006b0012",
+                "body",
+                "original_image_clip",
+                True,
+                "covered_by_visual_region",
+            )
+        )
+        component = pdf.ownership.PageComponent(
+            "p006c0002",
+            pdf.ownership.COMPONENT_KIND_TRANSLATED_TEXT,
+            ["p006b0012"],
+            (100.0, 120.0, 200.0, 140.0),
+            None,
+            pdf.ownership.CONFIDENCE_INFERRED,
+            ["body"],
+            "translated_text",
+        )
+
+        pdf.annotate_plan_with_component_metadata(plan, {"p006b0012": [component]})
+
+        self.assertEqual(plan.ledger[0].component_id, "")
+        self.assertEqual(plan.ledger[0].component_kind, "")
 
     def test_dense_visual_body_rows_use_explicit_compact_vector_text_fallback(self):
         blocks = [

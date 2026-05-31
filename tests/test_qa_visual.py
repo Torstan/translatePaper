@@ -349,6 +349,128 @@ class VisualQaImageTests(unittest.TestCase):
 
         self.assertIn("clipped_content", {issue.category for issue in issues})
 
+    def test_image_clip_boundary_checks_allow_split_edge_covered_by_sibling_and_translated_blocks(self):
+        plan = {
+            "page_num": 12,
+            "render_items": [
+                {
+                    "kind": "original_image_clip",
+                    "component_id": "p012c0001",
+                    "source_ids": ["p012b0001"],
+                    "bbox": [20, 20, 50, 50],
+                },
+                {
+                    "kind": "original_image_clip",
+                    "component_id": "p012c0001",
+                    "source_ids": ["p012b0002"],
+                    "bbox": [20, 50, 30, 70],
+                },
+                {
+                    "kind": "original_image_clip",
+                    "component_id": "p012c0001",
+                    "source_ids": ["p012b0003"],
+                    "bbox": [40, 50, 50, 70],
+                },
+            ],
+            "coverage_ledger": [
+                {
+                    "block_id": "p012b0004",
+                    "classification": "body",
+                    "render_kind": "translated_text",
+                    "rendered": True,
+                }
+            ],
+        }
+        source_blocks = [
+            {
+                "id": "p012b0004",
+                "text": "This translated body cell fills the split gap.",
+                "xMin": 30,
+                "yMin": 50,
+                "xMax": 40,
+                "yMax": 70,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_png = Path(tmp_dir) / "page-012.png"
+            image = Image.new("RGB", (100, 100), "white")
+            ImageDraw.Draw(image).rectangle((20, 50, 49, 52), fill="black")
+            image.save(source_png)
+
+            issues = qa_visual.detect_image_clip_boundary_issues(
+                plan,
+                source_png,
+                page_size=(100, 100),
+                source_blocks=source_blocks,
+                search_margin=4.0,
+            )
+
+        self.assertNotIn("clipped_content", {issue.category for issue in issues})
+
+    def test_image_clip_boundary_checks_allow_tiny_edge_bleed_explained_by_sibling_clip(self):
+        plan = {
+            "page_num": 12,
+            "render_items": [
+                {
+                    "kind": "original_image_clip",
+                    "component_id": "p012c0001",
+                    "source_ids": ["p012b0003"],
+                    "bbox": [20, 20, 50, 50],
+                },
+                {
+                    "kind": "original_image_clip",
+                    "component_id": "p012c0001",
+                    "source_ids": ["p012b0004"],
+                    "bbox": [52, 20, 80, 50],
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_png = Path(tmp_dir) / "page-012.png"
+            image = Image.new("RGB", (100, 100), "white")
+            ImageDraw.Draw(image).rectangle((51, 30, 51, 40), fill="black")
+            image.save(source_png)
+
+            issues = qa_visual.detect_image_clip_boundary_issues(
+                plan,
+                source_png,
+                page_size=(100, 100),
+            )
+
+        self.assertNotIn("clipped_content", {issue.category for issue in issues})
+
+    def test_image_clip_boundary_checks_report_large_unexplained_edge_bleed(self):
+        plan = {
+            "page_num": 12,
+            "render_items": [
+                {
+                    "kind": "original_image_clip",
+                    "component_id": "p012c0001",
+                    "source_ids": ["p012b0003"],
+                    "bbox": [20, 20, 50, 50],
+                },
+                {
+                    "kind": "original_image_clip",
+                    "component_id": "p012c0001",
+                    "source_ids": ["p012b0004"],
+                    "bbox": [56, 20, 80, 50],
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_png = Path(tmp_dir) / "page-012.png"
+            image = Image.new("RGB", (100, 100), "white")
+            ImageDraw.Draw(image).rectangle((51, 30, 56, 40), fill="black")
+            image.save(source_png)
+
+            issues = qa_visual.detect_image_clip_boundary_issues(
+                plan,
+                source_png,
+                page_size=(100, 100),
+            )
+
+        self.assertIn("clipped_content", {issue.category for issue in issues})
+
     def test_image_clip_boundary_checks_allow_content_away_from_clip_edges(self):
         plan = {
             "page_num": 12,
@@ -1402,6 +1524,38 @@ class VisualQaRulePairTests(unittest.TestCase):
 
         self.assertCategoryAbsent(issues, "clipped_content")
 
+    def test_clipped_content_rule_allows_minor_component_edge_bleed(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_png = Path(tmp_dir) / "page-024.png"
+            image = Image.new("RGB", (100, 100), "white")
+            ImageDraw.Draw(image).rectangle((51, 30, 51, 40), fill="black")
+            image.save(source_png)
+            plan = {
+                "page_num": 24,
+                "render_items": [
+                    {
+                        "kind": "original_image_clip",
+                        "component_id": "p024c0001",
+                        "source_ids": ["p024b0001"],
+                        "bbox": [20, 20, 50, 50],
+                    },
+                    {
+                        "kind": "original_image_clip",
+                        "component_id": "p024c0001",
+                        "source_ids": ["p024b0002"],
+                        "bbox": [52, 20, 80, 50],
+                    },
+                ],
+            }
+
+            issues = qa_visual.detect_image_clip_boundary_issues(
+                plan,
+                source_png,
+                page_size=(100, 100),
+            )
+
+        self.assertCategoryAbsent(issues, "clipped_content")
+
     def test_clipped_content_rule_fails_bad_plan_and_passes_corrected_plan(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             source_png = Path(tmp_dir) / "page-024.png"
@@ -1505,7 +1659,7 @@ class VisualQaRulePairTests(unittest.TestCase):
             bad_blocks = [
                 {
                     "id": "p025b0002",
-                    "text": "Body text",
+                    "text": "This body prose should be translated into Chinese.",
                     "xMin": 30,
                     "yMin": 30,
                     "xMax": 70,
@@ -1515,7 +1669,7 @@ class VisualQaRulePairTests(unittest.TestCase):
             corrected_blocks = [
                 {
                     "id": "p025b0002",
-                    "text": "Body text",
+                    "text": "This body prose should be translated into Chinese.",
                     "xMin": 60,
                     "yMin": 60,
                     "xMax": 80,
@@ -1538,6 +1692,65 @@ class VisualQaRulePairTests(unittest.TestCase):
 
         self.assertCategoryReported(bad_issues, "region_overcapture")
         self.assertCategoryAbsent(corrected_issues, "region_overcapture")
+
+    def test_region_overcapture_rule_ignores_nonprose_table_cells_but_reports_prose(self):
+        plan = {
+            "page_num": 25,
+            "render_items": [
+                {
+                    "kind": "original_image_clip",
+                    "source_ids": ["p025b0001"],
+                    "bbox": [20, 20, 90, 90],
+                }
+            ],
+            "coverage_ledger": [
+                {
+                    "block_id": "p025b0002",
+                    "classification": "body",
+                    "component_kind": "translated_text",
+                    "render_kind": "original_image_clip",
+                    "rendered": True,
+                },
+                {
+                    "block_id": "p025b0003",
+                    "classification": "body",
+                    "component_kind": "translated_text",
+                    "render_kind": "translated_text",
+                    "rendered": True,
+                },
+            ],
+        }
+        blocks = [
+            {
+                "id": "p025b0002",
+                "text": "17.8\n19.2\n22.1\n33.8",
+                "xMin": 30,
+                "yMin": 30,
+                "xMax": 45,
+                "yMax": 60,
+            },
+            {
+                "id": "p025b0003",
+                "text": "This prose row should still be translated into Chinese.",
+                "xMin": 50,
+                "yMin": 30,
+                "xMax": 85,
+                "yMax": 60,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            source_png = Path(tmp_dir) / "page-025.png"
+            Image.new("RGB", (100, 100), "white").save(source_png)
+
+            issues = qa_visual.detect_image_clip_boundary_issues(
+                plan,
+                source_png,
+                page_size=(100, 100),
+                source_blocks=blocks,
+            )
+
+        region_issues = [issue for issue in issues if issue.category == "region_overcapture"]
+        self.assertEqual([issue.source_ids for issue in region_issues], [["p025b0003"]])
 
     def test_region_overcapture_rule_uses_component_ownership_before_body_classification(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -2115,7 +2328,7 @@ class VisualQaReportTests(unittest.TestCase):
         blocks = [
             {
                 "id": "p014b0004",
-                "text": "Body text",
+                "text": "This body prose should be translated into Chinese.",
                 "xMin": 30,
                 "yMin": 30,
                 "xMax": 45,

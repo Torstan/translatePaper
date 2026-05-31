@@ -258,6 +258,10 @@ def _bbox_overlap_height(left, right) -> float:
     return max(0.0, min(left[3], right[3]) - max(left[1], right[1]))
 
 
+def _bbox_overlap_width(left, right) -> float:
+    return max(0.0, min(left[2], right[2]) - max(left[0], right[0]))
+
+
 def _significant_protected_overlap(text_bbox, protected_bbox) -> bool:
     if _bbox_overlap_height(text_bbox, protected_bbox) <= 6.0:
         return False
@@ -517,6 +521,133 @@ def _dark_excess_boxes(dark_bbox, clip_bbox) -> list[tuple[float, float, float, 
     return [box for box in excess_boxes if _bbox_area(box) > 0]
 
 
+COMPONENT_CLIP_MINOR_EDGE_BLEED_PT = 2.5
+
+
+def _excess_box_max_outside_clip(excess_box, clip_bbox) -> float:
+    return max(
+        max(0.0, clip_bbox[0] - excess_box[0]),
+        max(0.0, excess_box[2] - clip_bbox[2]),
+        max(0.0, clip_bbox[1] - excess_box[1]),
+        max(0.0, excess_box[3] - clip_bbox[3]),
+    )
+
+
+def _excess_box_falls_between_sibling_gap(excess_box, clip_bbox, item, item_index: int, items) -> bool:
+    siblings = [
+        _bbox_tuple(_item_value(candidate, "bbox"))
+        for index, candidate in enumerate(items)
+        if index != item_index
+        and _item_value(candidate, "kind") == "original_image_clip"
+        and _image_clip_items_are_siblings(item, candidate)
+    ]
+    for sibling in siblings:
+        if sibling[0] >= clip_bbox[2] and excess_box[2] > clip_bbox[2] and excess_box[0] < sibling[0]:
+            gap = sibling[0] - clip_bbox[2]
+            if gap > COMPONENT_CLIP_MINOR_EDGE_BLEED_PT and _bbox_overlap_height(excess_box, sibling) > 0:
+                return True
+        if sibling[2] <= clip_bbox[0] and excess_box[0] < clip_bbox[0] and excess_box[2] > sibling[2]:
+            gap = clip_bbox[0] - sibling[2]
+            if gap > COMPONENT_CLIP_MINOR_EDGE_BLEED_PT and _bbox_overlap_height(excess_box, sibling) > 0:
+                return True
+        if sibling[1] >= clip_bbox[3] and excess_box[3] > clip_bbox[3] and excess_box[1] < sibling[1]:
+            gap = sibling[1] - clip_bbox[3]
+            if gap > COMPONENT_CLIP_MINOR_EDGE_BLEED_PT and _bbox_overlap_width(excess_box, sibling) > 0:
+                return True
+        if sibling[3] <= clip_bbox[1] and excess_box[1] < clip_bbox[1] and excess_box[3] > sibling[3]:
+            gap = clip_bbox[1] - sibling[3]
+            if gap > COMPONENT_CLIP_MINOR_EDGE_BLEED_PT and _bbox_overlap_width(excess_box, sibling) > 0:
+                return True
+    return False
+
+
+def _split_regions_explain_dark_excess(
+    dark_bbox,
+    clip_bbox,
+    item,
+    item_index: int,
+    items,
+    blocks_by_id,
+    ledger_by_id,
+    source_ids,
+) -> bool:
+    if not str(_item_value(item, "component_id", "") or ""):
+        return False
+    excess_boxes = _dark_excess_boxes(dark_bbox, clip_bbox)
+    if not excess_boxes:
+        return False
+    explanation_boxes = [
+        _bbox_tuple(_item_value(candidate, "bbox"))
+        for index, candidate in enumerate(items)
+        if index != item_index
+        and _item_value(candidate, "kind") == "original_image_clip"
+        and _image_clip_items_are_siblings(item, candidate)
+    ]
+    for block_id, block in blocks_by_id.items():
+        if block_id in source_ids:
+            continue
+        entry = ledger_by_id.get(block_id)
+        if _ledger_value(entry, "classification") not in NORMAL_TRANSLATED_CLASSES:
+            continue
+        if not source_requires_chinese_translation(str(block.get("text", ""))):
+            continue
+        explanation_boxes.append(_block_bbox(block))
+    if not explanation_boxes:
+        return False
+    for box in excess_boxes:
+        area = _bbox_area(box)
+        if area <= 0:
+            continue
+        covered_area = sum(_bbox_overlap_area(box, explanation) for explanation in explanation_boxes)
+        if covered_area >= area * 0.85:
+            continue
+        if (
+            _excess_box_max_outside_clip(box, clip_bbox) <= COMPONENT_CLIP_MINOR_EDGE_BLEED_PT
+            and not _excess_box_falls_between_sibling_gap(box, clip_bbox, item, item_index, items)
+        ):
+            continue
+        return False
+    return True
+
+
+def _excess_box_is_adjacent_to_sibling(excess_box, clip_bbox, item, item_index: int, items) -> bool:
+    siblings = [
+        _bbox_tuple(_item_value(candidate, "bbox"))
+        for index, candidate in enumerate(items)
+        if index != item_index
+        and _item_value(candidate, "kind") == "original_image_clip"
+        and _image_clip_items_are_siblings(item, candidate)
+    ]
+    for sibling in siblings:
+        vertical_touch = _bbox_overlap_height(excess_box, sibling) > 0
+        horizontal_touch = _bbox_overlap_width(excess_box, sibling) > 0
+        if sibling[0] >= clip_bbox[2] and excess_box[2] > clip_bbox[2] and excess_box[2] >= sibling[0] - COMPONENT_CLIP_MINOR_EDGE_BLEED_PT:
+            return vertical_touch
+        if sibling[2] <= clip_bbox[0] and excess_box[0] < clip_bbox[0] and excess_box[0] <= sibling[2] + COMPONENT_CLIP_MINOR_EDGE_BLEED_PT:
+            return vertical_touch
+        if sibling[1] >= clip_bbox[3] and excess_box[3] > clip_bbox[3] and excess_box[3] >= sibling[1] - COMPONENT_CLIP_MINOR_EDGE_BLEED_PT:
+            return horizontal_touch
+        if sibling[3] <= clip_bbox[1] and excess_box[1] < clip_bbox[1] and excess_box[1] <= sibling[3] + COMPONENT_CLIP_MINOR_EDGE_BLEED_PT:
+            return horizontal_touch
+    return False
+
+
+def _minor_component_edge_bleed_explains_dark_excess(dark_bbox, clip_bbox, item, item_index: int, items) -> bool:
+    if not str(_item_value(item, "component_id", "") or ""):
+        return False
+    excess_boxes = _dark_excess_boxes(dark_bbox, clip_bbox)
+    if not excess_boxes:
+        return False
+    for box in excess_boxes:
+        if _excess_box_falls_between_sibling_gap(box, clip_bbox, item, item_index, items):
+            return False
+        if _excess_box_max_outside_clip(box, clip_bbox) > COMPONENT_CLIP_MINOR_EDGE_BLEED_PT:
+            return False
+        if not _excess_box_is_adjacent_to_sibling(box, clip_bbox, item, item_index, items):
+            return False
+    return True
+
+
 def _image_clip_items_are_siblings(left, right) -> bool:
     left_component_id = str(_item_value(left, "component_id", "") or "")
     right_component_id = str(_item_value(right, "component_id", "") or "")
@@ -570,10 +701,18 @@ def detect_image_clip_boundary_issues(
     ledger_by_id = _ledger_by_block_id(plan)
     blocks_by_id = {str(block["id"]): block for block in (source_blocks or [])}
     ownership_aware = _has_component_ownership_metadata(plan)
+
+    def body_source_requires_translation(block_id: str) -> bool:
+        block = blocks_by_id.get(block_id)
+        if block is None:
+            return True
+        return source_requires_chinese_translation(str(block.get("text", "")))
+
     body_block_ids = {
         block_id
         for block_id, entry in ledger_by_id.items()
         if _ledger_value(entry, "classification") == "body"
+        and body_source_requires_translation(block_id)
         and (
             str(_ledger_value(entry, "component_kind", "") or "") == "translated_text"
             if ownership_aware
@@ -606,6 +745,21 @@ def detect_image_clip_boundary_issues(
                 item,
                 item_index,
                 items,
+            ) and not _minor_component_edge_bleed_explains_dark_excess(
+                dark_bbox,
+                clip_bbox,
+                item,
+                item_index,
+                items,
+            ) and not _split_regions_explain_dark_excess(
+                dark_bbox,
+                clip_bbox,
+                item,
+                item_index,
+                items,
+                blocks_by_id,
+                ledger_by_id,
+                set(source_ids),
             ) and not _translated_block_explains_dark_excess(
                 dark_bbox,
                 clip_bbox,

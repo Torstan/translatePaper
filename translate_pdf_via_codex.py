@@ -911,6 +911,48 @@ class TranslationPageOwnership:
     force_reference_page: bool
 
 
+def row_aligned_nonprose_table_cell_ids(page, classes, seed_ids: set[str]) -> set[str]:
+    def is_numeric_metric_column_text(text: str) -> bool:
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        if len(lines) < 2:
+            return False
+        numeric = re.compile(r"[-+]?(?:\d+(?:,\d{3})*|\d*\.\d+)(?:%|[KMBkmb])?")
+        return all(numeric.fullmatch(line) for line in lines)
+
+    def is_row_aligned_nonprose_cell(seed_box, candidate_box, text: str) -> bool:
+        if is_adjacent_visual_table_row_cell(seed_box, candidate_box, text):
+            return True
+        if not (is_numeric_metric_cell(text) or is_numeric_metric_column_text(text)):
+            return False
+        min_height = max(1.0, min(seed_box[3] - seed_box[1], candidate_box[3] - candidate_box[1]))
+        if vertical_overlap(seed_box, candidate_box) < min_height * 0.45:
+            return False
+        horizontal_gap = max(0.0, max(seed_box[0], candidate_box[0]) - min(seed_box[2], candidate_box[2]))
+        return horizontal_gap <= 130.0 and candidate_box[2] - candidate_box[0] <= 360.0
+
+    block_by_id = {block["id"]: block for block in page}
+    seed_boxes = [
+        block_bbox(block_by_id[source_id])
+        for source_id in seed_ids
+        if source_id in block_by_id
+    ]
+    if not seed_boxes:
+        return set()
+    aligned_ids = set()
+    skipped_classes = {"page_number", "header_footer", "journal_footer", "reference"}
+    for block in page:
+        block_id = block["id"]
+        if block_id in seed_ids or classes.get(block_id) in skipped_classes:
+            continue
+        text = normalize_text(block.get("text", ""))
+        if not text or source_requires_chinese_translation(text):
+            continue
+        candidate_box = block_bbox(block)
+        if any(is_row_aligned_nonprose_cell(seed_box, candidate_box, text) for seed_box in seed_boxes):
+            aligned_ids.add(block_id)
+    return aligned_ids
+
+
 def final_visual_ownership_regions(
     page,
     classes,
@@ -939,6 +981,8 @@ def final_visual_ownership_regions(
     for region in visual_regions:
         source_bbox = region.get("bbox")
         source_ids = {source_id for source_id in region["source_ids"] if not has_renderable_translation(source_id)}
+        if region.get("has_row_cell_seed"):
+            source_ids.update(row_aligned_nonprose_table_cell_ids(page, classes, set(region["source_ids"])))
         if source_bbox is not None:
             source_ids.update(
                 nontranslated_blocks_covered_by_visual_region(
@@ -1140,6 +1184,7 @@ def annotate_plan_with_component_metadata(
             matches = [component for component in candidates if component.component_kind == kind]
             if len(matches) == 1:
                 return matches[0]
+            return None
         if len(candidates) == 1:
             return candidates[0]
         return None
