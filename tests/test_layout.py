@@ -258,6 +258,72 @@ class LayoutExtractionModuleTests(unittest.TestCase):
         self.assertLess(body.bbox[3], visual.bbox[1])
         self.assertEqual(plan.protected_boxes, [visual.bbox])
 
+    def test_normalize_vector_text_layout_backfills_prose_before_visual_clip(self):
+        fitz = pdf.load_fitz()
+        plan = pdf.PageRenderPlan(page_num=3)
+        visual_bbox = (106.08, 100.375998, 505.92, 125.765999)
+        plan.components.append(
+            ownership.PageComponent(
+                "p003c0001",
+                ownership.COMPONENT_KIND_VISUAL,
+                ["p003b0003", "p003b0004"],
+                (112.718, 100.375998, 499.283, 125.765999),
+                visual_bbox,
+                ownership.CONFIDENCE_CONSERVATIVE,
+                ["visual_region"],
+                "original_image_clip",
+            )
+        )
+        plan.items.append(
+            pdf.RenderItem(
+                "translated_text",
+                ["p003b0001"],
+                (114.748011, 77.539998, 494.253315, 87.485998),
+                text="你的任务是在一段文本中添加对问答 API 的调用。这些问题应帮助你获取所需的信息。",
+                font_size=layout.BODY_FONT_SIZE,
+                style_name="body",
+            )
+        )
+        plan.items.append(
+            pdf.RenderItem(
+                "translated_text",
+                ["p003b0002"],
+                (114.748011, 89.485998, 494.3392, 96.525998),
+                text="以完成该文本。你可以通过写入“[QA(question)]”来调用该 API，其中“question”是你想提出的问题。以下是。",
+                font_size=layout.BODY_FONT_SIZE,
+                style_name="body",
+            )
+        )
+        plan.items.append(
+            pdf.RenderItem(
+                "original_image_clip",
+                ["p003b0003", "p003b0004"],
+                visual_bbox,
+                fallback_reason="visual_region",
+                component_id="p003c0001",
+                component_kind=ownership.COMPONENT_KIND_VISUAL,
+            )
+        )
+        plan.protected_boxes.append(visual_bbox)
+
+        before = {
+            tuple(item.source_ids): item.bbox
+            for item in plan.items
+            if item.kind == "translated_text"
+        }
+        self.assertIn("p003b0002", "\n".join(layout.validate_plan_text_fit(plan, fitz=fitz)))
+
+        pdf.normalize_vector_text_layout(plan, page_size=(612.0, 792.0), fitz=fitz)
+
+        visual = next(item for item in plan.items if item.kind == "original_image_clip")
+        body = next(item for item in plan.items if item.source_ids == ["p003b0002"])
+        self.assertEqual(layout.validate_plan_text_fit(plan, fitz=fitz), [])
+        self.assertEqual(visual.bbox, visual_bbox)
+        self.assertEqual(plan.protected_boxes, [visual_bbox])
+        self.assertEqual(body.kind, "translated_text")
+        self.assertLess(body.bbox[1], before[("p003b0002",)][1])
+        self.assertLessEqual(body.bbox[3], visual.bbox[1] - layout.TEXT_PROTECTED_GAP_PT)
+
 
 if __name__ == "__main__":
     unittest.main()

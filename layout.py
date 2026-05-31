@@ -599,7 +599,7 @@ def split_body_layout_lane(plan: PageRenderPlan, lane: list[int]) -> list[list[i
     return groups
 
 
-def body_group_limits(plan: PageRenderPlan, group: list[int], page_size) -> tuple[float, float, bool] | None:
+def body_group_limits(plan: PageRenderPlan, group: list[int], page_size) -> tuple[float, float, bool, bool] | None:
     _width, page_height = page_size
     group_set = set(group)
     group_items = [plan.items[idx] for idx in group]
@@ -607,6 +607,7 @@ def body_group_limits(plan: PageRenderPlan, group: list[int], page_size) -> tupl
     top_limit = 0.0
     bottom_limit = page_height
     has_top_anchor = False
+    has_bottom_anchor = False
     for idx, other in enumerate(plan.items):
         if idx in group_set or bbox_area(other.bbox) <= 0:
             continue
@@ -618,6 +619,7 @@ def body_group_limits(plan: PageRenderPlan, group: list[int], page_size) -> tupl
             continue
         if other.bbox[1] >= group_box[3]:
             bottom_limit = min(bottom_limit, other.bbox[1] - TEXT_PROTECTED_GAP_PT)
+            has_bottom_anchor = True
             continue
         if other.bbox[3] <= group_box[3] and other.bbox[1] <= group_box[1]:
             top_limit = max(top_limit, other.bbox[3] + TEXT_PROTECTED_GAP_PT)
@@ -625,11 +627,12 @@ def body_group_limits(plan: PageRenderPlan, group: list[int], page_size) -> tupl
             continue
         if other.bbox[1] >= group_box[1] and other.bbox[3] >= group_box[3]:
             bottom_limit = min(bottom_limit, other.bbox[1] - TEXT_PROTECTED_GAP_PT)
+            has_bottom_anchor = True
             continue
         return None
     if bottom_limit <= top_limit:
         return None
-    return top_limit, bottom_limit, has_top_anchor
+    return top_limit, bottom_limit, has_top_anchor, has_bottom_anchor
 
 
 def body_group_max_gap(items: list[RenderItem]) -> float:
@@ -659,6 +662,32 @@ def body_group_heights_and_gap(items: list[RenderItem], available_span: float, f
     return minimum, max(0.0, minimum_gap_capacity)
 
 
+def backfill_body_group_before_bottom_anchor(
+    items: list[RenderItem],
+    top_limit: float,
+    bottom_limit: float,
+    original_start: float,
+    fitz,
+) -> tuple[float, list[float], float] | None:
+    """Move an unanchored text run upward just enough to fit before a protected region."""
+    minimum = [minimum_text_height_for_item(item, fitz) for item in items]
+    required_text_height = sum(minimum)
+    full_span = bottom_limit - top_limit
+    if required_text_height > full_span + TEXT_FIT_EPSILON_PT:
+        return None
+    if len(items) <= 1:
+        gap = 0.0
+    else:
+        gap_capacity = (full_span - required_text_height) / (len(items) - 1)
+        gap = min(BODY_FLOW_MIN_GAP_PT, max(0.0, gap_capacity))
+    required_span = required_text_height + gap * max(0, len(items) - 1)
+    if required_span > full_span + TEXT_FIT_EPSILON_PT:
+        return None
+    start_y = min(original_start, bottom_limit - required_span)
+    start_y = max(top_limit, start_y)
+    return start_y, minimum, gap
+
+
 def rebalance_body_text_flows(plan: PageRenderPlan, page_size, fitz=None) -> None:
     if fitz is None:
         fitz = _load_fitz()
@@ -668,7 +697,7 @@ def rebalance_body_text_flows(plan: PageRenderPlan, page_size, fitz=None) -> Non
             limits = body_group_limits(plan, group, page_size)
             if limits is None:
                 continue
-            top_limit, bottom_limit, has_top_anchor = limits
+            top_limit, bottom_limit, has_top_anchor, has_bottom_anchor = limits
             original_start = min(item.bbox[1] for item in items)
             if has_top_anchor:
                 start_y = max(top_limit, min(original_start, top_limit + BODY_FLOW_TOP_MAX_GAP_PT))
@@ -681,6 +710,21 @@ def rebalance_body_text_flows(plan: PageRenderPlan, page_size, fitz=None) -> Non
                 start_y = top_limit
                 available_span = bottom_limit - start_y
                 heights, gap = body_group_heights_and_gap(items, available_span, fitz)
+            if (
+                sum(heights) + gap * max(0, len(items) - 1) > available_span + TEXT_FIT_EPSILON_PT
+                and not has_top_anchor
+                and has_bottom_anchor
+            ):
+                backfilled = backfill_body_group_before_bottom_anchor(
+                    items,
+                    top_limit,
+                    bottom_limit,
+                    original_start,
+                    fitz,
+                )
+                if backfilled is not None:
+                    start_y, heights, gap = backfilled
+                    available_span = bottom_limit - start_y
             if sum(heights) + gap * max(0, len(items) - 1) > available_span + TEXT_FIT_EPSILON_PT:
                 continue
 
