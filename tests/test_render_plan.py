@@ -863,6 +863,132 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertGreaterEqual(regions[0]["bbox"][3], blocks[2]["yMax"])
         self.assertLessEqual(regions[0]["bbox"][3], blocks[3]["yMin"] - pdf.TEXT_PROTECTED_GAP_PT)
 
+    def test_toolformer_prompt_clip_keeps_body_rows_inside_visual_source_bbox(self):
+        blocks = [
+            block("p003b0003", 3, "some examples of API calls:", x0=114.7, y0=100.3, x1=199.4, y1=107.4),
+            block(
+                "p003b0005",
+                3,
+                'Output: Joe Biden was born in [QA("Where was Joe Biden born?")] Scranton, [QA("In which state is Scranton?")]',
+                x0=114.7,
+                y0=127.7,
+                x1=459.0,
+                y1=134.8,
+            ),
+            block(
+                "p003b0008",
+                3,
+                'Output: Coca-Cola, or [QA("What other name is Coca-Cola known by?")] Coke, is a soft drink.',
+                x0=114.7,
+                y0=166.0,
+                x1=488.5,
+                y1=173.0,
+            ),
+            block("p003b0010", 3, "Input: x", x0=114.7, y0=192.1, x1=139.3, y1=200.4),
+            block(
+                "p003b0012",
+                3,
+                "Figure 3: An exemplary prompt P(x) used to generate API calls.",
+                x0=112.7,
+                y0=224.4,
+                x1=499.2,
+                y1=233.5,
+            ),
+            block(
+                "p003b0013",
+                3,
+                "The model is trained on the generated examples in the following section.",
+                x0=107.6,
+                y0=260.0,
+                x1=504.1,
+                y1=285.0,
+            ),
+        ]
+        classes = {
+            "p003b0003": "figure_region",
+            "p003b0005": "body",
+            "p003b0008": "figure_region",
+            "p003b0010": "figure_region",
+            "p003b0012": "figure_region",
+            "p003b0013": "body",
+        }
+        visual_regions = [
+            {
+                "source_ids": ["p003b0003", "p003b0008", "p003b0010", "p003b0012"],
+                "bbox": (112.7, 100.3, 499.2, 233.5),
+                "has_caption_seed": True,
+            }
+        ]
+
+        regions = pdf.final_visual_ownership_regions(
+            blocks,
+            classes,
+            visual_regions,
+            page_size=(612.0, 792.0),
+            page_num=3,
+        )
+
+        self.assertEqual(len(regions), 1)
+        self.assertIn("p003b0005", regions[0]["source_ids"])
+        self.assertGreaterEqual(regions[0]["bbox"][3], blocks[4]["yMax"])
+        self.assertLessEqual(regions[0]["bbox"][3], blocks[5]["yMin"] - pdf.TEXT_PROTECTED_GAP_PT)
+
+    def test_toolformer_table_clip_keeps_body_cells_before_lower_owned_rows(self):
+        blocks = [
+            block("p004b0001", 4, "Table 1: Examples of inputs and outputs for all APIs used.", x0=189.3, y0=72.8, x1=422.3, y1=81.7),
+            block("p004b0002", 4, "API Name", x0=113.9, y0=94.3, x1=154.0, y1=102.4),
+            block("p004b0005", 4, "Question Answering", x0=113.9, y0=109.6, x1=187.9, y1=117.6),
+            block(
+                "p004b0008",
+                4,
+                "Where was the Knights\nof Columbus founded?\nFishing Reel Types",
+                x0=200.0,
+                y0=109.6,
+                x1=285.1,
+                y1=137.5,
+            ),
+            block("p004b0009", 4, "Calculator\nCalendar\nMachine Translation", x0=113.9, y0=169.4, x1=188.1, y1=197.3),
+            block("p004b0010", 4, "27 + 4 * 2\nepsilon\nsurete nucleaire", x0=200.0, y0=169.4, x1=256.5, y1=197.3),
+            block(
+                "p004b0012",
+                4,
+                "Model Finetuning After sampling and filtering calls for all APIs, we merge the data.",
+                x0=107.6,
+                y0=221.6,
+                x1=504.1,
+                y1=328.8,
+            ),
+        ]
+        classes = {
+            "p004b0001": "figure_region",
+            "p004b0002": "figure_region",
+            "p004b0005": "figure_region",
+            "p004b0008": "body",
+            "p004b0009": "figure_region",
+            "p004b0010": "figure_region",
+            "p004b0012": "body",
+        }
+        visual_regions = [
+            {
+                "source_ids": ["p004b0001", "p004b0002", "p004b0005", "p004b0009", "p004b0010"],
+                "bbox": (113.9, 72.8, 422.3, 197.3),
+                "has_caption_seed": True,
+            }
+        ]
+
+        regions = pdf.final_visual_ownership_regions(
+            blocks,
+            classes,
+            visual_regions,
+            page_size=(612.0, 792.0),
+            page_num=4,
+        )
+
+        self.assertEqual(len(regions), 1)
+        self.assertIn("p004b0008", regions[0]["source_ids"])
+        self.assertGreaterEqual(regions[0]["bbox"][3], blocks[5]["yMax"])
+        self.assertLessEqual(regions[0]["bbox"][3], blocks[6]["yMin"] - pdf.TEXT_PROTECTED_GAP_PT)
+
     def test_merged_visual_ownership_clip_is_capped_before_following_translated_prose(self):
         blocks = [
             block("p003b0002", 3, "reward = accuracy + format", x0=180.0, y0=180.0, x1=400.0, y1=205.0),

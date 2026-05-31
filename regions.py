@@ -597,6 +597,34 @@ def nontranslated_blocks_covered_by_visual_region(blocks, classes, region_bbox, 
     return covered
 
 
+def translated_blocks_structurally_covered_by_visual_region(blocks, classes, region_bbox, visual_ids) -> set[str]:
+    visual_boxes = [
+        block_bbox(block)
+        for block in blocks
+        if block["id"] in visual_ids and block_is_visually_covered_by_region(block, region_bbox)
+    ]
+    if not visual_boxes:
+        return set()
+    visual_bottom = max(box[3] for box in visual_boxes)
+
+    covered = set()
+    for block in blocks:
+        block_id = block["id"]
+        if block_id in visual_ids:
+            continue
+        if classes.get(block_id) not in NORMAL_TRANSLATED_CLASSES:
+            continue
+        text = normalize_text(block.get("text", ""))
+        if not text or not source_requires_chinese_translation(text):
+            continue
+        block_box = block_bbox(block)
+        if block_box[1] >= visual_bottom - 0.5:
+            continue
+        if block_is_visually_covered_by_region(block, region_bbox):
+            covered.add(block_id)
+    return covered
+
+
 def cap_visual_bbox_around_large_prose(region_bbox, blocks, classes, visual_ids, page_size):
     capped = region_bbox
     for block in blocks:

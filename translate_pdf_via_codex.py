@@ -276,6 +276,7 @@ from regions import (
     standalone_heading_number_text,
     starts_like_source_heading,
     table_cells_already_seen_above_caption,
+    translated_blocks_structurally_covered_by_visual_region,
     valid_image_insert_bbox,
     vertical_overlap,
     visual_clip_bbox,
@@ -934,6 +935,14 @@ def final_visual_ownership_regions(
                     classes,
                     source_bbox,
                     raw_visual_ids,
+                )
+            )
+            source_ids.update(
+                translated_blocks_structurally_covered_by_visual_region(
+                    page,
+                    classes,
+                    source_bbox,
+                    source_ids,
                 )
             )
         preliminary_regions.append((region, source_bbox, source_ids))
