@@ -3063,6 +3063,43 @@ class QualityValidationTests(unittest.TestCase):
         self.assertEqual(plan.items[0].kind, "original_selectable_text")
         self.assertEqual(plan.ledger[0].render_kind, "original_selectable_text")
 
+    def test_unfit_prose_continuation_keeps_translated_text_vector(self):
+        block_id = "p003b0002"
+        source = (
+            'to complete the text. You can call the API by writing "[QA(question)]" where '
+            '"question" is the question you want to ask. Here are'
+        )
+        translated = "以完成该文本。你可以通过写入“[QA(question)]”来调用该 API，其中“question”是你想提出的问题。以下是"
+        bbox = (114.748011, 89.485998, 494.3392, 96.525998)
+        blocks = [
+            block(
+                block_id,
+                3,
+                source,
+                x0=bbox[0],
+                y0=bbox[1],
+                x1=bbox[2],
+                y1=bbox[3],
+            )
+        ]
+        plan = pdf.PageRenderPlan(page_num=3)
+        item = pdf.RenderItem(
+            "translated_text",
+            [block_id],
+            bbox,
+            text=translated,
+            font_size=pdf.BODY_FONT_SIZE,
+            style_name="body",
+        )
+        plan.items.append(item)
+        plan.ledger.append(pdf.CoverageEntry(block_id, "body", "translated_text", True))
+
+        self.assertIsNone(pdf.text_item_fit_metrics(item, pdf.load_fitz())[0])
+        pdf.convert_unfit_nonprose_text_to_image_clips(plan, blocks)
+
+        self.assertEqual(plan.items[0].kind, "translated_text")
+        self.assertEqual(plan.ledger[0].render_kind, "translated_text")
+
     def test_moving_leading_enum_continuation_does_not_duplicate_source_ids(self):
         plan = pdf.PageRenderPlan(page_num=4)
         previous = pdf.RenderItem(

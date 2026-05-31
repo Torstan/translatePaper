@@ -4803,6 +4803,8 @@ def unfit_text_item_should_be_image(
     if not source_blocks:
         return False
     source_text = "\n".join(normalize_text(block.get("text", "")) for block in source_blocks)
+    if source_requires_chinese_translation(source_text) and is_prose_row_text(source_text):
+        return False
     if is_plain_sentence_text(source_text):
         return False
     if is_prose_row_text(source_text) and not any(block_is_dense_nonprose_image_fallback(block) for block in source_blocks):
