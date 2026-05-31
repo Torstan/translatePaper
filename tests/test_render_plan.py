@@ -1687,6 +1687,11 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertFalse(any(item.fallback_reason == "embedded_heading" for item in plan.items))
         self.assertEqual(pdf.validate_plan_embedded_heading_policy(plan), [])
 
+    def test_table_output_numbered_sentence_is_not_standalone_heading(self):
+        self.assertFalse(pdf.render_line_is_standalone_heading("35 今天是 2023 年 1 月 30 日，星期一。"))
+        self.assertTrue(pdf.render_line_is_standalone_heading("3 工具"))
+        self.assertTrue(pdf.render_line_is_standalone_heading("2.1 方法"))
+
     def test_quality_check_reports_body_text_with_embedded_numeric_heading(self):
         plan = pdf.PageRenderPlan(
             page_num=12,

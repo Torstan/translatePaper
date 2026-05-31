@@ -1476,7 +1476,16 @@ def render_line_is_standalone_heading(line: str) -> bool:
         return False
     if re.search(r"https?://|www\.|\S+@\S+", stripped, flags=re.I):
         return False
-    if re.match(r"^\d+(?:\.\d+)*\.?\s+[\u4e00-\u9fffA-Za-z]", stripped):
+    numbered = re.match(r"^(\d+(?:\.\d+)*\.?)\s+(.+)", stripped)
+    if numbered:
+        number, title = numbered.groups()
+        plain_multi_digit_number = bool(re.fullmatch(r"\d{2,}", number))
+        sentence_like_title = bool(
+            re.search(r"[。！？.!?]$", title)
+            or re.search(r"\d{4}\s*年|\b\d{4}\b", title)
+        )
+        if plain_multi_digit_number and sentence_like_title:
+            return False
         return len(stripped) <= 40
     return False
 
