@@ -4638,6 +4638,86 @@ def normalize_vector_text_layout(plan: PageRenderPlan, page_size, fitz=None) -> 
     rebalance_body_text_flows(plan, page_size, fitz=fitz)
     release_visual_clip_overcapture_for_text_fit(plan, page_size, fitz=fitz)
     expand_text_boxes_to_fit(plan, page_size, fitz=fitz)
+    fit_dense_visual_body_rows(plan, page_size, fitz=fitz)
+
+
+DENSE_VISUAL_BODY_ROW_FALLBACK = "dense_visual_body_row"
+DENSE_VISUAL_BODY_ROW_MAX_HEIGHT_PT = BODY_FONT_SIZE * 0.95
+DENSE_VISUAL_BODY_ROW_MAX_VISUAL_GAP_PT = BODY_FONT_SIZE * 1.6
+DENSE_VISUAL_BODY_ROW_FONT_STEP_PT = 0.1
+
+
+def nearest_vertical_visual_blockers(item: RenderItem, plan: PageRenderPlan) -> tuple[RenderItem | None, RenderItem | None]:
+    above = None
+    below = None
+    for other in plan.items:
+        if other.kind != "original_image_clip" or not layout_horizontal_conflict(item.bbox, other.bbox):
+            continue
+        if other.bbox[3] <= item.bbox[1] + TEXT_FIT_EPSILON_PT:
+            if above is None or other.bbox[3] > above.bbox[3]:
+                above = other
+            continue
+        if other.bbox[1] >= item.bbox[3] - TEXT_FIT_EPSILON_PT:
+            if below is None or other.bbox[1] < below.bbox[1]:
+                below = other
+    return above, below
+
+
+def dense_visual_body_row_can_use_compact_font(
+    item: RenderItem,
+    plan: PageRenderPlan,
+    page_size,
+    fitz,
+) -> bool:
+    if item.kind != "translated_text" or item.style_name != "body" or len(item.source_ids) != 1:
+        return False
+    if item.fallback_reason and item.fallback_reason != DENSE_VISUAL_BODY_ROW_FALLBACK:
+        return False
+    if item.bbox[3] - item.bbox[1] > DENSE_VISUAL_BODY_ROW_MAX_HEIGHT_PT:
+        return False
+    classes = ledger_classifications(plan)
+    if item_classifications(item, classes) != {"body"}:
+        return False
+    fit, required, _available = text_item_fit_metrics(item, fitz)
+    if fit is not None:
+        return False
+    above, below = nearest_vertical_visual_blockers(item, plan)
+    if above is None or below is None:
+        return False
+    if item.bbox[1] - above.bbox[3] > DENSE_VISUAL_BODY_ROW_MAX_VISUAL_GAP_PT:
+        return False
+    if below.bbox[1] - item.bbox[3] > DENSE_VISUAL_BODY_ROW_MAX_VISUAL_GAP_PT:
+        return False
+    top_limit, bottom_limit = vertical_expansion_limits(item, plan.items, page_size)
+    return required > (bottom_limit - top_limit) + TEXT_FIT_EPSILON_PT
+
+
+def compact_font_size_for_dense_body_row(item: RenderItem, fitz) -> float | None:
+    style = text_style("body")
+    width = max(1.0, item.bbox[2] - item.bbox[0])
+    height = item.bbox[3] - item.bbox[1]
+    size = min(item.font_size or style.font_size, style.font_size)
+    while size >= SHRINK_FIT_MIN_FONT_SIZE - TEXT_FIT_EPSILON_PT:
+        candidate = max(SHRINK_FIT_MIN_FONT_SIZE, round(size, 2))
+        if text_box_fit_plan(fitz, item.text, width, height, style, font_size=candidate) is not None:
+            return candidate
+        size -= DENSE_VISUAL_BODY_ROW_FONT_STEP_PT
+    return None
+
+
+def fit_dense_visual_body_rows(plan: PageRenderPlan, page_size, fitz=None) -> None:
+    """Use explicit compact body text only for dense rows pinned between visual clips."""
+    if fitz is None:
+        fitz = load_fitz()
+    for item in plan.items:
+        if not dense_visual_body_row_can_use_compact_font(item, plan, page_size, fitz):
+            continue
+        compact_font_size = compact_font_size_for_dense_body_row(item, fitz)
+        if compact_font_size is None:
+            continue
+        item.font_size = compact_font_size
+        item.fallback_reason = DENSE_VISUAL_BODY_ROW_FALLBACK
+        update_ledger_render_kind(plan, item.source_ids, item.kind, DENSE_VISUAL_BODY_ROW_FALLBACK)
 
 
 def validate_document_quality(selected_pages, translations, page_size, job_paths=None) -> list[str]:

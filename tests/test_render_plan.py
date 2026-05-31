@@ -1009,6 +1009,112 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertFalse({"p003b0005", "p003b0007"} & image_ids)
         self.assertEqual(pdf.validate_plan_translation_quality(3, blocks, translations, plan), [])
 
+    def test_dense_visual_body_rows_use_explicit_compact_vector_text_fallback(self):
+        blocks = [
+            block("p003b0003", 3, "some examples of API calls:", x0=114.748011, y0=100.375999, x1=199.384043, y1=107.416),
+            block("p003b0004", 3, "Input: Joe Biden", x0=114.748011, y0=114.071999, x1=170.764033, y1=121.112),
+            block(
+                "p003b0005",
+                3,
+                'Output: Joe Biden was born in [QA("Where was Joe Biden born?")] Scranton, [QA("In which state is Scranton?")]',
+                x0=114.748011,
+                y0=127.765999,
+                x1=459.090142,
+                y1=134.805999,
+            ),
+            block("p003b0006", 3, "Input: Coca-Cola", x0=114.748011, y0=141.461999, x1=175.762035, y1=148.502),
+            block(
+                "p003b0007",
+                3,
+                "Input: Coca-Cola, or Coke, is a carbonated soft drink manufactured by the Coca-Cola Company.",
+                x0=114.748011,
+                y0=155.156006,
+                x1=405.814054,
+                y1=162.196007,
+            ),
+            block(
+                "p003b0008",
+                3,
+                'Output: Coca-Cola, or [QA("What other name is Coca-Cola known by?")] Coke, is a soft drink.',
+                x0=114.748011,
+                y0=168.852006,
+                x1=488.575987,
+                y1=175.892007,
+            ),
+            block("p003b0009", 3, "Input: x", x0=114.748011, y0=182.546006, x1=139.378021, y1=189.586007),
+            block("p003b0010", 3, "Output: y", x0=114.748011, y0=196.242007, x1=143.812023, y1=203.282007),
+            block("p003b0011", 3, "End of prompt", x0=114.748011, y0=209.936007, x1=162.61003, y1=216.976007),
+            block(
+                "p003b0012",
+                3,
+                "Figure 3: An exemplary prompt P(x) used to generate API calls.",
+                x0=112.756011,
+                y0=224.390007,
+                x1=499.202175,
+                y1=233.510007,
+            ),
+        ]
+        classes = {
+            "p003b0003": "figure_region",
+            "p003b0004": "figure_region",
+            "p003b0005": "body",
+            "p003b0006": "figure_region",
+            "p003b0007": "body",
+            "p003b0008": "figure_region",
+            "p003b0009": "figure_region",
+            "p003b0010": "figure_region",
+            "p003b0011": "figure_region",
+            "p003b0012": "figure_region",
+        }
+        visual_regions = [
+            {
+                "source_ids": [
+                    "p003b0003",
+                    "p003b0004",
+                    "p003b0006",
+                    "p003b0008",
+                    "p003b0009",
+                    "p003b0010",
+                    "p003b0011",
+                    "p003b0012",
+                ],
+                "bbox": (112.756011, 100.375999, 499.202175, 233.510007),
+                "has_caption_seed": True,
+            }
+        ]
+        translations = {
+            "p003b0005": '输出：Joe Biden 出生于 [QA("Where was Joe Biden born?")] Scranton，[QA("In which state is Scranton?")]。',
+            "p003b0007": "输入：Coca-Cola，或称 Coke，是由 Coca-Cola Company 生产的一种碳酸软饮料。",
+        }
+
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=visual_regions),
+            patch.object(pdf, "classify_blocks", return_value=classes),
+        ):
+            plan = pdf.build_page_render_plan(3, blocks, translations, page_size=(612.0, 792.0), bbox_lines=None)
+
+        fitz = pdf.load_fitz()
+        pdf.normalize_vector_text_layout(plan, page_size=(612.0, 792.0), fitz=fitz)
+        text_items = {
+            item.source_ids[0]: item
+            for item in plan.items
+            if item.source_ids and item.source_ids[0] in {"p003b0005", "p003b0007"}
+        }
+        ledger_by_id = {entry.block_id: entry for entry in plan.ledger}
+
+        self.assertEqual(pdf.validate_plan_text_fit(plan, fitz), [])
+        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
+        for source_id in ("p003b0005", "p003b0007"):
+            self.assertEqual(text_items[source_id].kind, "translated_text")
+            self.assertEqual(text_items[source_id].style_name, "body")
+            self.assertEqual(text_items[source_id].fallback_reason, "dense_visual_body_row")
+            self.assertGreaterEqual(text_items[source_id].font_size, pdf.SHRINK_FIT_MIN_FONT_SIZE)
+            self.assertLess(text_items[source_id].font_size, pdf.BODY_FONT_SIZE)
+            self.assertEqual(ledger_by_id[source_id].render_kind, "translated_text")
+            self.assertEqual(ledger_by_id[source_id].fallback_reason, "dense_visual_body_row")
+        image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
+        self.assertFalse({"p003b0005", "p003b0007"} & image_ids)
+
     def test_toolformer_prompt_clip_image_preserves_untranslated_structural_body_rows(self):
         blocks = [
             block("p003b0003", 3, "some examples of API calls:", x0=114.7, y0=100.3, x1=199.4, y1=107.4),

@@ -105,6 +105,7 @@ STYLE_POLICY_ROLE_SPLIT_EXCEPTIONS = {
     "first_page_abstract",
     "first_page_metadata",
     "first_page_title",
+    "dense_visual_body_row",
     "mixed_visual_body",
 }
 
