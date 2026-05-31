@@ -39,7 +39,7 @@
 - Modify: `tests/test_layout.py`
 - Modify later: `layout.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append this test method to `LayoutExtractionModuleTests` in `tests/test_layout.py`:
 
@@ -78,7 +78,7 @@ Append this test method to `LayoutExtractionModuleTests` in `tests/test_layout.p
         self.assertEqual(layout.validate_plan_text_fit(plan, fitz=fitz), [])
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run:
 
@@ -88,7 +88,7 @@ PYTHONPYCACHEPREFIX=~/tmp/translatePaper_pycache python3 -m unittest tests.test_
 
 Expected: `FAIL` because the current plan construction path does not reliably expand the tight text item before validation, or because the expansion does not produce enough height with the same fit metrics.
 
-- [ ] **Step 3: Confirm the existing overflow guard still fails**
+- [x] **Step 3: Confirm the existing overflow guard still fails**
 
 Run:
 
@@ -106,7 +106,7 @@ Expected: `OK`. This protects the invariant that unsafe or impossible overflow s
 - Modify: `translate_pdf_via_codex.py`
 - Test: `tests/test_layout.py`
 
-- [ ] **Step 1: Add a render-plan normalization helper**
+- [x] **Step 1: Add a render-plan normalization helper**
 
 In `translate_pdf_via_codex.py`, add this helper near the existing validation helpers before `validate_document_quality()`:
 
@@ -118,7 +118,7 @@ def normalize_vector_text_layout(plan: PageRenderPlan, page_size, fitz=None) -> 
     expand_text_boxes_to_fit(plan, page_size, fitz=fitz)
 ```
 
-- [ ] **Step 2: Use the helper in document quality validation**
+- [x] **Step 2: Use the helper in document quality validation**
 
 In `validate_document_quality()`, immediately after `build_page_render_plan(...)` and before `validate_plan_coverage(...)`, insert:
 
@@ -126,7 +126,7 @@ In `validate_document_quality()`, immediately after `build_page_render_plan(...)
         normalize_vector_text_layout(plan, page_size, fitz=fitz)
 ```
 
-- [ ] **Step 3: Use the helper in vector PDF rendering**
+- [x] **Step 3: Use the helper in vector PDF rendering**
 
 In `write_vector_pdf()`, immediately after `build_page_render_plan(...)` and before constructing `validation_results`, insert:
 
@@ -134,7 +134,7 @@ In `write_vector_pdf()`, immediately after `build_page_render_plan(...)` and bef
         normalize_vector_text_layout(plan, (page_rect.width, page_rect.height), fitz=fitz)
 ```
 
-- [ ] **Step 4: Run the tight text expansion test again**
+- [x] **Step 4: Run the tight text expansion test again**
 
 Run:
 
@@ -144,7 +144,7 @@ PYTHONPYCACHEPREFIX=~/tmp/translatePaper_pycache python3 -m unittest tests.test_
 
 Expected: `OK`.
 
-- [ ] **Step 5: Run focused existing layout tests**
+- [x] **Step 5: Run focused existing layout tests**
 
 Run:
 
@@ -162,7 +162,7 @@ Expected: `OK`.
 - Modify: `tests/test_render_plan.py`
 - Modify later: `translate_pdf_via_codex.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append this method to `RenderPlanClassificationTests` in `tests/test_render_plan.py`:
 
@@ -209,7 +209,7 @@ Append this method to `RenderPlanClassificationTests` in `tests/test_render_plan
         self.assertLessEqual(final_bbox[3], blocks[-1]["yMin"] - pdf.TEXT_PROTECTED_GAP_PT)
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run:
 
@@ -227,7 +227,7 @@ Expected: `FAIL` with the clip bottom still extending into `p003b0007`.
 - Modify: `translate_pdf_via_codex.py`
 - Test: `tests/test_render_plan.py`
 
-- [ ] **Step 1: Apply the existing following-text cap to formula-only regions**
+- [x] **Step 1: Apply the existing following-text cap to formula-only regions**
 
 In `final_visual_region_bbox()` in `translate_pdf_via_codex.py`, replace:
 
@@ -256,7 +256,7 @@ with:
 
 This makes formulas obey the same invariant as figures: a visual clip must not swallow nearby translated prose.
 
-- [ ] **Step 2: Run the formula clip test**
+- [x] **Step 2: Run the formula clip test**
 
 Run:
 
@@ -266,7 +266,7 @@ PYTHONPYCACHEPREFIX=~/tmp/translatePaper_pycache python3 -m unittest tests.test_
 
 Expected: `OK`.
 
-- [ ] **Step 3: Run nearby visual-region tests**
+- [x] **Step 3: Run nearby visual-region tests**
 
 Run:
 
@@ -284,7 +284,7 @@ Expected: `OK`.
 - Modify: `tests/test_render_plan.py`
 - Modify later: `classify.py` or `translate_pdf_via_codex.py`
 
-- [ ] **Step 1: Write author-list and URL QA tests**
+- [x] **Step 1: Write author-list and URL QA tests**
 
 Append these methods to `RenderPlanClassificationTests` in `tests/test_render_plan.py`:
 
@@ -346,7 +346,7 @@ Append these methods to `RenderPlanClassificationTests` in `tests/test_render_pl
         self.assertEqual(pdf.validate_plan_translation_quality(1, blocks, {}, plan), [])
 ```
 
-- [ ] **Step 2: Run the tests to verify current behavior**
+- [x] **Step 2: Run the tests to verify current behavior**
 
 Run:
 
@@ -356,7 +356,7 @@ PYTHONPYCACHEPREFIX=~/tmp/translatePaper_pycache python3 -m unittest tests.test_
 
 Expected: URL may already pass; author-list may fail. If both pass, no production change is needed for this task.
 
-- [ ] **Step 3: If the author-list test fails, make the semantic rule deterministic**
+- [x] **Step 3: If the author-list test fails, make the semantic rule deterministic**
 
 In `classify.py`, update `source_requires_chinese_translation()` so first-page-style name lists without function words do not require Chinese. Keep the logic general and not keyed to a paper:
 
@@ -373,7 +373,7 @@ def source_requires_chinese_translation(text: str) -> bool:
     return len(cleaned) >= 30 or english_function_word_count(cleaned) >= 1
 ```
 
-- [ ] **Step 4: Run focused classification and QA tests**
+- [x] **Step 4: Run focused classification and QA tests**
 
 Run:
 
@@ -391,7 +391,7 @@ Expected: `OK`.
 - Generated only: `test/vector-smoke/output*/`, `test/vector-smoke/work*/`, `test/vector-smoke/checks/`
 - Do not commit generated smoke outputs unless they are intentionally promoted to fixtures.
 
-- [ ] **Step 1: Run Toolformer full vector strict QA**
+- [x] **Step 1: Run Toolformer full vector strict QA**
 
 Run:
 
@@ -407,7 +407,7 @@ python3 /mnt/d/ginobili/code/translatePaper/translate_pdf_parallel.py \
 
 Expected: command exits `0`; no `text_fit_errors`; no deterministic QA report errors for author metadata.
 
-- [ ] **Step 2: Run Qwen3 pages 1-3 vector strict QA**
+- [x] **Step 2: Run Qwen3 pages 1-3 vector strict QA**
 
 Run:
 
@@ -423,7 +423,7 @@ python3 /mnt/d/ginobili/code/translatePaper/translate_pdf_parallel.py \
 
 Expected: command exits `0`; no strict QA error for URL metadata.
 
-- [ ] **Step 3: Run DeepSeek R1 pages 1-3 vector strict QA**
+- [x] **Step 3: Run DeepSeek R1 pages 1-3 vector strict QA**
 
 Run:
 
@@ -447,7 +447,7 @@ Expected: command exits `0`; no `visual_clip_overcaptures_translated_component` 
 - Read generated PDFs in `test/vector-smoke/output*/`
 - Write PNG checks to `test/vector-smoke/checks/`
 
-- [ ] **Step 1: Confirm Toolformer is not full-page raster**
+- [x] **Step 1: Confirm Toolformer is not full-page raster**
 
 Run:
 
@@ -457,7 +457,7 @@ pdfimages -list /mnt/d/ginobili/code/translatePaper/test/vector-smoke/output/Neu
 
 Expected: image list does not contain one image per page at full page dimensions.
 
-- [ ] **Step 2: Confirm Toolformer Chinese text extracts**
+- [x] **Step 2: Confirm Toolformer Chinese text extracts**
 
 Run:
 
@@ -467,7 +467,7 @@ pdftotext /mnt/d/ginobili/code/translatePaper/test/vector-smoke/output/NeurIPS-2
 
 Expected: output includes readable Chinese text from title, abstract, and body.
 
-- [ ] **Step 3: Render sample pages to PNG**
+- [x] **Step 3: Render sample pages to PNG**
 
 Run:
 
@@ -490,7 +490,7 @@ Expected: PNGs exist for pages 1-3 where available. Inspect the generated PNGs f
 - No source edits.
 - Generated `__pycache__` must be redirected by `PYTHONPYCACHEPREFIX`.
 
-- [ ] **Step 1: Run the required full regression suite**
+- [x] **Step 1: Run the required full regression suite**
 
 Run:
 
@@ -504,7 +504,7 @@ PYTHONPYCACHEPREFIX=~/tmp/translatePaper_pycache python3 -m unittest \
 
 Expected: `OK`. If any test is skipped because optional cached fixtures are absent, record the skip count and reason.
 
-- [ ] **Step 2: Run Python compilation checks**
+- [x] **Step 2: Run Python compilation checks**
 
 Run:
 
@@ -529,7 +529,7 @@ Expected: exit code `0`.
 - Commit source and tests only.
 - Leave `test/vector-smoke/`, `work/`, `output/`, `tmp/`, `vendor/`, `.vscode/`, `.codex/`, and unrelated untracked files unstaged unless explicitly requested.
 
-- [ ] **Step 1: Review status**
+- [x] **Step 1: Review status**
 
 Run:
 
@@ -539,7 +539,7 @@ git status --short
 
 Expected: source/test files changed plus existing unrelated untracked directories.
 
-- [ ] **Step 2: Review source diff**
+- [x] **Step 2: Review source diff**
 
 Run:
 
@@ -549,7 +549,7 @@ git diff -- layout.py translate_pdf_via_codex.py classify.py tests/test_layout.p
 
 Expected: diff only includes the deterministic vector text/layout fixes and focused tests from this plan.
 
-- [ ] **Step 3: Stage intended files**
+- [x] **Step 3: Stage intended files**
 
 Run:
 
@@ -559,7 +559,7 @@ git add layout.py translate_pdf_via_codex.py classify.py tests/test_layout.py te
 
 If a listed file was not changed, `git add` is still safe.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 Run:
 
