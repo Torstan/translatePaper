@@ -922,12 +922,22 @@ def final_visual_ownership_regions(
     bbox_lines=None,
     translations=None,
 ) -> list[dict]:
+    translations = translations or {}
+    block_by_id = {block["id"]: block for block in page}
+
+    def has_renderable_translation(source_id: str) -> bool:
+        block = block_by_id.get(source_id)
+        if block is None or classes.get(source_id) not in NORMAL_TRANSLATED_CLASSES:
+            return False
+        return block_has_valid_chinese_translation(block, translations)
+
     raw_visual_ids = {source_id for region in visual_regions for source_id in region["source_ids"]}
     preliminary_regions = []
     expanded_visual_ids = set(raw_visual_ids)
+    cap_guard_visual_ids = set(raw_visual_ids)
     for region in visual_regions:
         source_bbox = region.get("bbox")
-        source_ids = set(region["source_ids"])
+        source_ids = {source_id for source_id in region["source_ids"] if not has_renderable_translation(source_id)}
         if source_bbox is not None:
             source_ids.update(
                 nontranslated_blocks_covered_by_visual_region(
@@ -937,17 +947,18 @@ def final_visual_ownership_regions(
                     raw_visual_ids,
                 )
             )
-            source_ids.update(
-                translated_blocks_structurally_covered_by_visual_region(
-                    page,
-                    classes,
-                    source_bbox,
-                    source_ids,
-                )
+            structural_ids = translated_blocks_structurally_covered_by_visual_region(
+                page,
+                classes,
+                source_bbox,
+                source_ids,
             )
+            cap_guard_visual_ids.update(structural_ids)
+            source_ids.update(source_id for source_id in structural_ids if not has_renderable_translation(source_id))
         preliminary_regions.append((region, source_bbox, source_ids))
         expanded_visual_ids.update(source_ids)
 
+    cap_guard_visual_ids.update(expanded_visual_ids)
     ownership_regions = []
     for region, source_bbox, preliminary_source_ids in preliminary_regions:
         region_bbox, _mixed_body_item = final_visual_region_bbox(
@@ -959,7 +970,7 @@ def final_visual_ownership_regions(
             source_image_path=source_image_path,
             bbox_lines=bbox_lines,
             translations=translations,
-            visual_ids=expanded_visual_ids,
+            visual_ids=cap_guard_visual_ids,
         )
         mixed_split = split_mixed_visual_body_rows(region["bbox"], bbox_lines) if region.get("has_code_seed") else None
         source_ids = set(preliminary_source_ids)
@@ -968,9 +979,10 @@ def final_visual_ownership_regions(
                 page,
                 classes,
                 region_bbox,
-                expanded_visual_ids,
+                cap_guard_visual_ids,
             )
         )
+        source_ids = {source_id for source_id in source_ids if not has_renderable_translation(source_id)}
         ownership_region = dict(region)
         ownership_region["source_ids"] = sorted(source_ids)
         ownership_region["source_bbox"] = region_bbox if mixed_split is not None else source_bbox or region_bbox
@@ -998,7 +1010,7 @@ def final_visual_ownership_regions(
             tuple(region["bbox"]),
             page,
             classes,
-            expanded_visual_ids,
+            cap_guard_visual_ids,
         )
     return merged_regions
 
@@ -1067,6 +1079,18 @@ def component_by_source_id_compat(components) -> dict[str, ownership.PageCompone
 
 def component_has_reason(component, reason: str) -> bool:
     return reason in {str(code) for code in getattr(component, "reason_codes", [])}
+
+
+def block_has_valid_chinese_translation(block, translations) -> bool:
+    block_id = block.get("id")
+    if not block_id or block_id not in (translations or {}):
+        return False
+    source_text = strip_journal_footer_lines(block.get("text", ""))
+    if not source_requires_chinese_translation(source_text):
+        return False
+    raw_translation = translations.get(block_id, "")
+    translated = clean_render_text(block, translation_for_block(block, translations), raw_translation)
+    return bool(translated.strip()) and not translation_appears_untranslated(source_text, translated)
 
 
 def visual_source_ids_from_components(components) -> set[str]:
@@ -1151,6 +1175,7 @@ def build_translation_page_components(
     bbox_lines=None,
     source_image_path: Path | None = None,
     in_reference_section: bool = False,
+    translations=None,
 ) -> TranslationPageOwnership:
     raw_visual_regions = build_visual_regions(page)
     classes = classify_blocks(page, raw_visual_regions)
@@ -1170,7 +1195,7 @@ def build_translation_page_components(
         page_num=page_num,
         source_image_path=source_image,
         bbox_lines=bbox_lines,
-        translations={},
+        translations=translations or {},
     )
     duplicate_ids = {
         block_id
@@ -3785,6 +3810,84 @@ def mixed_visual_body_component_render_item(component, translations, page_size, 
     )
 
 
+def translated_text_exclusion_boxes(blocks, classes, translations, region_bbox, page_size, bbox_lines=None):
+    boxes = []
+    for block in blocks:
+        block_id = block["id"]
+        if classes.get(block_id) not in NORMAL_TRANSLATED_CLASSES:
+            continue
+        if not block_has_valid_chinese_translation(block, translations):
+            continue
+        if not block_is_visually_covered_by_region(block, region_bbox):
+            continue
+        bbox = adjusted_render_bbox(block, classes.get(block_id, "body"), page_size)
+        if classes.get(block_id) in {"body", "heading", "subheading", "title", "reference"}:
+            bbox = refined_text_bbox_from_lines(block, bbox, bbox_lines or [], page_size)
+        boxes.append(clamp_bbox(expanded_bbox(bbox, pad_x=TEXT_PROTECTED_GAP_PT, pad_y=TEXT_PROTECTED_GAP_PT), page_size))
+    return boxes
+
+
+def split_rect_around_exclusion(rect, exclusion):
+    rx0, ry0, rx1, ry1 = rect
+    ex0, ey0, ex1, ey1 = exclusion
+    ix0 = max(rx0, ex0)
+    iy0 = max(ry0, ey0)
+    ix1 = min(rx1, ex1)
+    iy1 = min(ry1, ey1)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return [rect]
+    candidates = [
+        (rx0, ry0, rx1, iy0),
+        (rx0, iy1, rx1, ry1),
+        (rx0, iy0, ix0, iy1),
+        (ix1, iy0, rx1, iy1),
+    ]
+    return [
+        candidate
+        for candidate in candidates
+        if candidate[2] - candidate[0] >= 2.0 and candidate[3] - candidate[1] >= 2.0 and bbox_area(candidate) >= 8.0
+    ]
+
+
+def split_visual_clip_around_translated_text(region_bbox, exclusion_boxes, page_size, source_image_path=None):
+    clip_boxes = [tuple(region_bbox)]
+    for exclusion in sorted(exclusion_boxes, key=lambda box: (box[1], box[0], box[3], box[2])):
+        next_boxes = []
+        for clip_box in clip_boxes:
+            next_boxes.extend(split_rect_around_exclusion(clip_box, exclusion))
+        clip_boxes = next_boxes
+        if not clip_boxes:
+            break
+    result = []
+    seen = set()
+    for box in sorted(clip_boxes, key=lambda item: (item[1], item[0], item[3], item[2])):
+        clipped = clamp_bbox(box, page_size)
+        if clipped[2] - clipped[0] < 2.0 or clipped[3] - clipped[1] < 2.0:
+            continue
+        if source_image_path is not None:
+            dark_pixels = source_image_dark_pixel_count(source_image_path, clipped, page_size)
+            if dark_pixels is not None and dark_pixels <= 0:
+                continue
+        key = tuple(round(value, 3) for value in clipped)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(clipped)
+    return result or [tuple(region_bbox)]
+
+
+def source_ids_for_visual_clip(clip_bbox, source_ids, block_by_id):
+    ids = []
+    for source_id in source_ids:
+        block = block_by_id.get(source_id)
+        if block is None:
+            continue
+        block_box = block_bbox(block)
+        if bbox_contains_point(clip_bbox, bbox_center(block_box)) or bbox_overlap_area(block_box, clip_bbox) > 0.5:
+            ids.append(source_id)
+    return sorted(dict.fromkeys(ids))
+
+
 def build_page_render_plan(
     page_num: int,
     blocks,
@@ -3816,6 +3919,7 @@ def build_page_render_plan(
         bbox_lines=bbox_lines,
         source_image_path=source_image_path,
         in_reference_section=force_reference,
+        translations=translations,
     )
     plan.components = list(ownership_result.components)
     plan.ownership_ledger = ownership.ownership_ledger_for_components(page_num, plan.components)
@@ -3880,18 +3984,51 @@ def build_page_render_plan(
         visual_covered_text_ids.update(
             nontranslated_blocks_covered_by_visual_region(blocks, classes, region_bbox, visual_ids)
         )
-        plan.items.append(
-            RenderItem(
-                kind="original_image_clip",
-                source_ids=list(matching_component.source_ids if matching_component is not None else region["source_ids"]),
-                bbox=region_bbox,
-                fallback_reason="visual_region",
-                component_id="" if matching_component is None else matching_component.component_id,
-                component_kind="" if matching_component is None else matching_component.component_kind,
-            )
+        image_source_ids = list(matching_component.source_ids if matching_component is not None else region["source_ids"])
+        exclusion_boxes = translated_text_exclusion_boxes(
+            blocks,
+            classes,
+            translations,
+            region_bbox,
+            page_size,
+            bbox_lines,
         )
-        plan.protected_boxes.append(region_bbox)
-        for source_id in (matching_component.source_ids if matching_component is not None else region["source_ids"]):
+        clip_bboxes = split_visual_clip_around_translated_text(
+            region_bbox,
+            exclusion_boxes,
+            page_size,
+            source_image_path=source_image_path,
+        )
+        rendered_clip_ids = set()
+        for clip_bbox in clip_bboxes:
+            clip_source_ids = source_ids_for_visual_clip(clip_bbox, image_source_ids, block_by_id)
+            if not clip_source_ids:
+                continue
+            rendered_clip_ids.update(clip_source_ids)
+            plan.items.append(
+                RenderItem(
+                    kind="original_image_clip",
+                    source_ids=clip_source_ids,
+                    bbox=clip_bbox,
+                    fallback_reason="visual_region",
+                    component_id="" if matching_component is None else matching_component.component_id,
+                    component_kind="" if matching_component is None else matching_component.component_kind,
+                )
+            )
+            plan.protected_boxes.append(clip_bbox)
+        if not rendered_clip_ids and image_source_ids:
+            plan.items.append(
+                RenderItem(
+                    kind="original_image_clip",
+                    source_ids=image_source_ids,
+                    bbox=region_bbox,
+                    fallback_reason="visual_region",
+                    component_id="" if matching_component is None else matching_component.component_id,
+                    component_kind="" if matching_component is None else matching_component.component_kind,
+                )
+            )
+            plan.protected_boxes.append(region_bbox)
+        for source_id in image_source_ids:
             plan.ledger.append(
                 CoverageEntry(
                     source_id,
