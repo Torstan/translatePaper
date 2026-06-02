@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import html
 import io
 import json
 import math
@@ -135,6 +136,8 @@ from layout import (
     pdf_token_uses_math_font,
     pdf_token_width,
     preferred_text_height_for_item,
+    raster_font_path,
+    raster_image_font,
     raster_text_should_render_vertical,
     rebalance_body_text_flows,
     release_visual_clip_overcapture_for_text_fit,
@@ -286,7 +289,7 @@ from regions import (
 TOOL_ROOT = Path(__file__).resolve().parent
 TMP_ROOT = Path(os.environ.get("TRANSLATE_PDF_WORK_DIR", TOOL_ROOT / "work"))
 VENDOR_ROOT = TOOL_ROOT / "vendor"
-FONT_PATH = "/usr/share/fonts/truetype/arphic/uming.ttc"
+FONT_PATH = raster_font_path() or "/usr/share/fonts/truetype/arphic/uming.ttc"
 SOURCE_FONT_SCALE = 0.94
 TEXT_BOX_MARGIN_PX = 8
 HEURISTIC_HEADING_BOTTOM_MARGIN_PT = 70.0
@@ -349,6 +352,67 @@ def run(cmd, *, input_text=None, cwd=TOOL_ROOT, check=True):
     return proc
 
 
+def xml_number(value) -> str:
+    return f"{float(value):.6f}"
+
+
+def pymupdf_bbox_html(pdf_path: Path) -> str:
+    """Build pdftotext-like bbox HTML when Poppler bbox extraction crashes."""
+    fitz = load_fitz()
+    doc = fitz.open(pdf_path)
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<html xmlns="http://www.w3.org/1999/xhtml">',
+        "<body>",
+        "<doc>",
+    ]
+    try:
+        for page in doc:
+            rect = page.rect
+            lines.append(
+                f'<page width="{xml_number(rect.width)}" height="{xml_number(rect.height)}">'
+            )
+            for block in page.get_text("dict").get("blocks", []):
+                if block.get("type") != 0:
+                    continue
+                block_lines = []
+                for line in block.get("lines", []):
+                    span_nodes = []
+                    for span in line.get("spans", []):
+                        text = normalize_text(str(span.get("text", "")))
+                        if not text:
+                            continue
+                        x0, y0, x1, y1 = span.get("bbox", (0, 0, 0, 0))
+                        span_nodes.append(
+                            f'<word xMin="{xml_number(x0)}" yMin="{xml_number(y0)}" '
+                            f'xMax="{xml_number(x1)}" yMax="{xml_number(y1)}">'
+                            f"{html.escape(text, quote=False)}</word>"
+                        )
+                    if not span_nodes:
+                        continue
+                    x0, y0, x1, y1 = line.get("bbox", (0, 0, 0, 0))
+                    block_lines.append(
+                        f'<line xMin="{xml_number(x0)}" yMin="{xml_number(y0)}" '
+                        f'xMax="{xml_number(x1)}" yMax="{xml_number(y1)}">'
+                        + "".join(span_nodes)
+                        + "</line>"
+                    )
+                if not block_lines:
+                    continue
+                x0, y0, x1, y1 = block.get("bbox", (0, 0, 0, 0))
+                lines.append(
+                    f'<block xMin="{xml_number(x0)}" yMin="{xml_number(y0)}" '
+                    f'xMax="{xml_number(x1)}" yMax="{xml_number(y1)}">'
+                    + "".join(block_lines)
+                    + "</block>"
+                )
+            lines.append("</page>")
+    finally:
+        doc.close()
+    lines.extend(["</doc>", "</body>", "</html>", ""])
+    return "\n".join(lines)
+
+
 def ensure_assets(
     pdf_path: Path,
     dpi: int,
@@ -362,8 +426,16 @@ def ensure_assets(
     job_paths["translated_pages_dir"].mkdir(parents=True, exist_ok=True)
     bbox_path = job_paths["bbox_path"]
     if not bbox_path.exists():
-        proc = run(["pdftotext", "-bbox-layout", str(pdf_path), "-"], check=True)
-        bbox_path.write_text(proc.stdout, encoding="utf-8")
+        try:
+            proc = run(["pdftotext", "-bbox-layout", str(pdf_path), "-"], check=True)
+            bbox_path.write_text(proc.stdout, encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            bbox_path.write_text(pymupdf_bbox_html(pdf_path), encoding="utf-8")
+            bbox_path.with_suffix(".fallback.txt").write_text(
+                "source_extraction_fallback=pymupdf_bbox\n"
+                f"reason={exc}\n",
+                encoding="utf-8",
+            )
     if page_end:
         expected_pages = [
             job_paths["pages_dir"] / f"page-{page_num:03d}.png"
@@ -794,6 +866,11 @@ def final_visual_region_bbox(
         for source_id in region["source_ids"]
         if source_id in block_by_id
     )
+    region_has_table_caption = any(
+        is_table_caption(block_by_id[source_id].get("text", ""))
+        for source_id in region["source_ids"]
+        if source_id in block_by_id
+    )
     formula_only = bool(
         region_classes
         and region_classes <= {"formula_region"}
@@ -804,7 +881,8 @@ def final_visual_region_bbox(
     cap_source_bbox = visual_source_bbox
     mixed_body_item = None
     mixed_visual_body = False
-    if region.get("has_code_seed") and bbox_lines and page_size is not None:
+    allow_mixed_visual_body_split = region.get("has_code_seed") and not region_has_table_caption
+    if allow_mixed_visual_body_split and bbox_lines and page_size is not None:
         mixed = mixed_visual_body_render_item(region, bbox_lines, translations or {}, page_size)
         if mixed is not None:
             visual_source_bbox, mixed_body_item = mixed
@@ -1020,7 +1098,16 @@ def final_visual_ownership_regions(
             translations=translations,
             visual_ids=cap_guard_visual_ids,
         )
-        mixed_split = split_mixed_visual_body_rows(region["bbox"], bbox_lines) if region.get("has_code_seed") else None
+        region_has_table_caption = any(
+            is_table_caption(block_by_id[source_id].get("text", ""))
+            for source_id in region.get("source_ids", [])
+            if source_id in block_by_id
+        )
+        mixed_split = (
+            split_mixed_visual_body_rows(region["bbox"], bbox_lines)
+            if region.get("has_code_seed") and not region_has_table_caption
+            else None
+        )
         source_ids = set(preliminary_source_ids)
         source_ids.update(
             nontranslated_blocks_covered_by_visual_region(
@@ -2199,7 +2286,7 @@ def draw_vertical(draw_img: Image.Image, text: str, box, fill_bg, fill_text):
     width = max(1, x1 - x0)
     height = max(1, y1 - y0)
     font_size, _ = fit_font_and_lines(text, height - 4, width - 4, vertical=True)
-    font = ImageFont.truetype(FONT_PATH, font_size)
+    font = raster_image_font(font_size)
     tmp = Image.new("RGBA", (height, width), fill_bg + (255,))
     tdraw = ImageDraw.Draw(tmp)
     bbox = tdraw.textbbox((0, 0), text, font=font)
@@ -2279,7 +2366,7 @@ def draw_block(
         vertical=False,
         max_font_size=target_font_size,
     )
-    font = ImageFont.truetype(FONT_PATH, font_size)
+    font = raster_image_font(font_size)
     ascent, descent = font.getmetrics()
     line_height = int((ascent + descent) * 1.25)
     text_img = Image.new("RGBA", (x1 - x0, y1 - y0), (0, 0, 0, 0))
@@ -3937,6 +4024,44 @@ def source_ids_for_visual_clip(clip_bbox, source_ids, block_by_id):
     return sorted(dict.fromkeys(ids))
 
 
+def add_missing_visual_component_clips(plan: PageRenderPlan, blocks, classes: dict[str, str], page_size) -> None:
+    block_by_id = {block["id"]: block for block in blocks}
+    covered_ids = {entry.block_id for entry in plan.ledger}
+    for component in plan.components:
+        if component.component_kind != ownership.COMPONENT_KIND_VISUAL:
+            continue
+        for source_id in component.source_ids:
+            if source_id in covered_ids:
+                continue
+            block = block_by_id.get(source_id)
+            if block is None:
+                continue
+            clip_bbox = clamped_expanded_bbox(block_bbox(block), page_size, pad_x=1.0, pad_y=1.0)
+            plan.items.append(
+                RenderItem(
+                    "original_image_clip",
+                    [source_id],
+                    clip_bbox,
+                    fallback_reason="visual_component_fallback_clip",
+                    component_id=component.component_id,
+                    component_kind=component.component_kind,
+                )
+            )
+            plan.protected_boxes.append(clip_bbox)
+            plan.ledger.append(
+                CoverageEntry(
+                    source_id,
+                    classes.get(source_id, "figure_region"),
+                    "original_image_clip",
+                    True,
+                    "visual_component_fallback_clip",
+                    component_id=component.component_id,
+                    component_kind=component.component_kind,
+                )
+            )
+            covered_ids.add(source_id)
+
+
 def build_page_render_plan(
     page_num: int,
     blocks,
@@ -4106,6 +4231,8 @@ def build_page_render_plan(
                     component_kind=component.component_kind,
                 )
             )
+
+    add_missing_visual_component_clips(plan, blocks, classes, page_size)
 
     heading_pairs = [
         pair
@@ -4684,9 +4811,11 @@ def normalize_vector_text_layout(plan: PageRenderPlan, page_size, fitz=None) -> 
     release_visual_clip_overcapture_for_text_fit(plan, page_size, fitz=fitz)
     expand_text_boxes_to_fit(plan, page_size, fitz=fitz)
     fit_dense_visual_body_rows(plan, page_size, fitz=fitz)
+    fit_body_flow_text_items(plan, fitz=fitz)
 
 
 DENSE_VISUAL_BODY_ROW_FALLBACK = "dense_visual_body_row"
+BODY_FLOW_COMPACT_FALLBACK = "body_flow_compact"
 DENSE_VISUAL_BODY_ROW_MAX_HEIGHT_PT = BODY_FONT_SIZE * 0.95
 DENSE_VISUAL_BODY_ROW_MAX_VISUAL_GAP_PT = BODY_FONT_SIZE * 1.6
 DENSE_VISUAL_BODY_ROW_FONT_STEP_PT = 0.1
@@ -4763,6 +4892,36 @@ def fit_dense_visual_body_rows(plan: PageRenderPlan, page_size, fitz=None) -> No
         item.font_size = compact_font_size
         item.fallback_reason = DENSE_VISUAL_BODY_ROW_FALLBACK
         update_ledger_render_kind(plan, item.source_ids, item.kind, DENSE_VISUAL_BODY_ROW_FALLBACK)
+
+
+def compact_font_size_for_text_item(item: RenderItem, fitz) -> float | None:
+    style = text_style(item.style_name or "body")
+    width = max(1.0, item.bbox[2] - item.bbox[0])
+    height = item.bbox[3] - item.bbox[1]
+    size = min(item.font_size or style.font_size, style.font_size)
+    while size >= SHRINK_FIT_MIN_FONT_SIZE - TEXT_FIT_EPSILON_PT:
+        candidate = max(SHRINK_FIT_MIN_FONT_SIZE, round(size, 2))
+        if text_box_fit_plan(fitz, item.text, width, height, style, font_size=candidate) is not None:
+            return candidate
+        size -= DENSE_VISUAL_BODY_ROW_FONT_STEP_PT
+    return None
+
+
+def fit_body_flow_text_items(plan: PageRenderPlan, fitz=None) -> None:
+    if fitz is None:
+        fitz = load_fitz()
+    for item in plan.items:
+        if item.kind != "translated_text" or item.style_name != "body" or item.fallback_reason != "body_flow":
+            continue
+        fit, _required, _available = text_item_fit_metrics(item, fitz)
+        if fit is not None:
+            continue
+        compact_font_size = compact_font_size_for_text_item(item, fitz)
+        if compact_font_size is None:
+            continue
+        item.font_size = compact_font_size
+        item.fallback_reason = BODY_FLOW_COMPACT_FALLBACK
+        update_ledger_render_kind(plan, item.source_ids, item.kind, BODY_FLOW_COMPACT_FALLBACK)
 
 
 def validate_document_quality(selected_pages, translations, page_size, job_paths=None) -> list[str]:

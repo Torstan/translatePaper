@@ -171,9 +171,10 @@ def is_formula_like(text: str) -> bool:
     lower_compact = compact.lower()
     if any(term in lower_compact for term in ("argmin", "available_bw", "segment_size*cwnd")):
         return True
-    symbol_count = len(re.findall(r"[=+\-*/_{}()[\]<>≤≥∑Σβ]", compact))
+    formula_symbol_pattern = r"[=+\-−*/_|{}()[\]<>≤≥∈∉∑Σαβγπσϕφμ]"
+    symbol_count = len(re.findall(formula_symbol_pattern, compact))
     word_count = len(re.findall(r"[A-Za-z]{3,}", stripped))
-    if word_count >= 2 and not re.search(r"[=+\-*/_{}()[\]<>≤≥∑Σβ]", compact):
+    if word_count >= 2 and not re.search(formula_symbol_pattern, compact):
         return False
     if word_count >= 3 and re.search(r"\bis\b", stripped, flags=re.I) and symbol_count <= 4:
         return False
@@ -1266,6 +1267,9 @@ def classify_blocks(blocks, visual_regions) -> dict[str, str]:
             continue
         if is_reference_heading(text) or starts_reference_item(text):
             classes[block["id"]] = "reference"
+            continue
+        if is_formula_like(text):
+            classes[block["id"]] = "formula_region"
             continue
         if is_heading_text(text):
             classes[block["id"]] = "heading"

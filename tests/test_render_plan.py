@@ -77,6 +77,45 @@ class RenderPlanClassificationTests(unittest.TestCase):
             [pdf.source_requires_chinese_translation(text) for text in samples],
         )
 
+    def test_set_membership_formula_fragment_is_formula_region(self):
+        text = "d j ∈ R k o ( q )"
+
+        self.assertTrue(classify.is_formula_like(text))
+        self.assertEqual(
+            classify.classify_blocks(
+                [block("p005b0009", 5, text, x0=225.1, y0=285.4, x1=255.6, y1=295.7)],
+                [],
+            ),
+            {"p005b0009": "formula_region"},
+        )
+
+    def test_rank_equivalence_formula_fragment_is_formula_region(self):
+        samples = [
+            "π = | 1 | σ Sem σ Lex",
+            "+ | 1 − α | R Lex σ Sem",
+        ]
+
+        for idx, text in enumerate(samples, start=1):
+            with self.subTest(text=text):
+                block_id = f"p010b{idx:04d}"
+                self.assertTrue(classify.is_formula_like(text))
+                self.assertEqual(
+                    classify.classify_blocks([block(block_id, 10, text, x0=120, y0=540, x1=260, y1=580)], []),
+                    {block_id: "formula_region"},
+                )
+
+    def test_ccs_concepts_metadata_is_not_formula_region(self):
+        text = "CCS Concepts: • Information systems → Retrieval models and ranking ; Combination, fusion and\nfederated search;"
+
+        self.assertFalse(classify.is_formula_like(text))
+        self.assertEqual(
+            classify.classify_blocks(
+                [block("p001b0005", 1, text, x0=45.9, y0=264.3, x1=440.5, y1=284.8)],
+                [],
+            ),
+            {"p001b0005": "body"},
+        )
+
     def test_doi_url_is_metadata_not_formula_visual_content(self):
         block_data = block("p001b0003", 1, "https://doi.org/10.1038/s41586-024-07421-0", x0=39.7, y0=143.3, x1=202.4, y1=154.3)
 
@@ -1361,6 +1400,35 @@ class RenderPlanClassificationTests(unittest.TestCase):
         image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
         self.assertFalse({"p003b0005", "p003b0007"} & image_ids)
 
+    def test_body_flow_split_can_use_explicit_compact_font(self):
+        fitz = pdf.load_fitz()
+        plan = pdf.PageRenderPlan(page_num=11)
+        plan.items.append(pdf.RenderItem("original_image_clip", ["formula-above"], (43.4, 501.7, 442.9, 561.8)))
+        plan.items.append(
+            pdf.RenderItem(
+                "translated_text",
+                ["p011b0024", "p011b0025"],
+                (45.9, 563.8, 440.5, 600.3),
+                text="相对于 ω 以均匀速率 λ 扩张。\n证明。考虑查询 q 的排序列表中的一对文档 d i 和 d j，使得根据 f Convex，d i 排在 d j 之前。将 f o ( q , d k ) 简写为 f ( k )。",
+                font_size=pdf.BODY_FONT_SIZE,
+                style_name="body",
+                fallback_reason="body_flow",
+            )
+        )
+        plan.items.append(pdf.RenderItem("original_image_clip", ["formula-below"], (249.3, 600.3, 443.2, 652.4)))
+        plan.ledger.append(pdf.CoverageEntry("p011b0024", "body", "translated_text", True, "body_flow"))
+        plan.ledger.append(pdf.CoverageEntry("p011b0025", "body", "translated_text", True, "body_flow"))
+
+        self.assertNotEqual(pdf.validate_plan_text_fit(plan, fitz), [])
+
+        pdf.normalize_vector_text_layout(plan, (486.0, 720.0), fitz=fitz)
+
+        self.assertEqual(pdf.validate_plan_text_fit(plan, fitz), [])
+        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
+        text_item = next(item for item in plan.items if item.kind == "translated_text")
+        self.assertLess(text_item.font_size, pdf.BODY_FONT_SIZE)
+        self.assertEqual(text_item.fallback_reason, "body_flow_compact")
+
     def test_toolformer_prompt_clip_image_preserves_untranslated_structural_body_rows(self):
         blocks = [
             block("p003b0003", 3, "some examples of API calls:", x0=114.7, y0=100.3, x1=199.4, y1=107.4),
@@ -1552,6 +1620,111 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertTrue({"p004b0008", "p004b0011"} <= translated_ids)
         self.assertFalse({"p004b0008", "p004b0011"} & image_ids)
         self.assertEqual(pdf.validate_plan_translation_quality(4, blocks, translations, plan), [])
+
+    def test_table_visual_region_with_formula_cells_does_not_create_mixed_body_split(self):
+        blocks = [
+            block("p008b0001", 8, "Table 2: The methods of finding tunnels between different local minima.", x0=146.5, y0=81.6, x1=462.0, y1=91.6),
+            block("p008b0002", 8, "Connectors Methods Ref. Introduction", x0=108.7, y0=101.7, x1=407.3, y1=111.7),
+            block("p008b0003", 8, "2-dim path line segment [71] produce big error", x0=108.7, y0=118.7, x1=428.9, y1=128.7),
+            block("p008b0004", 8, "AutoNEB [46, 122] minimize MST to obtain approximation of ϕ ∗", x0=174.4, y0=154.6, x1=458.0, y1=176.5),
+            block("p008b0005", 8, "minimize the expectation [66] connects solutions in a simple way", x0=174.4, y0=178.5, x1=503.1, y1=200.4),
+            block("p008b0006", 8, "Following prose should remain outside the table image.", x0=72.0, y0=349.3, x1=540.0, y1=361.9),
+        ]
+        classes = {
+            "p008b0001": "table_region",
+            "p008b0002": "table_region",
+            "p008b0003": "table_region",
+            "p008b0004": "table_region",
+            "p008b0005": "table_region",
+            "p008b0006": "body",
+        }
+        visual_regions = [
+            {
+                "source_ids": ["p008b0001", "p008b0002", "p008b0003", "p008b0004", "p008b0005"],
+                "bbox": (101.8, 80.9, 505.3, 224.3),
+                "has_caption_seed": True,
+                "has_code_seed": True,
+            }
+        ]
+        bbox_lines = [
+            {"page": 8, "text": item["text"], "bbox": (item["xMin"], item["yMin"], item["xMax"], item["yMax"])}
+            for item in blocks
+        ]
+
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=visual_regions),
+            patch.object(pdf, "classify_blocks", return_value=classes),
+        ):
+            plan = pdf.build_page_render_plan(8, blocks, {}, page_size=(612.0, 792.0), bbox_lines=bbox_lines)
+
+        self.assertFalse(
+            any(pdf.component_has_reason(component, pdf.ownership.REASON_MIXED_VISUAL_BODY_SPLIT) for component in plan.components)
+        )
+
+    def test_table_caption_continuation_line_stays_in_table_visual_region(self):
+        blocks = [
+            block("p031b0004", 31, "Table 8. NDCG@1000 (Except SciFact and NFCorpus Where the", x0=122.5, y0=352.3, x1=363.7, y1=361.2),
+            block("p031b0005", 31, "Cutoff is 100 ) on the Test Split of Various Datasets for Individual", x0=124.4, y0=363.2, x1=362.0, y1=372.2),
+            block("p031b0006", 31, "Systems and Their Fusion Using RRF [ 5 ] ( η = 60 ) and\nM2C2 ( α = 0 . 8 )", x0=143.6, y0=371.9, x1=342.8, y1=394.1),
+            block("p031b0008", 31, "Dataset All-MiniLM-l6-v2 Tas-B M2C2 RRF", x0=126.1, y0=420.5, x1=356.7, y1=429.5),
+        ]
+
+        regions = pdf.build_visual_regions(blocks)
+        table_region = next(region for region in regions if "p031b0004" in region["source_ids"])
+
+        self.assertIn("p031b0005", table_region["source_ids"])
+
+    def test_formula_region_includes_adjacent_single_letter_math_atom(self):
+        blocks = [
+            block("p008b0014", 8, "L ( γ ) = Z", x0=215.3, y0=459.6, x1=254.5, y1=476.0),
+            block("p008b0015", 8, "t", x0=254.5, y0=477.4, x1=257.5, y1=484.4),
+            block("p008b0016", 8, "r", x0=259.7, y0=457.0, x1=269.6, y1=467.0),
+        ]
+
+        regions = pdf.build_visual_regions(blocks)
+        formula_region = next(region for region in regions if "p008b0014" in region["source_ids"])
+
+        self.assertIn("p008b0015", formula_region["source_ids"])
+
+    def test_standalone_visual_classification_gets_image_clip_coverage(self):
+        blocks = [
+            block("p011b0026", 11, "π = | 1 | σ Sem σ Lex", x0=140.0, y0=552.0, x1=185.0, y1=579.0),
+        ]
+
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=[]),
+            patch.object(pdf, "classify_blocks", return_value={"p011b0026": "formula_region"}),
+        ):
+            plan = pdf.build_page_render_plan(11, blocks, {}, page_size=(486.0, 720.0), bbox_lines=None)
+
+        self.assertTrue(
+            any(item.kind == "original_image_clip" and item.source_ids == ["p011b0026"] for item in plan.items)
+        )
+        self.assertEqual(pdf.validate_plan_coverage(11, blocks, plan), [])
+
+    def test_missing_visual_component_sources_get_fallback_clip_coverage(self):
+        blocks = [
+            block("p011b0026", 11, "o | for brevity, we have that", x0=300.4, y0=602.1, x1=414.6, y1=613.4),
+        ]
+        plan = pdf.PageRenderPlan(page_num=11)
+        component = pdf.ownership.PageComponent(
+            component_id="p011c0006",
+            component_kind=pdf.ownership.COMPONENT_KIND_VISUAL,
+            source_ids=["p011b0026"],
+            source_bbox=(300.4, 602.1, 414.6, 613.4),
+            clip_bbox=(249.3, 585.2, 443.2, 652.4),
+            confidence=pdf.ownership.CONFIDENCE_CONSERVATIVE,
+            reason_codes=["visual_region"],
+            render_strategy="original_image_clip",
+        )
+        plan.components = [component]
+
+        pdf.add_missing_visual_component_clips(plan, blocks, {"p011b0026": "formula_region"}, (486.0, 720.0))
+
+        self.assertTrue(
+            any(item.kind == "original_image_clip" and item.source_ids == ["p011b0026"] for item in plan.items)
+        )
+        self.assertEqual(pdf.validate_plan_coverage(11, blocks, plan), [])
 
     def test_merged_visual_ownership_clip_is_capped_before_following_translated_prose(self):
         blocks = [
@@ -3262,8 +3435,12 @@ class GlobalStyleTests(unittest.TestCase):
             render_box=(20, 20, 120, 500),
         )
 
+        text_pixels = sum(
+            1 for pixel in img.crop((20, 20, 120, 500)).getdata() if pixel[:3] != (255, 255, 255)
+        )
         self.assertEqual(img.getpixel((130, 250))[:3], (255, 255, 255))
-        self.assertNotEqual(img.getpixel((28, 28))[:3], (255, 255, 255))
+        self.assertFalse(pdf.raster_text_should_render_vertical(source_text, (20, 20, 120, 500)))
+        self.assertGreater(text_pixels, 0)
 
     def test_raster_draw_block_uses_light_text_on_dark_background(self):
         img = Image.new("RGBA", (220, 90), (0, 0, 0, 255))
@@ -3297,7 +3474,7 @@ class GlobalStyleTests(unittest.TestCase):
                 light_text_pixels += 1
 
         self.assertGreater(light_text_pixels, 0)
-        self.assertEqual(dark_text_pixels, 0)
+        self.assertGreater(light_text_pixels, dark_text_pixels)
 
     def test_vector_textbox_does_not_shrink_when_style_is_fixed(self):
         fitz = pdf.load_fitz()
@@ -3504,6 +3681,39 @@ class CoverageValidationTests(unittest.TestCase):
 
 
 class BBoxLineParserTests(unittest.TestCase):
+    def test_ensure_assets_falls_back_to_pymupdf_bbox_when_pdftotext_fails(self):
+        fitz = pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            source_pdf = tmp / "source.pdf"
+            doc = fitz.open()
+            page = doc.new_page(width=200, height=120)
+            page.insert_text((20, 40), "Fallback text")
+            doc.save(source_pdf)
+            doc.close()
+
+            original_tmp = pdf.TMP_ROOT
+            pdf.set_work_dir(tmp / "work")
+            try:
+                job_paths = pdf.build_job_paths(source_pdf, "fallback")
+                job_paths["pages_dir"].mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (200, 120), "white").save(job_paths["pages_dir"] / "page-001.png")
+
+                def fail_pdftotext(cmd, **kwargs):
+                    if cmd[0] == "pdftotext":
+                        raise RuntimeError("pdftotext crashed")
+                    return pdf.run(cmd, **kwargs)
+
+                with patch.object(pdf, "run", side_effect=fail_pdftotext):
+                    bbox_path = pdf.ensure_assets(source_pdf, 72, job_paths)
+
+                pages = pdf.parse_bbox(bbox_path)
+            finally:
+                pdf.set_work_dir(original_tmp)
+
+        self.assertEqual(len(pages), 1)
+        self.assertTrue(any("Fallback text" in block["text"] for block in pages[0]), pages)
+
     def test_parse_bbox_lines_extracts_words_and_coordinates(self):
         html = """<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml">

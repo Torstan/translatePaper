@@ -84,6 +84,23 @@ class LayoutExtractionModuleTests(unittest.TestCase):
         )
         self.assertIs(pdf.wrap_mixed_pdf_text, layout.wrap_mixed_pdf_text)
 
+    def test_math_tokens_do_not_use_unregistered_font_without_font_file(self):
+        fitz = FakeFitz()
+        with patch.object(layout, "MATH_VECTOR_FONT_PATHS", ("/missing/STIXMath-Regular.otf",)):
+            layout._MATH_FITZ_FONT = None
+            self.assertEqual(layout.pdf_token_font("≤"), "helv")
+            self.assertGreater(layout.pdf_token_width(fitz, "≤", 10.0), 0.0)
+
+    def test_raster_font_skips_missing_candidates(self):
+        existing_font = layout.raster_font_path()
+        if existing_font is None:
+            self.skipTest("no raster CJK font available on this host")
+
+        with patch.object(layout, "RASTER_FONT_PATHS", ("/missing/uming.ttc", existing_font)):
+            font = layout.raster_image_font(12)
+
+        self.assertGreater(font.getmetrics()[0], 0)
+
     def test_protected_region_split_direct_api_matches_pipeline_compatibility(self):
         protected = [pdf.RenderItem("original_image_clip", ["fig"], (100.0, 100.0, 180.0, 160.0))]
 

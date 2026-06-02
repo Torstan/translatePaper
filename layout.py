@@ -24,7 +24,14 @@ from regions import (
 
 TOOL_ROOT = Path(__file__).resolve().parent
 VENDOR_ROOT = TOOL_ROOT / "vendor"
-FONT_PATH = "/usr/share/fonts/truetype/arphic/uming.ttc"
+DEFAULT_RASTER_FONT_PATH = "/usr/share/fonts/truetype/arphic/uming.ttc"
+RASTER_FONT_PATHS = (
+    DEFAULT_RASTER_FONT_PATH,
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/Supplemental/Songti.ttc",
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+)
+FONT_PATH = DEFAULT_RASTER_FONT_PATH
 SOURCE_FONT_SCALE = 0.94
 TEXT_BOX_MARGIN_PX = 8
 RASTER_VERTICAL_TEXT_MAX_SOURCE_CHARS = 80
@@ -32,6 +39,7 @@ RASTER_VERTICAL_TEXT_MAX_SOURCE_CHARS = 80
 VECTOR_FONT = "china-s"
 MATH_VECTOR_FONT = "MathF"
 MATH_VECTOR_FONT_PATHS = (
+    "/System/Library/Fonts/Supplemental/STIXTwoMath.otf",
     "/usr/share/fonts/opentype/stix-word/STIXMath-Regular.otf",
     "/usr/share/fonts/truetype/noto/NotoSansMath-Regular.ttf",
     "/usr/share/texmf/fonts/opentype/public/lm-math/latinmodern-math.otf",
@@ -105,9 +113,31 @@ STYLE_POLICY_ROLE_SPLIT_EXCEPTIONS = {
     "first_page_abstract",
     "first_page_metadata",
     "first_page_title",
+    "body_flow_compact",
     "dense_visual_body_row",
     "mixed_visual_body",
 }
+
+
+def raster_font_path() -> str | None:
+    for path in RASTER_FONT_PATHS:
+        if Path(path).exists():
+            return path
+    return None
+
+
+def raster_image_font(font_size: int):
+    attempted = []
+    for path in RASTER_FONT_PATHS:
+        if not Path(path).exists():
+            continue
+        attempted.append(path)
+        try:
+            return ImageFont.truetype(path, font_size)
+        except OSError:
+            continue
+    checked = ", ".join(attempted or RASTER_FONT_PATHS)
+    raise OSError(f"cannot open raster CJK font resource; checked: {checked}")
 
 
 def _load_fitz():
@@ -183,7 +213,9 @@ def text_box_fit_plan(
 
 def pdf_token_font(token: str) -> str:
     if pdf_token_uses_math_font(token):
-        return MATH_VECTOR_FONT
+        if math_vector_font_path() is not None:
+            return MATH_VECTOR_FONT
+        return "helv"
     if re.fullmatch(r"[A-Za-z0-9._+:/%#?=&~×,;()[\]'\" -]+", token):
         return "helv"
     return VECTOR_FONT
@@ -800,10 +832,10 @@ def fit_font_and_lines(
     low, high = 10, max(12, min(80, box_height))
     if max_font_size is not None:
         high = max(low, min(high, max_font_size))
-    best = (10, wrap_text(text, ImageFont.truetype(FONT_PATH, 10), box_width))
+    best = (10, wrap_text(text, raster_image_font(10), box_width))
     while low <= high:
         mid = (low + high) // 2
-        font = ImageFont.truetype(FONT_PATH, mid)
+        font = raster_image_font(mid)
         lines = wrap_text(text, font, box_width)
         ascent, descent = font.getmetrics()
         line_height = int((ascent + descent) * 1.25)
@@ -878,7 +910,7 @@ def avoid_protected_boxes(box, protected_boxes):
 
 
 def text_required_height(text: str, width: int, font_size: int) -> int:
-    font = ImageFont.truetype(FONT_PATH, font_size)
+    font = raster_image_font(font_size)
     lines = wrap_text(text, font, width)
     ascent, descent = font.getmetrics()
     line_height = int((ascent + descent) * 1.25)

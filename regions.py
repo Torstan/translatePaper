@@ -753,6 +753,17 @@ def source_is_short_continuation_fragment(block) -> bool:
     return 0 < len(words) <= 2 and not source_requires_chinese_translation(text)
 
 
+def is_formula_atom_fragment(text: str) -> bool:
+    compact = re.sub(r"\s+", "", normalize_text(text))
+    if not compact or len(compact) > 8:
+        return False
+    return bool(
+        re.fullmatch(r"[A-Za-zα-ωΑ-Ω][A-Za-z0-9α-ωΑ-Ω]*", compact)
+        or re.fullmatch(r"d[A-Za-zα-ωΑ-Ω]", compact)
+        or compact in {"∫", "∂", "√", "∑", "∏", "∞"}
+    )
+
+
 def is_first_page_translatable_title_area_block(block) -> bool:
     if block.get("page") != 1:
         return False
@@ -804,6 +815,24 @@ def is_table_body_candidate(seed_box, candidate_box, text: str) -> bool:
             return False
         return len(normalized) <= 220 and height <= 80.0
     return len(normalized) <= 220 and height <= 120.0
+
+
+def is_table_caption_continuation(seed_box, candidate_box, text: str) -> bool:
+    normalized = normalize_text(text)
+    if not normalized or len(normalized) > 180:
+        return False
+    if is_table_region_terminator(seed_box, candidate_box, normalized):
+        return False
+    vertical_gap = candidate_box[1] - seed_box[3]
+    if vertical_gap < -2.0 or vertical_gap > 18.0:
+        return False
+    overlap = horizontal_overlap(seed_box, candidate_box)
+    min_width = min(seed_box[2] - seed_box[0], candidate_box[2] - candidate_box[0])
+    if overlap < max(20.0, min_width * 0.45):
+        return False
+    if re.match(r"(?i)^(the|this|we|our|in|for|from)\b", normalized):
+        return False
+    return True
 
 
 def is_table_region_terminator(seed_box, candidate_box, text: str) -> bool:
@@ -1239,6 +1268,9 @@ def build_visual_regions(blocks) -> list[dict]:
                             continue
                         if is_table_region_terminator(seed_box, other_box, other_text):
                             break
+                        if is_table_caption_continuation(seed_box, other_box, other_text):
+                            group.append(other)
+                            continue
                         if table_cells_above_caption and is_large_prose_block(other, other_text):
                             continue
                         if not is_table_body_candidate(seed_box, other_box, other_text):
@@ -1263,6 +1295,11 @@ def build_visual_regions(blocks) -> list[dict]:
                         should_preserve_as_image(other)
                         and not is_body_enumeration_line(other_text)
                         and not source_is_short_continuation_fragment(other)
+                    )
+                    or (
+                        formula_seed
+                        and other["id"] != block["id"]
+                        and is_formula_atom_fragment(other_text)
                     )
                 )
                 code_line_number = code_seed and is_code_line_number_block(other_text)
