@@ -223,6 +223,37 @@ class OwnershipValidationTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.issues[0].issue_code, "duplicate_owner")
 
+    def test_explicit_mixed_visual_body_split_allows_small_boundary_overlap(self):
+        result = ownership.validate_ownership(
+            17,
+            [block("p017b0002", "code line\nPROOF. Body prose.", 135, 71, 495, 239)],
+            [
+                ownership.PageComponent(
+                    "p017c0001",
+                    ownership.COMPONENT_KIND_VISUAL,
+                    ["p017b0002"],
+                    (135, 71, 495, 116.3),
+                    (135, 71, 495, 116.3),
+                    ownership.CONFIDENCE_CONSERVATIVE,
+                    ["mixed_visual_body_split", "visual_region"],
+                    "original_image_clip",
+                ),
+                ownership.PageComponent(
+                    "p017c0002",
+                    ownership.COMPONENT_KIND_TRANSLATED_TEXT,
+                    ["p017b0002"],
+                    (135, 113.5, 495, 239),
+                    None,
+                    ownership.CONFIDENCE_INFERRED,
+                    ["body", "mixed_visual_body_split"],
+                    "translated_text",
+                    parent_component_id="p017c0001",
+                ),
+            ],
+        )
+
+        self.assertTrue(result.ok, [issue.issue_code for issue in result.issues])
+
     def test_explicit_mixed_visual_body_split_requires_exact_visual_text_pair(self):
         result = ownership.validate_ownership(
             17,
@@ -705,6 +736,22 @@ class RenderLayerOwnershipValidationTests(unittest.TestCase):
         components = [
             ownership.PageComponent("p017c0001", "visual", ["p017b0002"], (135, 71, 495, 164), (135, 71, 495, 164), "conservative", ["mixed_visual_body_split", "visual_region"], "original_image_clip"),
             ownership.PageComponent("p017c0002", "translated_text", ["p017b0002"], (135, 168, 495, 239), None, "inferred", ["body", "mixed_visual_body_split"], "translated_text", parent_component_id="p017c0001"),
+        ]
+
+        result = ownership.validate_render_layer_exclusivity(plan, components)
+
+        self.assertTrue(result.ok, [issue.issue_code for issue in result.issues])
+
+    def test_render_layer_exclusivity_allows_mixed_split_text_layout_expansion(self):
+        plan = type("Plan", (), {})()
+        plan.page_num = 140
+        plan.items = [
+            type("Item", (), {"kind": "original_image_clip", "source_ids": ["p140b0002"], "bbox": (71.25, 96.09, 540.39, 112.755), "component_id": "p140c0001", "component_kind": "visual"})(),
+            type("Item", (), {"kind": "original_selectable_text", "source_ids": ["p140b0001", "p140b0002", "p140b0003"], "bbox": (72.0, 113.505, 329.604, 154.177), "component_id": "p140c0002", "component_kind": "translated_text"})(),
+        ]
+        components = [
+            ownership.PageComponent("p140c0001", "visual", ["p140b0001", "p140b0002", "p140b0003"], (71.25, 96.09, 540.39, 116.31), (71.25, 96.09, 540.39, 116.31), "conservative", ["mixed_visual_body_split", "visual_region"], "original_image_clip"),
+            ownership.PageComponent("p140c0002", "translated_text", ["p140b0001", "p140b0002", "p140b0003"], (72.0, 113.505, 327.604, 145.556), None, "inferred", ["body", "mixed_visual_body_split"], "translated_text", parent_component_id="p140c0001"),
         ]
 
         result = ownership.validate_render_layer_exclusivity(plan, components)

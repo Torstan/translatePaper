@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 import classify
+import ownership
 import qa_visual
 import translate_pdf_via_codex as pdf
 
@@ -1673,6 +1674,139 @@ class RenderPlanClassificationTests(unittest.TestCase):
         table_region = next(region for region in regions if "p031b0004" in region["source_ids"])
 
         self.assertIn("p031b0005", table_region["source_ids"])
+
+    def test_visual_clip_excludes_mixed_body_text_component_from_neighboring_visual_region(self):
+        blocks = [
+            block(
+                "p136b0003",
+                136,
+                "// Phase 1: Scan active RPCs to see if any have completed.",
+                x0=72.0,
+                y0=360.32625,
+                x1=464.869687,
+                y1=371.30625,
+            ),
+            block(
+                "p136b0004",
+                136,
+                "For loops, it is helpful to describe each iteration.",
+                x0=72.0,
+                y0=379.755,
+                x1=539.30673,
+                y1=412.755,
+            ),
+            block(
+                "p136b0005",
+                136,
+                "// Each iteration extracts one request from the message.",
+                x0=72.0,
+                y0=417.32625,
+                x1=512.28375,
+                y1=428.30625,
+            ),
+            block(
+                "p136b0006",
+                136,
+                "// increments the corresponding object.",
+                x0=72.0,
+                y0=435.32625,
+                x1=505.510312,
+                y1=446.30625,
+            ),
+            block(
+                "p136b0007",
+                136,
+                "// appends a response to the response message.",
+                x0=72.0,
+                y0=453.32625,
+                x1=383.588437,
+                y1=464.30625,
+            ),
+        ]
+        visual_regions = [
+            {
+                "source_ids": ["p136b0003", "p136b0004"],
+                "bbox": (71.61, 355.755, 463.35, 371.91),
+                "has_code_seed": True,
+            },
+            {
+                "source_ids": ["p136b0005", "p136b0006", "p136b0007"],
+                "bbox": (71.61, 411.45, 512.67, 465.15),
+            },
+        ]
+        components = [
+            ownership.PageComponent(
+                "p136c0001",
+                ownership.COMPONENT_KIND_VISUAL,
+                ["p136b0003", "p136b0004"],
+                (71.61, 355.755, 463.35, 371.91),
+                (71.61, 355.755, 463.35, 371.91),
+                ownership.CONFIDENCE_CONSERVATIVE,
+                [ownership.REASON_MIXED_VISUAL_BODY_SPLIT, "visual_region"],
+                "original_image_clip",
+            ),
+            ownership.PageComponent(
+                "p136c0002",
+                ownership.COMPONENT_KIND_TRANSLATED_TEXT,
+                ["p136b0003", "p136b0004"],
+                (72.0, 379.755, 539.30673, 412.755),
+                None,
+                ownership.CONFIDENCE_INFERRED,
+                ["body", ownership.REASON_MIXED_VISUAL_BODY_SPLIT],
+                "translated_text",
+                parent_component_id="p136c0001",
+            ),
+            ownership.PageComponent(
+                "p136c0003",
+                ownership.COMPONENT_KIND_VISUAL,
+                ["p136b0005", "p136b0006", "p136b0007"],
+                (72.0, 417.32625, 512.28375, 464.30625),
+                (71.61, 411.45, 512.67, 465.15),
+                ownership.CONFIDENCE_CONSERVATIVE,
+                ["visual_region"],
+                "original_image_clip",
+            ),
+        ]
+        ownership_result = pdf.TranslationPageOwnership(
+            classes={
+                "p136b0003": "code_region",
+                "p136b0004": "body",
+                "p136b0005": "code_region",
+                "p136b0006": "code_region",
+                "p136b0007": "code_region",
+            },
+            components=components,
+            validation=ownership.OwnershipValidationResult(),
+            visual_regions=visual_regions,
+            raw_visual_regions=visual_regions,
+            translatable_ids=["p136b0004"],
+            in_reference_section=False,
+            force_reference_page=False,
+        )
+
+        with patch.object(pdf, "build_translation_page_components", return_value=ownership_result):
+            plan = pdf.build_page_render_plan(
+                136,
+                blocks,
+                {
+                    "p136b0003": "// Phase 1\nFor loops, it is helpful to describe each iteration.",
+                },
+                page_size=(612.0, 792.0),
+                bbox_lines=None,
+            )
+
+        layout_errors = pdf.validate_plan_layout(plan, (612.0, 792.0))
+        self.assertNotIn(
+            "visual component p136c0003 captures translated component p136c0002",
+            layout_errors,
+        )
+        c3_clips = [
+            item.bbox
+            for item in plan.items
+            if item.kind == "original_image_clip" and item.component_id == "p136c0003"
+        ]
+        self.assertTrue(c3_clips)
+        self.assertGreaterEqual(min(clip[1] for clip in c3_clips), 412.755)
 
     def test_formula_region_includes_adjacent_single_letter_math_atom(self):
         blocks = [

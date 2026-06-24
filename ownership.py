@@ -38,6 +38,8 @@ TEXT_RENDER_KINDS = {"translated_text", "original_selectable_text"}
 IMAGE_RENDER_KINDS = {"original_image_clip"}
 REASON_MIXED_VISUAL_BODY_SPLIT = "mixed_visual_body_split"
 VISUAL_CONTAINMENT_TOLERANCE = 1.5
+MIXED_SPLIT_SOURCE_BOUNDARY_TOLERANCE = 4.0
+MIXED_SPLIT_TEXT_LAYOUT_TOLERANCE = 12.0
 
 
 @dataclass(frozen=True)
@@ -418,9 +420,8 @@ def _components_are_explicit_disjoint_split(components: list[PageComponent]) -> 
         return False
     for index, left in enumerate(components):
         for right in components[index + 1 :]:
-            if bbox_overlap_area(left.source_bbox, right.source_bbox) > 1.0:
-                return False
-            if bbox_overlap_height(left.source_bbox, right.source_bbox) > 0.5:
+            overlap_height = bbox_overlap_height(left.source_bbox, right.source_bbox)
+            if overlap_height > MIXED_SPLIT_SOURCE_BOUNDARY_TOLERANCE:
                 return False
     return True
 
@@ -464,7 +465,7 @@ def _split_render_items_match_components(source_id: str, image_items, text_items
             return False
         if str(_item_attr(item, "component_kind", "") or "") != COMPONENT_KIND_TRANSLATED_TEXT:
             return False
-        if not _bbox_contained(_item_bbox(item), text_component.source_bbox, tolerance=3.0):
+        if not _bbox_contained(_item_bbox(item), text_component.source_bbox, tolerance=MIXED_SPLIT_TEXT_LAYOUT_TOLERANCE):
             return False
     return True
 

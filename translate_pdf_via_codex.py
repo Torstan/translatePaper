@@ -3963,6 +3963,25 @@ def translated_text_exclusion_boxes(blocks, classes, translations, region_bbox, 
     return boxes
 
 
+def translated_component_exclusion_boxes(components, matching_visual_component, region_bbox, page_size):
+    boxes = []
+    for component in components:
+        if component.component_kind != ownership.COMPONENT_KIND_TRANSLATED_TEXT:
+            continue
+        if matching_visual_component is not None and component.component_id == matching_visual_component.component_id:
+            continue
+        source_box = component.source_bbox
+        if bbox_overlap_area(source_box, region_bbox) <= 0.0:
+            continue
+        boxes.append(
+            clamp_bbox(
+                expanded_bbox(source_box, pad_x=TEXT_PROTECTED_GAP_PT, pad_y=TEXT_PROTECTED_GAP_PT),
+                page_size,
+            )
+        )
+    return boxes
+
+
 def split_rect_around_exclusion(rect, exclusion):
     rx0, ry0, rx1, ry1 = rect
     ex0, ey0, ex1, ey1 = exclusion
@@ -4166,6 +4185,14 @@ def build_page_render_plan(
             region_bbox,
             page_size,
             bbox_lines,
+        )
+        exclusion_boxes.extend(
+            translated_component_exclusion_boxes(
+                plan.components,
+                matching_component,
+                region_bbox,
+                page_size,
+            )
         )
         clip_bboxes = split_visual_clip_around_translated_text(
             region_bbox,
