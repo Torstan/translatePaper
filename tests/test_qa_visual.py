@@ -1837,6 +1837,35 @@ class VisualQaRulePairTests(unittest.TestCase):
         self.assertCategoryReported(bad_issues, "style_hierarchy")
         self.assertCategoryAbsent(corrected_issues, "style_hierarchy")
 
+    def test_style_hierarchy_allows_explicit_callout_heading_role_split(self):
+        plan = {
+            "page_num": 134,
+            "render_items": [
+                {
+                    "kind": "translated_text",
+                    "source_ids": ["p134b0002"],
+                    "bbox": [148.0, 328.0, 500.0, 348.0],
+                    "text": "危险信号：实现文档",
+                    "style_name": "heading",
+                    "font_size": 13.2,
+                    "fallback_reason": "callout_heading",
+                }
+            ],
+            "coverage_ledger": [
+                {
+                    "block_id": "p134b0002",
+                    "classification": "body",
+                    "render_kind": "translated_text",
+                    "rendered": True,
+                    "fallback_reason": "callout_heading",
+                }
+            ],
+        }
+
+        issues = qa_visual.detect_style_issues(plan)
+
+        self.assertCategoryAbsent(issues, "style_hierarchy")
+
     def test_body_font_consistency_rule_fails_bad_plan_and_passes_corrected_plan(self):
         bad_plan = {
             "page_num": 27,
@@ -2069,7 +2098,7 @@ class VisualQaReportTests(unittest.TestCase):
         self.assertEqual([issue.render_kind for issue in issues], ["ownership"] * 6)
         self.assertEqual(issues[0].source_ids, ["p021b0001"])
         self.assertEqual(issues[0].bbox, (10.0, 20.0, 30.0, 40.0))
-        self.assertEqual(issues[1].severity, "warning")
+        self.assertEqual(issues[1].severity, "error")
         self.assertEqual(issues[1].artifact_paths, {"component_ids": "p021c0002,p021c0003"})
         self.assertEqual(issues[3].artifact_paths, {})
 
@@ -2108,6 +2137,45 @@ class VisualQaReportTests(unittest.TestCase):
         self.assertEqual(report_json["issue_count"], 1)
         self.assertEqual(report_json["issues"][0]["category"], "duplicate_ownership")
         self.assertEqual(report_json["issues"][0]["render_kind"], "ownership")
+
+    def test_generate_visual_qa_report_marks_ownership_warning_as_failed_issue(self):
+        plan = {
+            "page_num": 135,
+            "render_items": [],
+            "coverage_ledger": [],
+            "protected_regions": [],
+            "validation_results": [],
+            "ownership_validation": {
+                "ok": False,
+                "issues": [
+                    {
+                        "issue_code": "visual_clip_undercaptures_source",
+                        "severity": "warning",
+                        "message": "visual component clip does not cover its source bbox",
+                        "source_ids": ["p135b0027"],
+                        "component_ids": ["p135c0003"],
+                        "bboxes": [[72.33, 714.57, 507.99, 720.75]],
+                    }
+                ],
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plan_path = tmp_path / "page-135.render-plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+
+            report = qa_visual.generate_visual_qa_report(
+                [plan_path],
+                output_dir=tmp_path,
+            )
+            report_json = json.loads(report.json_path.read_text(encoding="utf-8"))
+            report_md = report.markdown_path.read_text(encoding="utf-8")
+
+        self.assertEqual(report_json["error_count"], 1)
+        self.assertEqual(report_json["warning_count"], 0)
+        self.assertEqual(report_json["highest_severity"], "error")
+        self.assertEqual(report_json["issues"][0]["severity"], "error")
+        self.assertIn("visual_clip_undercaptures_source", report_md)
 
     def test_generate_visual_qa_report_writes_deterministic_json_and_markdown(self):
         issues = [

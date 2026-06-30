@@ -27,12 +27,20 @@ VENDOR_ROOT = TOOL_ROOT / "vendor"
 DEFAULT_RASTER_FONT_PATH = "/usr/share/fonts/truetype/arphic/uming.ttc"
 RASTER_FONT_PATHS = (
     DEFAULT_RASTER_FONT_PATH,
-    "/System/Library/Fonts/STHeiti Medium.ttc",
-    "/System/Library/Fonts/Supplemental/Songti.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/System/Library/Fonts/STHeiti Light.ttc",
     "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    "/System/Library/Fonts/Supplemental/Songti.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
 )
+RASTER_FONT_FACE_INDEXES = {
+    "/System/Library/Fonts/STHeiti Light.ttc": 1,  # Heiti SC Light
+    "/System/Library/Fonts/Supplemental/Songti.ttc": 3,  # Songti SC Light
+    "/System/Library/Fonts/STHeiti Medium.ttc": 1,  # Heiti SC Medium, last-resort only
+}
 FONT_PATH = DEFAULT_RASTER_FONT_PATH
 SOURCE_FONT_SCALE = 0.94
+RASTER_LINE_HEIGHT_FACTOR = 1.25 * 1.20
 TEXT_BOX_MARGIN_PX = 8
 RASTER_VERTICAL_TEXT_MAX_SOURCE_CHARS = 80
 
@@ -58,6 +66,16 @@ TEXT_FIT_EPSILON_PT = 0.01
 TEXT_VERTICAL_EXPANSION_GAP_PT = 2.0
 SHRINK_FIT_MIN_FONT_SIZE = 5.0
 EXPANDABLE_TEXT_STYLE_NAMES = {"body", "heading", "subheading", "title"}
+SOURCE_ADAPTED_FONT_MIN_DELTA_PT = 0.35
+SOURCE_ADAPTED_BODY_MIN_LINES = 3
+SOURCE_ADAPTED_HEADING_MIN_HEIGHT_FACTOR = 1.65
+SOURCE_ADAPTED_FONT_MAX_BY_STYLE = {
+    "body": 11.2,
+    "subheading": 12.4,
+    "heading": 13.2,
+    "title": 15.4,
+}
+TEXT_FLOW_EXCLUDED_FALLBACK_REASONS = {"callout_heading", "callout_body"}
 
 
 @dataclass(frozen=True)
@@ -116,6 +134,10 @@ STYLE_POLICY_ROLE_SPLIT_EXCEPTIONS = {
     "body_flow_compact",
     "dense_visual_body_row",
     "mixed_visual_body",
+    "source_adapted_font",
+    "body_flow_source_adapted_font",
+    "callout_heading",
+    "callout_body",
 }
 
 
@@ -133,11 +155,16 @@ def raster_image_font(font_size: int):
             continue
         attempted.append(path)
         try:
-            return ImageFont.truetype(path, font_size)
+            return ImageFont.truetype(path, font_size, index=RASTER_FONT_FACE_INDEXES.get(path, 0))
         except OSError:
             continue
     checked = ", ".join(attempted or RASTER_FONT_PATHS)
     raise OSError(f"cannot open raster CJK font resource; checked: {checked}")
+
+
+def raster_line_height(font) -> int:
+    ascent, descent = font.getmetrics()
+    return int((ascent + descent) * RASTER_LINE_HEIGHT_FACTOR)
 
 
 def _load_fitz():
@@ -564,6 +591,7 @@ def item_is_body_layout_text(item: RenderItem) -> bool:
         item.kind in {"translated_text", "original_selectable_text"}
         and item.text.strip()
         and render_text_style_name(item) in TEXT_FLOW_STYLE_NAMES
+        and item.fallback_reason not in TEXT_FLOW_EXCLUDED_FALLBACK_REASONS
         and not item_is_formula_intro_text(item)
     )
 
@@ -837,8 +865,7 @@ def fit_font_and_lines(
         mid = (low + high) // 2
         font = raster_image_font(mid)
         lines = wrap_text(text, font, box_width)
-        ascent, descent = font.getmetrics()
-        line_height = int((ascent + descent) * 1.25)
+        line_height = raster_line_height(font)
         total_height = line_height * max(1, len(lines))
         if total_height <= box_height:
             best = (mid, lines)
@@ -858,7 +885,7 @@ def target_font_size_for_block(block, dpi: int, vertical: bool) -> int | None:
     scale = dpi / 72.0
     block_height_px = max(1.0, (block["yMax"] - block["yMin"]) * scale)
     source_line_height = block_height_px / source_line_count(block.get("text", ""))
-    return max(10, int(round(source_line_height / 1.25 * SOURCE_FONT_SCALE)))
+    return max(10, int(round(source_line_height / RASTER_LINE_HEIGHT_FACTOR * SOURCE_FONT_SCALE)))
 
 
 def raster_text_should_render_vertical(text: str, box) -> bool:
@@ -912,8 +939,7 @@ def avoid_protected_boxes(box, protected_boxes):
 def text_required_height(text: str, width: int, font_size: int) -> int:
     font = raster_image_font(font_size)
     lines = wrap_text(text, font, width)
-    ascent, descent = font.getmetrics()
-    line_height = int((ascent + descent) * 1.25)
+    line_height = raster_line_height(font)
     return line_height * max(1, len(lines)) + 4
 
 
@@ -1011,7 +1037,31 @@ def style_name_for_block(block, classification: str) -> str:
 
 
 def render_font_size_for_block(block, classification: str) -> float:
-    return text_style(style_name_for_block(block, classification)).font_size
+    return render_font_size_for_style(block, style_name_for_block(block, classification))
+
+
+def source_adapted_font_size_allowed(block, style_name: str) -> bool:
+    if style_name not in SOURCE_ADAPTED_FONT_MAX_BY_STYLE:
+        return False
+    if style_name == "body":
+        return (
+            source_line_count(block.get("text", "")) >= SOURCE_ADAPTED_BODY_MIN_LINES
+            and block["yMax"] - block["yMin"] >= BODY_FONT_SIZE * SOURCE_ADAPTED_BODY_MIN_LINES
+        )
+    return block["yMax"] - block["yMin"] >= text_style(style_name).font_size * SOURCE_ADAPTED_HEADING_MIN_HEIGHT_FACTOR
+
+
+def render_font_size_for_style(block, style_name: str) -> float:
+    style = text_style(style_name)
+    if not source_adapted_font_size_allowed(block, style_name):
+        return style.font_size
+    target = target_font_size_points_for_block(
+        block,
+        max_size=SOURCE_ADAPTED_FONT_MAX_BY_STYLE[style_name],
+    )
+    if target < style.font_size + SOURCE_ADAPTED_FONT_MIN_DELTA_PT:
+        return style.font_size
+    return round(max(style.font_size, target), 1)
 
 
 def usable_text_segment(segment) -> bool:

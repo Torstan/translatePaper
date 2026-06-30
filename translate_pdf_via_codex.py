@@ -99,6 +99,7 @@ from layout import (
     SOURCE_PARAGRAPH_FLOW_MAX_GAP_PT,
     TEXT_FIT_EPSILON_PT,
     TEXT_FLOW_STYLE_NAMES,
+    TEXT_FLOW_EXCLUDED_FALLBACK_REASONS,
     TITLE_FONT_SIZE,
     VECTOR_ACCENT_COLOR,
     VECTOR_BODY_COLOR,
@@ -138,10 +139,12 @@ from layout import (
     preferred_text_height_for_item,
     raster_font_path,
     raster_image_font,
+    raster_line_height,
     raster_text_should_render_vertical,
     rebalance_body_text_flows,
     release_visual_clip_overcapture_for_text_fit,
     render_font_size_for_block,
+    render_font_size_for_style,
     render_text_style_name,
     shifted_boxes_around_protected,
     small_overflow_tolerance,
@@ -256,12 +259,15 @@ from regions import (
     expanded_bbox,
     formula_region_bbox_from_lines,
     grouped_image_row_clips,
+    code_comment_marker_has_delimiter_context,
     has_intervening_wide_prose_block,
+    has_code_comment_marker_to_left,
     has_standalone_heading_number_to_left,
     heuristic_heading_from_block,
     horizontal_overlap,
     image_info_preserve_bbox,
     is_adjacent_visual_table_row_cell,
+    is_code_comment_marker_text,
     is_large_prose_block,
     is_nearby_table_header_cell,
     is_table_body_candidate,
@@ -839,6 +845,24 @@ def visual_translation_protected_ids(
     return protected_ids
 
 
+def visual_region_has_code_comment_context(region, block_by_id: dict[str, dict]) -> bool:
+    region_blocks = [
+        block_by_id[source_id]
+        for source_id in region.get("source_ids", [])
+        if source_id in block_by_id
+    ]
+    if not region_blocks:
+        return False
+    context_blocks = list(block_by_id.values())
+    if any(
+        is_code_comment_marker_text(block.get("text", ""))
+        and code_comment_marker_has_delimiter_context(block, context_blocks)
+        for block in region_blocks
+    ):
+        return True
+    return any(has_code_comment_marker_to_left(block, context_blocks) for block in region_blocks)
+
+
 def final_visual_region_bbox(
     blocks,
     classes,
@@ -881,7 +905,15 @@ def final_visual_region_bbox(
     cap_source_bbox = visual_source_bbox
     mixed_body_item = None
     mixed_visual_body = False
-    allow_mixed_visual_body_split = region.get("has_code_seed") and not region_has_table_caption
+    region_has_code_comment = (
+        region.get("has_code_comment_seed")
+        or visual_region_has_code_comment_context(region, block_by_id)
+    )
+    allow_mixed_visual_body_split = (
+        region.get("has_code_seed")
+        and not region_has_code_comment
+        and not region_has_table_caption
+    )
     if allow_mixed_visual_body_split and bbox_lines and page_size is not None:
         mixed = mixed_visual_body_render_item(region, bbox_lines, translations or {}, page_size)
         if mixed is not None:
@@ -942,6 +974,8 @@ def final_visual_region_bbox(
             region_bbox[2],
             min(region_bbox[3], cap_source_bbox[3] + VISUAL_CLIP_PIXEL_FINAL_PAD_PT),
         )
+    if region_has_code_comment:
+        region_bbox = clamp_bbox(bbox_union([region_bbox, visual_source_bbox]), page_size)
     region_bbox = cap_visual_bbox_after_preceding_text(
         cap_source_bbox,
         region_bbox,
@@ -1103,9 +1137,13 @@ def final_visual_ownership_regions(
             for source_id in region.get("source_ids", [])
             if source_id in block_by_id
         )
+        region_has_code_comment = (
+            region.get("has_code_comment_seed")
+            or visual_region_has_code_comment_context(region, block_by_id)
+        )
         mixed_split = (
             split_mixed_visual_body_rows(region["bbox"], bbox_lines)
-            if region.get("has_code_seed") and not region_has_table_caption
+            if region.get("has_code_seed") and not region_has_code_comment and not region_has_table_caption
             else None
         )
         source_ids = set(preliminary_source_ids)
@@ -1147,6 +1185,8 @@ def final_visual_ownership_regions(
             classes,
             cap_guard_visual_ids,
         )
+        if visual_region_has_code_comment_context(region, block_by_id):
+            region["bbox"] = clamp_bbox(bbox_union([tuple(region["bbox"]), cap_source_bbox]), page_size)
     return merged_regions
 
 
@@ -2367,8 +2407,7 @@ def draw_block(
         max_font_size=target_font_size,
     )
     font = raster_image_font(font_size)
-    ascent, descent = font.getmetrics()
-    line_height = int((ascent + descent) * 1.25)
+    line_height = raster_line_height(font)
     text_img = Image.new("RGBA", (x1 - x0, y1 - y0), (0, 0, 0, 0))
     text_draw = ImageDraw.Draw(text_img)
     y = 2
@@ -4081,6 +4120,59 @@ def add_missing_visual_component_clips(plan: PageRenderPlan, blocks, classes: di
             covered_ids.add(source_id)
 
 
+def is_callout_heading_seed(text: str) -> bool:
+    return bool(re.match(r"(?i)^\s*(?:red flag|warning|danger|pitfall|caution)\s*:", normalize_text(text)))
+
+
+def callout_text_roles(blocks) -> dict[str, str]:
+    roles: dict[str, str] = {}
+    sorted_blocks = sorted(blocks, key=lambda item: (item.get("block_index", 0), item["yMin"], item["xMin"]))
+    consumed: set[str] = set()
+    for idx, block in enumerate(sorted_blocks):
+        if block["id"] in consumed or not is_callout_heading_seed(block.get("text", "")):
+            continue
+        seed_box = block_bbox(block)
+        bottom_limit = seed_box[1] + 150.0
+        group = [block]
+        saw_body = False
+        for other in sorted_blocks[idx + 1 :]:
+            if other["id"] in consumed:
+                continue
+            other_text = normalize_text(other.get("text", ""))
+            if not other_text:
+                continue
+            other_box = block_bbox(other)
+            if other_box[1] > bottom_limit:
+                break
+            if other_box[1] < seed_box[1] - 2.0:
+                continue
+            if horizontal_overlap(seed_box, other_box) <= 20.0:
+                continue
+            if is_formula_or_code_block(other_text) or is_code_row_text(other_text):
+                break
+            if saw_body and source_requires_chinese_translation(other_text):
+                break
+            group.append(other)
+            if source_requires_chinese_translation(other_text) and len(other_text) > 40:
+                saw_body = True
+        if len(group) < 2:
+            continue
+        for group_idx, item in enumerate(group):
+            text = normalize_text(item.get("text", ""))
+            role = "callout_body" if group_idx > 0 and source_requires_chinese_translation(text) and len(text) > 40 else "callout_heading"
+            roles[item["id"]] = role
+            consumed.add(item["id"])
+    return roles
+
+
+def render_font_size_and_reason(block, style_name: str, base_reason: str = "") -> tuple[float, str]:
+    font_size = render_font_size_for_style(block, style_name)
+    default_size = text_style(style_name).font_size
+    if abs(font_size - default_size) > 0.01:
+        return font_size, base_reason or "source_adapted_font"
+    return font_size, base_reason
+
+
 def build_page_render_plan(
     page_num: int,
     blocks,
@@ -4130,6 +4222,7 @@ def build_page_render_plan(
             continue
         classes[number_block["id"]] = "heading"
         classes[title_block["id"]] = "heading"
+    callout_roles = callout_text_roles(blocks)
     footer_items = journal_footer_render_items(bbox_lines or [], page_size)
     plan.items.extend(footer_items)
     reference_line_items = reference_line_render_items(blocks, bbox_lines or [], page_size, classes)
@@ -4379,6 +4472,12 @@ def build_page_render_plan(
                 translations.get(block["id"], ""),
             )
             style_name = style_name_for_block(block, classification)
+            callout_reason = callout_roles.get(block["id"], "")
+            if callout_reason == "callout_heading":
+                style_name = "heading"
+            elif callout_reason == "callout_body":
+                style_name = "body"
+            font_size, font_reason = render_font_size_and_reason(block, style_name, callout_reason)
             if (
                 translated
                 and block["id"] in translations
@@ -4444,11 +4543,12 @@ def build_page_render_plan(
                         [block["id"]],
                         bbox,
                         text=translated,
-                        font_size=text_style(style_name).font_size,
+                        font_size=font_size,
                         style_name=style_name,
+                        fallback_reason=font_reason,
                     )
                 )
-                plan.ledger.append(CoverageEntry(block["id"], classification, "translated_text", True))
+                plan.ledger.append(CoverageEntry(block["id"], classification, "translated_text", True, font_reason))
             elif translated and block["id"] in translations:
                 plan.items.append(
                     RenderItem(
@@ -4842,6 +4942,8 @@ def normalize_vector_text_layout(plan: PageRenderPlan, page_size, fitz=None) -> 
 
 
 DENSE_VISUAL_BODY_ROW_FALLBACK = "dense_visual_body_row"
+BODY_FLOW_FALLBACK = "body_flow"
+BODY_FLOW_SOURCE_ADAPTED_FALLBACK = "body_flow_source_adapted_font"
 BODY_FLOW_COMPACT_FALLBACK = "body_flow_compact"
 DENSE_VISUAL_BODY_ROW_MAX_HEIGHT_PT = BODY_FONT_SIZE * 0.95
 DENSE_VISUAL_BODY_ROW_MAX_VISUAL_GAP_PT = BODY_FONT_SIZE * 1.6
@@ -4925,7 +5027,7 @@ def compact_font_size_for_text_item(item: RenderItem, fitz) -> float | None:
     style = text_style(item.style_name or "body")
     width = max(1.0, item.bbox[2] - item.bbox[0])
     height = item.bbox[3] - item.bbox[1]
-    size = min(item.font_size or style.font_size, style.font_size)
+    size = item.font_size or style.font_size
     while size >= SHRINK_FIT_MIN_FONT_SIZE - TEXT_FIT_EPSILON_PT:
         candidate = max(SHRINK_FIT_MIN_FONT_SIZE, round(size, 2))
         if text_box_fit_plan(fitz, item.text, width, height, style, font_size=candidate) is not None:
@@ -4938,7 +5040,11 @@ def fit_body_flow_text_items(plan: PageRenderPlan, fitz=None) -> None:
     if fitz is None:
         fitz = load_fitz()
     for item in plan.items:
-        if item.kind != "translated_text" or item.style_name != "body" or item.fallback_reason != "body_flow":
+        if (
+            item.kind != "translated_text"
+            or item.style_name != "body"
+            or item.fallback_reason not in {BODY_FLOW_FALLBACK, BODY_FLOW_SOURCE_ADAPTED_FALLBACK}
+        ):
             continue
         fit, _required, _available = text_item_fit_metrics(item, fitz)
         if fit is not None:
@@ -5107,6 +5213,8 @@ def item_is_body_flow_text(item: RenderItem, classes: dict[str, str]) -> bool:
         return False
     if item.fallback_reason == "source_paragraph_split":
         return False
+    if item.fallback_reason in TEXT_FLOW_EXCLUDED_FALLBACK_REASONS:
+        return False
     if item.bbox[3] - item.bbox[1] < 8.0:
         return False
     return item_is_body_like(item, classes)
@@ -5183,15 +5291,19 @@ def merge_adjacent_body_text_flows(plan: PageRenderPlan) -> None:
             continue
         first_idx = group[0][0]
         source_ids = [source_id for item in ordered_items for source_id in item.source_ids]
+        font_size = max(item.font_size or DOCUMENT_STYLES["body"].font_size for item in ordered_items)
+        fallback_reason = BODY_FLOW_FALLBACK
+        if font_size > DOCUMENT_STYLES["body"].font_size + TEXT_FIT_EPSILON_PT:
+            fallback_reason = BODY_FLOW_SOURCE_ADAPTED_FALLBACK
         replacement_by_first[first_idx] = RenderItem(
             "translated_text",
             source_ids,
             candidate_bbox,
             text="\n".join(item.text for item in ordered_items if item.text.strip()),
-            font_size=DOCUMENT_STYLES["body"].font_size,
+            font_size=font_size,
             style_name="body",
             color=ordered_items[0].color,
-            fallback_reason="body_flow",
+            fallback_reason=fallback_reason,
         )
         remove_indices.update(idx for idx, _item in group[1:])
 
@@ -5436,17 +5548,43 @@ def write_raster_pdf(pdf_output: Path, page_numbers, pdf_size_pt, job_paths):
     lines.append(r"\end{document}")
     tex_path.write_text("\n".join(lines), encoding="utf-8")
     pdf_output.parent.mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            "xelatex",
-            "-interaction=nonstopmode",
-            "-output-directory",
-            str(job_paths["job_dir"]),
-            str(tex_path),
-        ],
-        check=True,
-    )
+    try:
+        run(
+            [
+                "xelatex",
+                "-interaction=nonstopmode",
+                "-output-directory",
+                str(job_paths["job_dir"]),
+                str(tex_path),
+            ],
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        if exc.filename not in (None, "xelatex"):
+            raise
+        write_raster_pdf_with_pymupdf(pdf_output, page_numbers, pdf_size_pt, job_paths)
+        return
     shutil.copy2(job_paths["pdf_path"], pdf_output)
+
+
+def write_raster_pdf_with_pymupdf(pdf_output: Path, page_numbers, pdf_size_pt, job_paths):
+    """Assemble translated raster pages directly when TeX is unavailable."""
+    fitz = load_fitz()
+    width_pt, height_pt = pdf_size_pt
+    doc = fitz.open()
+    try:
+        for page_num in page_numbers:
+            image_path = translated_page_path(page_num, job_paths)
+            if not image_path.exists():
+                raise FileNotFoundError(f"missing translated raster page: {image_path}")
+            page = doc.new_page(width=width_pt, height=height_pt)
+            page.insert_image(page.rect, filename=str(image_path))
+        pdf_output.parent.mkdir(parents=True, exist_ok=True)
+        tmp_output = pdf_output.with_name(f"{pdf_output.name}.tmp")
+        doc.save(tmp_output, garbage=4, deflate=True)
+        tmp_output.replace(pdf_output)
+    finally:
+        doc.close()
 
 
 def write_latex(pdf_output: Path, page_numbers, pdf_size_pt, job_paths):

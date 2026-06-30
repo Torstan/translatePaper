@@ -908,6 +908,57 @@ def is_title_block(block) -> bool:
     return block["yMin"] < 120 and len(text) <= 140
 
 
+def is_book_chapter_label_text(text: str) -> bool:
+    return bool(re.fullmatch(r"(?i)chapter\s+\d{1,3}", normalize_text(text).strip()))
+
+
+def book_chapter_title_candidate(block) -> bool:
+    text = normalize_text(block.get("text", ""))
+    if not text or len(text) > 140:
+        return False
+    if is_page_number(text) or is_reference_heading(text) or is_visual_caption(text):
+        return False
+    if is_formula_like(text) or re.search(r"[@]|https?://|arxiv:", text, flags=re.I):
+        return False
+    if re.search(r"[.!?][\"')\]）】”’]*\s*$", text):
+        return False
+    words = latin_words(text)
+    if not (1 <= len(words) <= 12):
+        return False
+    if source_requires_chinese_translation(text):
+        return True
+    return bool(re.fullmatch(r"[A-Z][A-Za-z0-9 ,/&().:'-]{1,139}", text))
+
+
+def book_chapter_heading_ids(blocks) -> tuple[set[str], set[str]]:
+    """Detect book chapter openers split as "Chapter N" plus a following title."""
+    label_ids: set[str] = set()
+    title_ids: set[str] = set()
+    sorted_blocks = sorted(blocks, key=lambda item: (item["yMin"], item["xMin"]))
+    for idx, block in enumerate(sorted_blocks):
+        if not is_book_chapter_label_text(block.get("text", "")):
+            continue
+        label_box = (block["xMin"], block["yMin"], block["xMax"], block["yMax"])
+        candidates = []
+        for other in sorted_blocks[idx + 1 : idx + 5]:
+            gap = other["yMin"] - block["yMax"]
+            if gap < -2.0 or gap > 90.0:
+                continue
+            if abs(other["xMin"] - block["xMin"]) > 48.0:
+                continue
+            if other["yMax"] - other["yMin"] < 10.0:
+                continue
+            if not book_chapter_title_candidate(other):
+                continue
+            candidates.append((gap, abs((other["xMin"] + other["xMax"]) - (label_box[0] + label_box[2])), other))
+        if not candidates:
+            continue
+        _gap, _x_delta, title = min(candidates, key=lambda item: item[:2])
+        label_ids.add(block["id"])
+        title_ids.add(title["id"])
+    return label_ids, title_ids
+
+
 def is_first_page_author_block(block) -> bool:
     text = normalize_text(block.get("text", ""))
     if block.get("page") != 1 or not text:
@@ -1237,6 +1288,7 @@ def classify_blocks(blocks, visual_regions) -> dict[str, str]:
     classes = {}
     visual_ids = {source_id for region in visual_regions for source_id in region["source_ids"]}
     references = reference_block_ids(blocks)
+    chapter_label_ids, chapter_title_ids = book_chapter_heading_ids(blocks)
     for block in sorted(blocks, key=lambda item: (item["yMin"], item["xMin"])):
         text = normalize_text(block.get("text", ""))
         if not text:
@@ -1258,6 +1310,12 @@ def classify_blocks(blocks, visual_regions) -> dict[str, str]:
             continue
         if block["id"] in references:
             classes[block["id"]] = "reference"
+            continue
+        if block["id"] in chapter_label_ids:
+            classes[block["id"]] = "heading"
+            continue
+        if block["id"] in chapter_title_ids:
+            classes[block["id"]] = "title"
             continue
         if block["id"] in visual_ids:
             if is_formula_or_code_block(text):

@@ -56,6 +56,9 @@ DIAGRAM_LABEL_VERTICAL_CLUSTER_GAP_PT = 140.0
 VISUAL_CLIP_PIXEL_SEARCH_PAD_X_PT = 40.0
 VISUAL_CLIP_PIXEL_SEARCH_PAD_Y_PT = 20.0
 VISUAL_CLIP_PIXEL_FINAL_PAD_PT = 3.0
+CODE_COMMENT_MARKER_MAX_GAP_PT = 72.0
+CODE_COMMENT_MARKER_COLUMN_TOLERANCE_PT = 10.0
+CODE_COMMENT_MARKER_CONTEXT_Y_PT = 180.0
 
 
 def block_to_px_box(block, dpi: int, page_width: int, page_height: int, pad: int = 2):
@@ -660,6 +663,90 @@ def same_heading_line(block, other) -> bool:
     return vertical / min_height >= 0.45 and other["xMin"] >= block["xMax"]
 
 
+def is_code_comment_marker_text(text: str) -> bool:
+    normalized = normalize_text(text)
+    return normalized in {"*", "/*", "/**", "*/"} or bool(re.fullmatch(r"/{2,3}", normalized))
+
+
+def is_code_comment_delimiter_text(text: str) -> bool:
+    normalized = normalize_text(text)
+    return normalized in {"/*", "/**", "*/"} or bool(re.fullmatch(r"/{2,3}", normalized))
+
+
+def code_comment_marker_has_delimiter_context(marker, blocks) -> bool:
+    marker_box = block_bbox(marker)
+    marker_center_y = bbox_center(marker_box)[1]
+    for other in blocks:
+        if not is_code_comment_delimiter_text(other.get("text", "")):
+            continue
+        other_box = block_bbox(other)
+        if abs(other_box[0] - marker_box[0]) > CODE_COMMENT_MARKER_COLUMN_TOLERANCE_PT:
+            continue
+        if abs(bbox_center(other_box)[1] - marker_center_y) <= CODE_COMMENT_MARKER_CONTEXT_Y_PT:
+            return True
+    return False
+
+
+def code_comment_line_has_delimiter_context(candidate, blocks, search=None) -> bool:
+    candidate_box = block_bbox(candidate)
+    candidate_center_y = bbox_center(candidate_box)[1]
+    for marker in blocks:
+        if not is_code_comment_delimiter_text(marker.get("text", "")):
+            continue
+        marker_box = block_bbox(marker)
+        if abs(marker_box[0] - candidate_box[0]) > CODE_COMMENT_MARKER_COLUMN_TOLERANCE_PT:
+            continue
+        if search is not None and not bbox_contains_point(search, bbox_center(marker_box)):
+            continue
+        if abs(bbox_center(marker_box)[1] - candidate_center_y) <= CODE_COMMENT_MARKER_CONTEXT_Y_PT:
+            return True
+    return False
+
+
+def is_inline_code_comment_prose_text(text: str) -> bool:
+    normalized = normalize_text(text)
+    if not re.match(r"^\*\s+\S", normalized):
+        return False
+    if re.match(r"^\*\s*(?:/|\\[A-Za-z@])", normalized):
+        return False
+    return len(latin_words(normalized)) >= 3
+
+
+def has_code_comment_marker_to_left(candidate, blocks, search=None) -> bool:
+    candidate_box = block_bbox(candidate)
+    for marker in blocks:
+        if marker["id"] == candidate["id"]:
+            continue
+        if not is_code_comment_marker_text(marker.get("text", "")):
+            continue
+        marker_box = block_bbox(marker)
+        if marker_box[2] > candidate_box[0] + 1.0:
+            continue
+        min_height = max(1.0, min(marker_box[3] - marker_box[1], candidate_box[3] - candidate_box[1]))
+        if vertical_overlap(marker_box, candidate_box) < min_height * 0.45:
+            continue
+        if candidate_box[0] - marker_box[2] > CODE_COMMENT_MARKER_MAX_GAP_PT:
+            continue
+        if search is not None and not bbox_contains_point(search, bbox_center(marker_box)):
+            continue
+        if not code_comment_marker_has_delimiter_context(marker, blocks):
+            continue
+        return True
+    return False
+
+
+def is_code_comment_prose_block(candidate, blocks, search=None) -> bool:
+    text = normalize_text(candidate.get("text", ""))
+    wordy_comment_text = len(latin_words(text)) >= 3 or is_prose_row_text(text)
+    return (
+        (wordy_comment_text and has_code_comment_marker_to_left(candidate, blocks, search))
+        or (
+            is_inline_code_comment_prose_text(text)
+            and code_comment_line_has_delimiter_context(candidate, blocks, search)
+        )
+    )
+
+
 def short_heading_text(text: str) -> str:
     first_line = normalize_text(text).split("\n", 1)[0].strip()
     if not first_line or len(first_line) > HEURISTIC_HEADING_MAX_CHARS:
@@ -974,6 +1061,9 @@ def merge_adjacent_code_visual_regions(regions: list[dict]) -> list[dict]:
             previous["source_ids"].extend(source_id for source_id in region["source_ids"] if source_id not in seen)
             previous["bbox"] = bbox_union([previous["bbox"], region["bbox"]])
             previous["has_code_seed"] = True
+            previous["has_code_comment_seed"] = (
+                previous.get("has_code_comment_seed") or region.get("has_code_comment_seed")
+            )
             continue
         merged.append(dict(region))
     return merged
@@ -1195,10 +1285,23 @@ def build_visual_regions(blocks) -> list[dict]:
         caption_seed = has_caption and not is_large_prose_block(block, text)
         row_cell_seed = is_numeric_metric_cell(text) or is_fragmented_narrow_table_cell(block)
         formula_like = is_formula_like(text)
+        heading_like = is_heading_text(text)
+        code_comment_seed = (
+            is_code_comment_delimiter_text(text)
+            or (
+                is_code_comment_marker_text(text)
+                and code_comment_marker_has_delimiter_context(block, sorted_blocks)
+            )
+            or (
+                is_inline_code_comment_prose_text(text)
+                and code_comment_line_has_delimiter_context(block, sorted_blocks)
+            )
+        )
         code_seed = (
             is_code_listing_block(text)
             or (is_code_row_text(text) and not formula_like)
-        ) and not is_body_enumeration_line(text) and not short_source_fragment and not appendix_heading_marker
+            or code_comment_seed
+        ) and not is_body_enumeration_line(text) and not short_source_fragment and not appendix_heading_marker and not heading_like
         code_seed = code_seed and not is_first_page_translatable_title_area_block(block)
         formula_seed = (
             (is_formula_or_code_block(text) or is_code_row_text(text))
@@ -1206,9 +1309,10 @@ def build_visual_regions(blocks) -> list[dict]:
             and not is_body_enumeration_line(text)
             and not short_source_fragment
             and not appendix_heading_marker
+            and not heading_like
         )
         formula_seed = formula_seed and not is_first_page_translatable_title_area_block(block)
-        is_visual_seed = explicit_image or caption_seed or formula_seed
+        is_visual_seed = explicit_image or caption_seed or formula_seed or code_comment_seed
         if not is_visual_seed:
             continue
         seed_box = block_bbox(block)
@@ -1238,6 +1342,7 @@ def build_visual_regions(blocks) -> list[dict]:
         else:
             search = expanded_bbox(seed_box, pad_x=10.0, pad_y=8.0)
         group = []
+        group_has_code_comment_prose = False
         for other in sorted_blocks:
             other_text = normalize_text(other.get("text", ""))
             if not other_text or other["id"] in consumed:
@@ -1251,7 +1356,16 @@ def build_visual_regions(blocks) -> list[dict]:
             if other["id"] != block["id"] and is_first_page_translatable_title_area_block(other):
                 continue
             other_box = block_bbox(other)
-            if bbox_intersects(search, other_box) and bbox_contains_point(search, bbox_center(other_box)):
+            in_region_search = bbox_intersects(search, other_box) and bbox_contains_point(search, bbox_center(other_box))
+            code_comment_marker_search = expanded_bbox(
+                search,
+                pad_y=CODE_COMMENT_MARKER_CONTEXT_Y_PT,
+            )
+            code_comment_prose = (
+                code_seed
+                and is_code_comment_prose_block(other, sorted_blocks, code_comment_marker_search)
+            )
+            if in_region_search or code_comment_prose:
                 if row_cell_seed and other["id"] != block["id"] and has_intervening_wide_prose_block(
                     seed_box,
                     other_box,
@@ -1311,8 +1425,9 @@ def build_visual_regions(blocks) -> list[dict]:
                     continue
                 if other["id"] != block["id"] and has_standalone_heading_number_to_left(other, sorted_blocks):
                     continue
-                if visual_text or code_line_number or (short_fragment and (code_seed or not formula_seed)):
+                if visual_text or code_line_number or code_comment_prose or (short_fragment and (code_seed or not formula_seed)):
                     group.append(other)
+                    group_has_code_comment_prose = group_has_code_comment_prose or code_comment_prose
         if not group:
             group = [block]
         if row_cell_seed:
@@ -1336,15 +1451,16 @@ def build_visual_regions(blocks) -> list[dict]:
         group_ids = {item["id"] for item in group}
         consumed.update(group_ids)
         region_box = bbox_union([block_bbox(item) for item in group])
-        regions.append(
-            {
-                "source_ids": [item["id"] for item in group],
-                "bbox": region_box,
-                "has_code_seed": code_seed,
-                "has_caption_seed": caption_seed,
-                "has_row_cell_seed": row_cell_seed,
-            }
-        )
+        region_record = {
+            "source_ids": [item["id"] for item in group],
+            "bbox": region_box,
+            "has_code_seed": code_seed,
+            "has_caption_seed": caption_seed,
+            "has_row_cell_seed": row_cell_seed,
+        }
+        if code_seed and group_has_code_comment_prose:
+            region_record["has_code_comment_seed"] = True
+        regions.append(region_record)
     regions = merge_adjacent_code_visual_regions(regions)
     regions.extend(diagram_regions_above_visual_captions(blocks, regions))
     regions = expand_visual_regions_with_upper_labels(blocks, regions)

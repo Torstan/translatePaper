@@ -3659,6 +3659,366 @@ class GlobalStyleTests(unittest.TestCase):
 
 
 class BodyFlowLayoutTests(unittest.TestCase):
+    def test_book_chapter_page_uses_chapter_styles_and_readable_body_font(self):
+        blocks = [
+            block("p156b0001", 156, "Chapter 16", x0=72.0, y0=127.4, x1=199.8, y1=152.2),
+            block("p156b0002", 156, "Modifying Existing Code", x0=72.0, y0=194.2, x1=360.7, y1=219.0),
+            block(
+                "p156b0003",
+                156,
+                "Chapter 1 described how software development is iterative and incremental.\n"
+                "A large software system develops through a series of evolutionary stages,\n"
+                "where each stage adds new capabilities and modifies existing modules.\n"
+                "This means that a system's design is constantly evolving.\n"
+                "It isn't possible to conceive the right design at the beginning.\n"
+                "The design must evolve as the system is implemented.\n"
+                "Previous chapters described how to make good initial designs.\n"
+                "This chapter discusses how to prevent complexity from creeping in.\n"
+                "The goal is to keep the system clean as it evolves.",
+                x0=72.0,
+                y0=258.2,
+                x1=540.0,
+                y1=417.2,
+            ),
+            block("p156b0004", 156, "16.1 Stay strategic", x0=72.0, y0=441.0, x1=248.6, y1=460.5),
+            block(
+                "p156b0005",
+                156,
+                "Chapter 3 introduced the distinction between tactical programming and\n"
+                "strategic programming: in tactical programming, the primary goal is to get\n"
+                "something working quickly, even if that results in additional complexity;\n"
+                "in strategic programming, the most important goal is to produce a great\n"
+                "system design. The same idea applies when modifying existing code.\n"
+                "If you want to keep a system clean, you must take a strategic approach.\n"
+                "You should resist the temptation to make quick tactical fixes.\n"
+                "Instead, ask whether the current design is still the best design.\n"
+                "If not, refactor so the system ends up with the best possible design.\n"
+                "With this approach the design improves with each change.\n"
+                "Otherwise, small compromises accumulate over time.\n"
+                "The system becomes harder and harder to understand.\n"
+                "Eventually, even simple changes become difficult.",
+                x0=72.0,
+                y0=472.0,
+                x1=540.0,
+                y1=706.0,
+            ),
+        ]
+        translations = {
+            "p156b0001": "第 16 章",
+            "p156b0002": "修改现有代码",
+            "p156b0003": "第 1 章描述了软件开发如何具有迭代性和增量性。大型软件系统会经历一系列演化阶段，每个阶段都会增加新能力并修改现有模块。这意味着系统的设计不断演化；不可能一开始就想出正确设计，设计必须随着实现逐步改进。",
+            "p156b0004": "16.1 保持战略性",
+            "p156b0005": "第 3 章介绍了战术式编程与战略式编程的区别。在修改现有代码时同样如此：如果希望系统保持清晰，就必须采取战略性方法，抵制快速修补的诱惑，并在每次修改时思考当前设计是否仍然最好。",
+        }
+
+        plan = pdf.build_page_render_plan(156, blocks, translations, page_size=(612.0, 792.0), bbox_lines=None)
+        pdf.normalize_vector_text_layout(plan, page_size=(612.0, 792.0), fitz=pdf.load_fitz())
+        items = {item.source_ids[0]: item for item in plan.items if item.kind == "translated_text" and item.source_ids}
+
+        self.assertEqual(items["p156b0001"].style_name, "heading")
+        self.assertEqual(items["p156b0002"].style_name, "title")
+        self.assertEqual(items["p156b0004"].style_name, "subheading")
+        self.assertGreater(items["p156b0003"].font_size, pdf.DOCUMENT_STYLES["body"].font_size)
+        self.assertGreater(items["p156b0005"].font_size, pdf.DOCUMENT_STYLES["body"].font_size)
+        self.assertEqual(pdf.validate_plan_text_fit(plan), [])
+        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
+
+    def test_red_flag_callout_text_keeps_source_position_near_preserved_icons(self):
+        blocks = [
+            block(
+                "p134b0001",
+                134,
+                "The last paragraph of this comment is not strictly necessary, since it mostly\n"
+                "duplicates information in the comments for individual methods. However, it\n"
+                "can be helpful to have examples in the class documentation that illustrate\n"
+                "how its methods work together.",
+                x0=72.0,
+                y0=74.5,
+                x1=539.9,
+                y1=289.0,
+            ),
+            block("p134b0002", 134, "Red Flag: Implementation Documentation", x0=148.0, y0=328.2, x1=500.5, y1=347.7),
+            block("p134b0003", 134, "Contaminates Interface", x0=189.5, y0=365.0, x1=386.0, y1=384.5),
+            block(
+                "p134b0004",
+                134,
+                "This red flag occurs when interface documentation, such as that for a\n"
+                "method, describes implementation details that aren't needed in order to use\n"
+                "the thing being documented.",
+                x0=79.5,
+                y0=397.8,
+                x1=532.4,
+                y1=448.8,
+            ),
+            block(
+                "p134b0005",
+                134,
+                "Now consider the following code, which shows the first version of the documentation for the isReady method in IndexLookup:",
+                x0=72.0,
+                y0=481.8,
+                x1=539.9,
+                y1=514.8,
+            ),
+            block("p134b0006", 134, "/**", x0=72.0, y0=520.8, x1=92.3, y1=531.8),
+            block(
+                "p134b0007",
+                134,
+                "* Check if the next object is RESULT_READY. This function is",
+                x0=75.8,
+                y0=540.3,
+                x1=482.2,
+                y1=551.3,
+            ),
+        ]
+        translations = {
+            "p134b0001": "这条注释的最后一段并非严格必要，因为它主要重复了各个方法注释中的信息。不过，在类文档中加入示例可能会有所帮助。",
+            "p134b0002": "危险信号：实现文档",
+            "p134b0003": "污染接口",
+            "p134b0004": "当接口文档描述了使用被文档化对象并不需要了解的实现细节时，就会出现这一危险信号。",
+            "p134b0005": "现在请看下面的代码，它展示了 IndexLookup 中 isReady 方法文档的第一个版本：",
+            "p134b0006": "/**",
+            "p134b0007": "* 检查下一个对象是否为 RESULT_READY。此函数。",
+        }
+
+        plan = pdf.build_page_render_plan(134, blocks, translations, page_size=(612.0, 792.0), bbox_lines=None)
+        pdf.normalize_vector_text_layout(plan, page_size=(612.0, 792.0), fitz=pdf.load_fitz())
+        items = {item.source_ids[0]: item for item in plan.items if item.kind == "translated_text" and item.source_ids}
+
+        self.assertEqual(items["p134b0002"].fallback_reason, "callout_heading")
+        self.assertEqual(items["p134b0003"].fallback_reason, "callout_heading")
+        self.assertEqual(items["p134b0004"].fallback_reason, "callout_body")
+        self.assertGreaterEqual(items["p134b0002"].bbox[1], 300.0)
+        self.assertGreaterEqual(items["p134b0003"].bbox[1], 350.0)
+        self.assertGreaterEqual(items["p134b0004"].bbox[1], 390.0)
+
+    def test_numbered_heading_with_colon_is_not_absorbed_into_code_visual_region(self):
+        blocks = [
+            block(
+                "p135b0026",
+                135,
+                "This version of the comment provides more precise information about what\n"
+                "\"ready\" means, and it provides the important information that this method\n"
+                "must eventually be invoked if the indexed retrieval is to move forward.",
+                x0=72.0,
+                y0=610.0,
+                x1=539.5,
+                y1=661.0,
+            ),
+            block(
+                "p135b0027",
+                135,
+                "13.6 Implementation comments: what and why,",
+                x0=72.0,
+                y0=715.5,
+                x1=512.8,
+                y1=735.0,
+            ),
+        ]
+        translations = {
+            "p135b0026": "这个版本的注释更精确地说明了 ready 的含义，并提供了一个重要信息：如果索引检索要继续向前推进，最终必须调用此方法。",
+            "p135b0027": "13.6 实现注释：内容与原因",
+        }
+
+        self.assertFalse(
+            any("p135b0027" in region["source_ids"] for region in pdf.build_visual_regions(blocks))
+        )
+
+        plan = pdf.build_page_render_plan(135, blocks, translations, page_size=(612.0, 792.0), bbox_lines=None)
+        heading = next(item for item in plan.items if "p135b0027" in item.source_ids)
+        ledger = {entry.block_id: entry for entry in plan.ledger}
+
+        self.assertEqual(heading.kind, "translated_text")
+        self.assertEqual(heading.style_name, "subheading")
+        self.assertEqual(ledger["p135b0027"].classification, "heading")
+        self.assertFalse(
+            any(item.kind == "original_image_clip" and "p135b0027" in item.source_ids for item in plan.items)
+        )
+        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
+
+    def test_code_comment_block_is_preserved_without_inline_translation(self):
+        blocks = [
+            block("p130b0001", 130, "/**", x0=72.0, y0=76.1, x1=92.3, y1=87.1),
+            block(
+                "p130b0002",
+                130,
+                "* Copy a range of bytes from a buffer to an external location.",
+                x0=75.75,
+                y0=95.6,
+                x1=495.7,
+                y1=106.6,
+            ),
+            block("p130b0003", 130, "*", x0=75.75, y0=115.1, x1=82.6, y1=126.1),
+            block("p130b0004", 130, "* \\param offset", x0=75.75, y0=134.6, x1=177.4, y1=145.6),
+            block("p130b0005", 130, "*", x0=75.75, y0=154.1, x1=82.6, y1=165.1),
+            block(
+                "p130b0006",
+                130,
+                "Index within the buffer of the first byte to copy.",
+                x0=136.7,
+                y0=154.1,
+                x1=475.4,
+                y1=165.1,
+            ),
+            block("p130b0017", 130, "*", x0=75.75, y0=310.0, x1=82.6, y1=321.1),
+            block(
+                "p130b0018",
+                130,
+                "The return value is the actual number of bytes copied,",
+                x0=136.7,
+                y0=310.0,
+                x1=502.5,
+                y1=321.1,
+            ),
+            block("p130b0019", 130, "*", x0=75.75, y0=329.5, x1=82.6, y1=340.6),
+            block(
+                "p130b0020",
+                130,
+                "which may be less than length if the requested range of",
+                x0=136.7,
+                y0=329.5,
+                x1=509.3,
+                y1=340.6,
+            ),
+            block("p130b0021", 130, "*", x0=75.75, y0=349.0, x1=82.6, y1=360.1),
+            block(
+                "p130b0022",
+                130,
+                "bytes extends past the end of the buffer. 0 is returned",
+                x0=136.7,
+                y0=349.0,
+                x1=509.3,
+                y1=360.1,
+            ),
+            block("p130b0023", 130, "*", x0=75.75, y0=368.5, x1=82.6, y1=379.6),
+            block(
+                "p130b0024",
+                130,
+                "if there is no overlap between the requested range and",
+                x0=136.7,
+                y0=368.5,
+                x1=502.5,
+                y1=379.6,
+            ),
+            block("p130b0025", 130, "*", x0=75.75, y0=388.0, x1=82.6, y1=399.1),
+            block("p130b0026", 130, "the actual buffer.", x0=136.7, y0=388.0, x1=258.7, y1=399.1),
+            block("p130b0027", 130, "*/", x0=75.75, y0=407.5, x1=89.4, y1=418.6),
+            block("p130b0028", 130, "uint32_t", x0=72.0, y0=425.5, x1=126.2, y1=436.6),
+            block(
+                "p130b0029",
+                130,
+                "Buffer::copy(uint32_t offset, uint32_t length, void* dest)",
+                x0=72.0,
+                y0=443.5,
+                x1=464.9,
+                y1=454.6,
+            ),
+            block("p130b0030", 130, "...", x0=72.0, y0=461.5, x1=92.4, y1=472.6),
+        ]
+        translations = {
+            "p130b0002": "* 将一定范围的字节从缓冲区复制到外部位置。",
+            "p130b0006": "要复制的第一个字节在缓冲区中的索引。",
+            "p130b0018": "返回值是实际复制的字节数，",
+            "p130b0020": "如果请求的字节范围",
+        }
+
+        bbox_lines = [
+            {
+                "page": 130,
+                "bbox": (block_data["xMin"], block_data["yMin"], block_data["xMax"], block_data["yMax"]),
+                "text": block_data["text"],
+            }
+            for block_data in blocks
+        ]
+
+        plan = pdf.build_page_render_plan(130, blocks, translations, page_size=(612.0, 792.0), bbox_lines=bbox_lines)
+        rendered_code_ids = {
+            source_id
+            for item in plan.items
+            if item.kind == "original_image_clip"
+            for source_id in item.source_ids
+        }
+        translated_code_ids = {
+            source_id
+            for item in plan.items
+            if item.kind == "translated_text"
+            for source_id in item.source_ids
+        }
+
+        self.assertGreaterEqual(rendered_code_ids, {block_data["id"] for block_data in blocks})
+        self.assertFalse(translated_code_ids & {block_data["id"] for block_data in blocks})
+        self.assertFalse(
+            any(item.fallback_reason == "mixed_visual_body_original" for item in plan.items)
+        )
+        self.assertEqual(pdf.validate_plan_layout(plan, page_size=(612.0, 792.0)), [])
+        self.assertEqual({entry.render_kind for entry in plan.ledger}, {"original_image_clip"})
+
+    def test_code_comment_clip_keeps_owned_source_bbox_after_pixel_trim(self):
+        blocks = [
+            block("p134b0006", 134, "/**", x0=72.0, y0=520.8, x1=92.3, y1=531.8),
+            block(
+                "p134b0007",
+                134,
+                "* Check if the next object is RESULT_READY. This function is",
+                x0=75.75,
+                y0=540.3,
+                x1=482.2,
+                y1=551.3,
+            ),
+            block("p134b0015", 134, "*", x0=75.75, y0=696.3, x1=82.6, y1=707.3),
+        ]
+        classes = {block_data["id"]: "figure_region" for block_data in blocks}
+        region = {
+            "source_ids": [block_data["id"] for block_data in blocks],
+            "bbox": (72.0, 520.8, 482.2, 707.3),
+            "has_code_seed": True,
+            "has_code_comment_seed": True,
+        }
+
+        with patch.object(pdf, "visual_clip_bbox", return_value=(71.6, 519.8, 483.0, 702.4)):
+            bbox, mixed_item = pdf.final_visual_region_bbox(
+                blocks,
+                classes,
+                region,
+                page_size=(612.0, 792.0),
+                page_num=134,
+                bbox_lines=[],
+                translations={},
+            )
+
+        self.assertIsNone(mixed_item)
+        self.assertGreaterEqual(bbox[3], 707.3)
+
+    def test_code_comment_ownership_region_keeps_owned_source_bbox_after_pixel_trim(self):
+        blocks = [
+            block("p134b0006", 134, "/**", x0=72.0, y0=520.8, x1=92.3, y1=531.8),
+            block(
+                "p134b0007",
+                134,
+                "* Check if the next object is RESULT_READY. This function is",
+                x0=75.75,
+                y0=540.3,
+                x1=482.2,
+                y1=551.3,
+            ),
+            block("p134b0015", 134, "*", x0=75.75, y0=696.3, x1=82.6, y1=707.3),
+        ]
+        raw_regions = pdf.build_visual_regions(blocks)
+        classes = pdf.classify_blocks(blocks, raw_regions)
+
+        with patch.object(pdf, "visual_clip_bbox", return_value=(71.6, 519.8, 483.0, 702.4)):
+            ownership_regions = pdf.final_visual_ownership_regions(
+                blocks,
+                classes,
+                raw_regions,
+                page_size=(612.0, 792.0),
+                page_num=134,
+                bbox_lines=[],
+                translations={},
+            )
+
+        self.assertTrue(ownership_regions)
+        self.assertGreaterEqual(max(region["bbox"][3] for region in ownership_regions), 707.3)
+
     def test_adjacent_body_blocks_share_a_flow_box_when_one_translation_overflows(self):
         blocks = [
             block("p013b0006", 13, "First body paragraph.", x0=120, y0=100, x1=480, y1=180),
@@ -3675,6 +4035,42 @@ class BodyFlowLayoutTests(unittest.TestCase):
         self.assertEqual(len(body_items), 1)
         self.assertEqual(body_items[0].source_ids, ["p013b0006", "p013b0007"])
         self.assertEqual(pdf.validate_plan_text_fit(plan), [])
+
+    def test_body_flow_merge_preserves_source_adapted_readable_font(self):
+        blocks = [
+            block(
+                "p043b0005",
+                43,
+                "First body line.\nSecond body line.\nThird body line.\nFourth body line.\nFifth body line.",
+                x0=72.0,
+                y0=233.0,
+                x1=540.0,
+                y1=298.0,
+            ),
+            block(
+                "p043b0006",
+                43,
+                "Sixth body line.\nSeventh body line.\nEighth body line.",
+                x0=72.0,
+                y0=300.0,
+                x1=540.0,
+                y1=339.0,
+            ),
+        ]
+        translations = {
+            "p043b0005": "第一段正文。" * 6,
+            "p043b0006": "第二段正文。" * 6,
+        }
+
+        plan = pdf.build_page_render_plan(43, blocks, translations, page_size=(612.0, 792.0), bbox_lines=None)
+        body_items = [item for item in plan.items if item.kind == "translated_text" and item.style_name == "body"]
+
+        self.assertEqual(len(body_items), 1)
+        self.assertEqual(body_items[0].source_ids, ["p043b0005", "p043b0006"])
+        self.assertEqual(body_items[0].fallback_reason, "body_flow_source_adapted_font")
+        self.assertGreater(body_items[0].font_size, pdf.DOCUMENT_STYLES["body"].font_size)
+        self.assertEqual(pdf.validate_plan_text_fit(plan), [])
+        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
 
     def test_body_flow_expands_into_safe_whitespace_instead_of_changing_font_size(self):
         blocks = [

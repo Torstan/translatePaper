@@ -8,6 +8,7 @@ from typing import Mapping
 from PIL import Image
 
 from classify import NORMAL_TRANSLATED_CLASSES, source_requires_chinese_translation
+from layout import STYLE_POLICY_ROLE_SPLIT_EXCEPTIONS
 
 
 TOOL_ROOT = Path(__file__).resolve().parent
@@ -421,7 +422,7 @@ def _dedupe_protected_regions(regions: list[dict]) -> list[dict]:
     return list(by_bbox.values())
 
 
-def _ownership_issue_to_visual_issue(plan, issue) -> VisualQaIssue:
+def _ownership_issue_to_visual_issue(plan, issue, *, validation_failed: bool = False) -> VisualQaIssue:
     issue_code = str(_ledger_value(issue, "issue_code", ""))
     category = OWNERSHIP_ISSUE_CATEGORY_BY_CODE.get(issue_code, issue_code or "ownership_violation")
     source_ids = [str(source_id) for source_id in _ledger_value(issue, "source_ids", [])]
@@ -435,11 +436,17 @@ def _ownership_issue_to_visual_issue(plan, issue) -> VisualQaIssue:
     artifact_paths = {}
     if component_ids:
         artifact_paths["component_ids"] = ",".join(sorted(component_ids))
+    severity = str(_ledger_value(issue, "severity", "error"))
+    if validation_failed:
+        severity = "error"
+    message = str(_ledger_value(issue, "message", ""))
+    if issue_code and issue_code not in message:
+        message = f"{issue_code}: {message}"
     return VisualQaIssue(
         category=category,
-        severity=str(_ledger_value(issue, "severity", "error")),
+        severity=severity,
         page_num=_plan_page_num(plan),
-        message=str(_ledger_value(issue, "message", "")),
+        message=message,
         source_ids=source_ids,
         bbox=bbox,
         render_kind="ownership",
@@ -459,7 +466,11 @@ def detect_ownership_issues(plan) -> list[VisualQaIssue]:
     serialized_issues = _item_value(validation, "errors", None)
     if serialized_issues is None:
         serialized_issues = _item_value(validation, "issues", [])
-    return [_ownership_issue_to_visual_issue(plan, issue) for issue in serialized_issues]
+    validation_failed = _item_value(validation, "ok", True) is False
+    return [
+        _ownership_issue_to_visual_issue(plan, issue, validation_failed=validation_failed)
+        for issue in serialized_issues
+    ]
 
 
 def detect_blank_image_clips(
@@ -942,8 +953,11 @@ def detect_style_issues(plan, *, font_tolerance: float = 0.01) -> list[VisualQaI
             continue
         classification = _classification_for_item(item, classifications_by_id)
         style_name = str(_item_value(item, "style_name", "") or "")
+        explicit_style_exception = (
+            str(_item_value(item, "fallback_reason", "") or "") in STYLE_POLICY_ROLE_SPLIT_EXCEPTIONS
+        )
         expected_styles = EXPECTED_STYLES_BY_CLASSIFICATION.get(classification)
-        if expected_styles and style_name and style_name not in expected_styles:
+        if expected_styles and style_name and style_name not in expected_styles and not explicit_style_exception:
             issues.append(
                 VisualQaIssue(
                     category="style_hierarchy",

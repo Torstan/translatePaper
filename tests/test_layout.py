@@ -101,6 +101,74 @@ class LayoutExtractionModuleTests(unittest.TestCase):
 
         self.assertGreater(font.getmetrics()[0], 0)
 
+    def test_raster_font_preferences_put_regular_weight_before_medium(self):
+        self.assertLess(
+            layout.RASTER_FONT_PATHS.index("/System/Library/Fonts/Hiragino Sans GB.ttc"),
+            layout.RASTER_FONT_PATHS.index("/System/Library/Fonts/STHeiti Medium.ttc"),
+        )
+        self.assertLess(
+            layout.RASTER_FONT_PATHS.index("/System/Library/Fonts/STHeiti Light.ttc"),
+            layout.RASTER_FONT_PATHS.index("/System/Library/Fonts/STHeiti Medium.ttc"),
+        )
+        self.assertEqual(
+            layout.RASTER_FONT_FACE_INDEXES["/System/Library/Fonts/Supplemental/Songti.ttc"],
+            3,
+        )
+
+    def test_raster_font_uses_configured_face_index(self):
+        loaded_font = object()
+        with (
+            patch.object(layout, "RASTER_FONT_PATHS", ("font.ttc",)),
+            patch.object(layout, "RASTER_FONT_FACE_INDEXES", {"font.ttc": 3}, create=True),
+            patch.object(layout.Path, "exists", return_value=True),
+            patch.object(layout.ImageFont, "truetype", return_value=loaded_font) as load_font,
+        ):
+            font = layout.raster_image_font(12)
+
+        self.assertIs(font, loaded_font)
+        load_font.assert_called_once_with("font.ttc", 12, index=3)
+
+    def test_raster_font_fit_uses_expanded_line_height(self):
+        class FakeRasterFont:
+            def __init__(self, size):
+                self.size = size
+
+            def getmetrics(self):
+                return self.size, 0
+
+        with (
+            patch.object(layout, "raster_image_font", side_effect=FakeRasterFont),
+            patch.object(layout, "wrap_text", return_value=["第一行", "第二行", "第三行"]),
+        ):
+            font_size, lines = layout.fit_font_and_lines("ignored", 200, 90, vertical=False)
+
+        self.assertEqual(font_size, 20)
+        self.assertEqual(lines, ["第一行", "第二行", "第三行"])
+
+    def test_raster_text_required_height_uses_expanded_line_height(self):
+        class FakeRasterFont:
+            def getmetrics(self):
+                return 10, 10
+
+        with (
+            patch.object(layout, "raster_image_font", return_value=FakeRasterFont()),
+            patch.object(layout, "wrap_text", return_value=["第一行", "第二行", "第三行"]),
+        ):
+            height = layout.text_required_height("ignored", 200, 12)
+
+        self.assertEqual(height, int((10 + 10) * 1.5) * 3 + 4)
+
+    def test_raster_source_line_height_targets_expanded_spacing(self):
+        block = {
+            "text": "line one\nline two\nline three",
+            "yMin": 0.0,
+            "yMax": 150.0,
+        }
+
+        expected = max(10, int(round((150.0 / 3.0) / 1.5 * layout.SOURCE_FONT_SCALE)))
+
+        self.assertEqual(layout.target_font_size_for_block(block, dpi=72, vertical=False), expected)
+
     def test_protected_region_split_direct_api_matches_pipeline_compatibility(self):
         protected = [pdf.RenderItem("original_image_clip", ["fig"], (100.0, 100.0, 180.0, 160.0))]
 

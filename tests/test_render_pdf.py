@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -118,6 +119,67 @@ class RenderPdfExtractionModuleTests(unittest.TestCase):
 
             out_doc.close()
             src_doc.close()
+
+    def test_draw_block_uses_expanded_raster_line_height(self):
+        class FakeRasterFont:
+            def getmetrics(self):
+                return 10, 10
+
+        class FakeTextDraw:
+            def __init__(self):
+                self.calls = []
+
+            def text(self, xy, text, font=None, fill=None):
+                self.calls.append((xy, text))
+
+        text_draw = FakeTextDraw()
+        image = Image.new("RGBA", (220, 140), "white")
+        block = {
+            "id": "p001b0001",
+            "page": 1,
+            "text": "source line",
+            "xMin": 10.0,
+            "yMin": 10.0,
+            "xMax": 190.0,
+            "yMax": 110.0,
+        }
+
+        with (
+            patch.object(pdf, "fit_font_and_lines", return_value=(12, ["第一行", "第二行", "第三行"])),
+            patch.object(pdf, "raster_image_font", return_value=FakeRasterFont()),
+            patch.object(pdf.ImageDraw, "Draw", return_value=text_draw),
+        ):
+            pdf.draw_block(image, block, "ignored", dpi=72, render_box=(10, 10, 190, 110))
+
+        self.assertEqual([xy[1] for xy, _text in text_draw.calls], [2, 32, 62])
+
+    def test_write_raster_pdf_falls_back_to_pymupdf_when_xelatex_is_missing(self):
+        fitz = render_pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            translated_pages_dir = tmp_path / "translated_pages"
+            translated_pages_dir.mkdir()
+            for page_num, color in ((1, "white"), (2, "lightgray")):
+                Image.new("RGB", (20, 30), color).save(translated_pages_dir / f"page-{page_num:03d}.png")
+
+            job_paths = {
+                "job_dir": tmp_path,
+                "translated_pages_dir": translated_pages_dir,
+                "tex_path": tmp_path / "claudeCodeChinese.tex",
+                "pdf_path": tmp_path / "claudeCodeChinese.pdf",
+            }
+            output_pdf = tmp_path / "out.pdf"
+
+            with patch.object(pdf, "run", side_effect=FileNotFoundError("xelatex")):
+                pdf.write_raster_pdf(output_pdf, [1, 2], (50.0, 75.0), job_paths)
+
+            doc = fitz.open(output_pdf)
+            try:
+                self.assertEqual(doc.page_count, 2)
+                self.assertEqual(round(doc[0].rect.width, 1), 50.0)
+                self.assertEqual(round(doc[0].rect.height, 1), 75.0)
+            finally:
+                doc.close()
 
 
 if __name__ == "__main__":
