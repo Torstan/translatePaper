@@ -196,7 +196,7 @@ from render_plan import (
     render_plan_to_json,
     try_write_render_plan_artifact,
     update_ledger_render_kind,
-    validate_plan_coverage as _render_plan_validate_plan_coverage,
+    validate_plan_coverage,
     validate_plan_layout,
     validate_plan_text_overlaps,
     write_render_plan_artifact,
@@ -2497,10 +2497,6 @@ def reference_block_ids_for_bbox_line(line: dict, reference_blocks) -> list[str]
     return sorted(set(matches))
 
 
-def bbox_line_matches_reference_block(line: dict, reference_blocks) -> bool:
-    return bool(reference_block_ids_for_bbox_line(line, reference_blocks))
-
-
 def reference_line_render_items(blocks, bbox_lines, page_size, classes: dict[str, str] | None = None) -> list[RenderItem]:
     if not bbox_lines:
         return []
@@ -2945,17 +2941,6 @@ def drop_garbled_translation_lines(text: str) -> str:
     return normalize_text("\n".join(lines))
 
 
-def repair_incomplete_translation_from_source(block, text: str) -> str:
-    source = normalize_text(block.get("text", "")).lower()
-    if "validity follows because each process initializes its position in prefer before" in source:
-        text = re.sub(
-            r"有效性成立，因为每个进程在[。.]?",
-            "有效性成立，因为每个进程在执行 swap 前初始化其在 prefer 中的位置。",
-            text,
-        )
-    return text
-
-
 def clean_render_text(block, text: str, raw_text: str | None = None) -> str:
     text = strip_journal_footer_lines(text)
     text = strip_leading_running_header_text(text, block.get("page", 1))
@@ -2965,7 +2950,6 @@ def clean_render_text(block, text: str, raw_text: str | None = None) -> str:
             text = strip_journal_footer_lines(visual_tail)
             text = strip_leading_running_header_text(text, block.get("page", 1))
     text = drop_garbled_translation_lines(text)
-    text = repair_incomplete_translation_from_source(block, text)
     lines = text.split("\n")
     if len(lines) >= 2 and re.fullmatch(r"[a-z][a-z-]{3,}", lines[0].strip()) and re.search(r"[\u4e00-\u9fff]", lines[1]):
         source_first = normalize_text(block.get("text", "")).split("\n", 1)[0].strip()
@@ -3172,10 +3156,6 @@ def translated_lines_with_embedded_headings(text: str) -> list[str]:
     if not any(render_line_is_standalone_heading(line) for line in lines[1:]):
         return []
     return lines
-
-
-def source_heading_rows_for_block(block, bbox_lines: list[dict]) -> list[dict]:
-    return [row for row in bbox_line_rows_for_block(block, bbox_lines) if is_heading_text(row["text"])]
 
 
 def approximate_line_box(bbox, line_index: int, line_count: int) -> tuple[float, float, float, float]:
@@ -4387,20 +4367,6 @@ def arrange_page_render_items(plan: PageRenderPlan, blocks, page_size, bbox_line
     # A new nonprose image fallback becomes an obstacle for translated text.
     convert_unfit_nonprose_text_to_image_clips(plan, blocks)
     split_translated_text_around_protected(plan, page_size)
-
-
-def nontrivial_block(block) -> bool:
-    text = normalize_text(block.get("text", ""))
-    return bool(text) and not is_trivial_keep(text)
-
-
-def validate_plan_coverage(page_num: int, blocks, plan: PageRenderPlan) -> list[str]:
-    return _render_plan_validate_plan_coverage(
-        page_num,
-        blocks,
-        plan,
-        is_nontrivial_block=nontrivial_block,
-    )
 
 
 def validate_plan_translation_quality(page_num: int, blocks, translations, plan: PageRenderPlan) -> list[str]:

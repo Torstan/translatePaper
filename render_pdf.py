@@ -49,49 +49,36 @@ def insert_vector_textbox(
     line_height_factor: float = 1.22,
     paragraph_spacing: float = 0.0,
     letter_spacing: float = 0.0,
-    allow_shrink: bool = False,
     min_line_height_factor: float | None = None,
     min_paragraph_spacing: float | None = None,
 ):
     if not text.strip() or rect.is_empty:
         return True
 
-    def draw_if_fits(size: float, line_factor: float, para_spacing: float) -> bool:
-        style = TextStyle(
-            font_size=size,
-            line_height_factor=line_factor,
-            paragraph_spacing=para_spacing,
-            letter_spacing=letter_spacing,
-            color=color,
-            min_line_height_factor=min_line_height_factor,
-            min_paragraph_spacing=min_paragraph_spacing,
-        )
-        plan = text_box_fit_plan(fitz, text, rect.width, rect.height, style, font_size=size)
-        if plan is None:
-            return False
-        draw_mixed_pdf_lines(
-            page,
-            fitz,
-            rect,
-            plan.lines,
-            plan.font_size,
-            plan.font_size * plan.line_height_factor,
-            color,
-            paragraph_spacing=plan.paragraph_spacing,
-            letter_spacing=letter_spacing,
-        )
-        return True
-
-    if draw_if_fits(font_size, line_height_factor, paragraph_spacing):
-        return True
-    if not allow_shrink:
+    style = TextStyle(
+        font_size=font_size,
+        line_height_factor=line_height_factor,
+        paragraph_spacing=paragraph_spacing,
+        letter_spacing=letter_spacing,
+        color=color,
+        min_line_height_factor=min_line_height_factor,
+        min_paragraph_spacing=min_paragraph_spacing,
+    )
+    plan = text_box_fit_plan(fitz, text, rect.width, rect.height, style, font_size=font_size)
+    if plan is None:
         return False
-    size = font_size - 0.5
-    while size >= 5.0:
-        if draw_if_fits(size, line_height_factor, paragraph_spacing):
-            return True
-        size -= 0.5
-    return False
+    draw_mixed_pdf_lines(
+        page,
+        fitz,
+        rect,
+        plan.lines,
+        plan.font_size,
+        plan.font_size * plan.line_height_factor,
+        color,
+        paragraph_spacing=plan.paragraph_spacing,
+        letter_spacing=letter_spacing,
+    )
+    return True
 
 
 def draw_mixed_pdf_lines(
@@ -251,7 +238,6 @@ def render_plan_item(out_page, src_page, fitz, item: RenderItem, dpi: int, sourc
             letter_spacing=style.letter_spacing,
             min_line_height_factor=style.min_line_height_factor,
             min_paragraph_spacing=style.min_paragraph_spacing,
-            allow_shrink=False,
         ):
             return
         raise RuntimeError(f"text item {item.source_ids} did not fit during render")
@@ -269,7 +255,6 @@ def render_plan_item(out_page, src_page, fitz, item: RenderItem, dpi: int, sourc
             letter_spacing=style.letter_spacing,
             min_line_height_factor=style.min_line_height_factor,
             min_paragraph_spacing=style.min_paragraph_spacing,
-            allow_shrink=False,
         ):
             return
         raise RuntimeError(f"selectable text item {item.source_ids or item.fallback_reason} did not fit during render")

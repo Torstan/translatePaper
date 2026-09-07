@@ -1,11 +1,11 @@
 import json
-import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import ownership
+from classify import is_trivial_keep, normalize_text
 
 
 VECTOR_BODY_COLOR = (0, 0, 0)
@@ -160,35 +160,17 @@ def try_write_render_plan_artifact(plan: PageRenderPlan, validation_results: dic
         return None
 
 
-def is_render_plan_trivial_keep(text: str) -> bool:
-    stripped = text.strip()
-    if not stripped:
-        return True
-    if re.fullmatch(r"\d+", stripped):
-        return True
-    if re.fullmatch(r"https?://\S+", stripped):
-        return True
-    return False
-
-
-def nontrivial_block(block) -> bool:
-    text = re.sub(r"\s+", " ", block.get("text", "")).strip()
-    return bool(text) and not is_render_plan_trivial_keep(text)
-
-
 def validate_plan_coverage(
     page_num: int,
     blocks,
     plan: PageRenderPlan,
-    *,
-    is_nontrivial_block=nontrivial_block,
 ) -> list[str]:
     errors = []
     ledger_by_id: dict[str, list[CoverageEntry]] = {}
     for entry in plan.ledger:
         ledger_by_id.setdefault(entry.block_id, []).append(entry)
     for block in blocks:
-        if not is_nontrivial_block(block):
+        if is_trivial_keep(normalize_text(block.get("text", ""))):
             continue
         entries = ledger_by_id.get(block["id"], [])
         if not entries:

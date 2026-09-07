@@ -32,7 +32,6 @@ class RenderPdfExtractionModuleTests(unittest.TestCase):
             pdf.DOCUMENT_STYLES["body"].font_size,
             pdf.VECTOR_BODY_COLOR,
             line_height_factor=pdf.DOCUMENT_STYLES["body"].line_height_factor,
-            allow_shrink=False,
         )
         doc.close()
 
@@ -63,7 +62,6 @@ class RenderPdfExtractionModuleTests(unittest.TestCase):
                 paragraph_spacing=pdf.DOCUMENT_STYLES["body"].paragraph_spacing,
                 min_line_height_factor=pdf.DOCUMENT_STYLES["body"].min_line_height_factor,
                 min_paragraph_spacing=pdf.DOCUMENT_STYLES["body"].min_paragraph_spacing,
-                allow_shrink=False,
             )
         finally:
             render_pdf.text_box_fit_plan = original

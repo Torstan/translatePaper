@@ -8,6 +8,7 @@ from PIL import Image, ImageDraw
 import classify
 import ownership
 import qa_visual
+import render_plan
 import translate_pdf_via_codex as pdf
 
 
@@ -3611,7 +3612,6 @@ class GlobalStyleTests(unittest.TestCase):
             pdf.DOCUMENT_STYLES["body"].font_size,
             pdf.VECTOR_BODY_COLOR,
             line_height_factor=pdf.DOCUMENT_STYLES["body"].line_height_factor,
-            allow_shrink=False,
         )
         doc.close()
 
@@ -4164,6 +4164,21 @@ class BodyFlowLayoutTests(unittest.TestCase):
 
 
 class CoverageValidationTests(unittest.TestCase):
+    def test_coverage_uses_document_classification_for_trivial_content(self):
+        for text, needs_coverage in (
+            ("", False),
+            ("127", False),
+            ("• 12 •", False),
+            ("https://example.com", False),
+            ("1234", True),
+            ("A source paragraph.", True),
+        ):
+            for validate in (render_plan.validate_plan_coverage, pdf.validate_plan_coverage):
+                with self.subTest(text=text, validator=validate.__module__):
+                    blocks = [block("p002b0001", 2, text)]
+                    errors = validate(2, blocks, pdf.PageRenderPlan(page_num=2))
+                    self.assertEqual(bool(errors), needs_coverage, errors)
+
     def test_validate_coverage_fails_for_missing_block(self):
         blocks = [
             block("p002b0001", 2, "A source paragraph.", y0=100, y1=120),
@@ -4196,6 +4211,26 @@ class CoverageValidationTests(unittest.TestCase):
         errors = pdf.validate_plan_coverage(2, blocks, plan)
 
         self.assertTrue(any("illegal skip class unknown" in error for error in errors), errors)
+
+
+class RenderTextContentPreservationTests(unittest.TestCase):
+    def test_clean_render_text_preserves_complete_translation(self):
+        source = block(
+            "p001b0001", 1,
+            "Validity follows because each process initializes its position in prefer before executing swap.",
+        )
+        translated = "有效性成立，因为每个进程在执行 swap 前初始化其在 prefer 中的位置。"
+
+        self.assertEqual(pdf.clean_render_text(source, translated), translated)
+
+    def test_clean_render_text_does_not_invent_missing_translation(self):
+        source = block(
+            "p001b0001", 1,
+            "Validity follows because each process initializes its position in prefer before executing swap.",
+        )
+        translated = "有效性成立，因为每个进程在。"
+
+        self.assertEqual(pdf.clean_render_text(source, translated), translated)
 
 
 class BBoxLineParserTests(unittest.TestCase):

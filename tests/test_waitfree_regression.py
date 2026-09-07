@@ -249,7 +249,7 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
 
         self.assertEqual(pdf.validate_plan_layout(plan, (623, 801)), [])
 
-    def test_page16_assertion_text_drops_ocr_garbage_and_keeps_prose_completion(self):
+    def test_page16_assertion_text_drops_ocr_garbage(self):
         bbox_lines = [
             line
             for line in pdf.parse_bbox_lines(JOB / "source_bbox.html")
@@ -267,8 +267,6 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
 
         self.assertNotIn("sisixa", rendered_text)
         self.assertNotIn("arra s", rendered_text)
-        self.assertNotIn("有效性成立，因为每个进程在。", rendered_text)
-        self.assertIn("执行 swap 前初始化其在 prefer 中的位置", rendered_text)
         self.assertEqual(pdf.validate_plan_quality(16, self.pages[15], self.translations, plan), [])
 
     def test_page21_long_body_keeps_definition_prefix_before_figure_description(self):

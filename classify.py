@@ -570,20 +570,6 @@ def reference_signature(text: str) -> dict[str, str | bool | None]:
     return signature
 
 
-def title_looks_like_reference_title(text: str) -> bool:
-    normalized = normalize_text(text)
-    if not normalized or len(normalized) < 8 or len(normalized) > 240:
-        return False
-    if re.match(r"(?i)^(the|this|that|we|our|in|for|from|appendix|table|figure)\b", normalized):
-        return False
-    words = latin_words(normalized)
-    if len(words) < 3:
-        return False
-    if english_function_word_count(normalized) >= len(words) - 1:
-        return False
-    return True
-
-
 def author_segment_looks_like_reference(authors: str) -> bool:
     authors = authors.strip()
     if not (4 <= len(authors) <= 220):
@@ -605,25 +591,6 @@ def author_segment_looks_like_reference(authors: str) -> bool:
         or re.search(r"\b[A-Z]\.", authors)
     )
     return has_author_separator or len(name_words) >= 3
-
-
-def reference_remainder_has_bibliographic_cue(rest: str) -> bool:
-    rest = rest.strip()
-    if len(rest) < 8:
-        return False
-    lower = rest.lower()
-    if any(cue in lower for cue in REFERENCE_VENUE_CUES):
-        return True
-    if re.search(r"\bpages?\s+\d", lower) or re.search(r"\bpp\.\s*\d", lower):
-        return True
-    if re.search(r"\b\d+\s*[-–]\s*\d+\b", lower):
-        return True
-    return ":" in rest and len(rest.split()) >= 4
-
-
-def looks_like_author_year_reference(text: str) -> bool:
-    signature = reference_signature(text)
-    return bool(signature["reference_like"] and signature["authors"] and signature["date"])
 
 
 def looks_like_reference_item(text: str) -> bool:
