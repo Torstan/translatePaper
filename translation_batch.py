@@ -5,6 +5,7 @@ import re
 import subprocess
 import textwrap
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 TOOL_ROOT = Path(__file__).resolve().parent
@@ -114,11 +115,29 @@ def execute_translation_batch(
     reasoning_effort: str = "low",
     retries: int = 3,
 ) -> dict[str, str]:
-    prompt = make_prompt(items)
+    expected_ids = {item["id"] for item in items}
+    return execute_json_task(
+        make_prompt(items), job_dir, prefix, schema_path,
+        validate=lambda payload: validate_translation_payload(payload, expected_ids),
+        model=model, reasoning_effort=reasoning_effort, retries=retries,
+    )
+
+
+def execute_json_task(
+    prompt: str,
+    job_dir: Path,
+    prefix: str,
+    schema_path: Path,
+    *,
+    validate: Callable[[object], dict],
+    model: str,
+    reasoning_effort: str = "low",
+    retries: int = 3,
+) -> dict:
+    """Own command execution and fresh output; tasks own their payload contract."""
     (job_dir / f"{prefix}.prompt.txt").write_text(prompt, encoding="utf-8")
     out_path = job_dir / f"{prefix}.out.json"
     log_path = job_dir / f"{prefix}.log.txt"
-    expected_ids = {item["id"] for item in items}
     command = [
         "codex", "exec", "--skip-git-repo-check", "-m", model,
         "-c", f"model_reasoning_effort='{reasoning_effort}'",
@@ -137,7 +156,7 @@ def execute_translation_batch(
         if proc.returncode == 0 and out_path.exists():
             try:
                 payload = json.loads(out_path.read_text(encoding="utf-8"))
-                result = validate_translation_payload(payload, expected_ids)
+                result = validate(payload)
             except ValueError as exc:
                 log += f"\n\nVALIDATION ERROR\n{exc}\n"
             else:

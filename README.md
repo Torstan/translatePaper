@@ -64,6 +64,15 @@ Use non-strict QA while exploring defects. Use `--strict-qa` before accepting a
 batch; strict mode fails jobs with coverage, layout, visual, clipping, overlap,
 or style errors instead of reporting a defective PDF as translated.
 
+Drawing and offline visual QA enforce the same style roles, absolute font sizes,
+and explicit style exceptions. An arbitrary fallback reason does not exempt text
+from the style policy.
+
+Embedded running headers are removed only with source evidence: a repeated margin
+line across pages or separated rows in the extracted PDF geometry. Cleanup happens
+before translation lines are joined. If a translated line cannot be matched to the
+source header, it is preserved; paper titles and author names are not deletion rules.
+
 ## Fixture Workflow
 
 Page-level visual regression fixtures live under `tests/fixtures/pdf_render/`.

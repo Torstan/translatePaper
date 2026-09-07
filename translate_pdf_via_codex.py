@@ -2,7 +2,6 @@
 
 import argparse
 import html
-import io
 import json
 import math
 import os
@@ -10,15 +9,13 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import xml.etree.ElementTree as ET
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 import ownership
 import render_pdf
@@ -33,43 +30,25 @@ from classify import (
     contains_reference_item,
     contains_visual_caption,
     english_function_word_count,
-    first_reference_y,
     is_body_enumeration_line,
-    is_code_line_number_block,
-    is_code_like_line,
     is_code_listing_block,
     is_code_row_text,
-    is_conference_footer_fragment,
-    is_decorated_ocr_page_number_block,
     is_decorated_ocr_page_number_text,
-    is_decorative_update_marker,
-    is_first_page_arxiv_side_metadata_block,
-    is_first_page_author_block,
-    is_first_page_footer_fragment,
-    is_formula_like,
     is_formula_or_code_block,
-    is_fragmented_narrow_table_cell,
     is_heading_text,
-    is_journal_footer_block,
     is_journal_footer_text,
-    is_noisy_ocr_page_number_text,
-    is_non_prose_identifier_text,
     is_numeric_metric_cell,
     is_page_number,
     apply_reference_continuation,
     is_prose_row_text,
-    is_publication_header_fragment,
     is_reference_heading,
     is_running_header_fragment,
+    mark_running_headers,
     is_standalone_equation_label,
     is_table_caption,
-    is_table_caption_line,
-    is_title_block,
     is_trivial_keep,
     is_visual_caption,
-    is_visual_caption_line,
     is_visual_row_text,
-    journal_footer_match_key,
     latin_words,
     normalize_text,
     reference_block_ids,
@@ -79,65 +58,26 @@ from classify import (
     source_requires_chinese_translation,
     starts_reference_item,
     strip_journal_footer_lines,
-    text_is_only_journal_footer,
     translation_appears_untranslated,
 )
 from layout import (
     BODY_FLOW_INTERNAL_SLACK_WARN_PT,
-    BODY_FLOW_MAX_GAP_PT,
     BODY_FLOW_MIN_GAP_PT,
-    BODY_FLOW_TARGET_GAP_PT,
-    BODY_FLOW_TOP_MAX_GAP_PT,
     BODY_FLOW_VISIBLE_GAP_WARN_PT,
     BODY_FONT_SIZE,
-    BODY_TEXT_BOX_CUSHION_PT,
     DOCUMENT_STYLES,
-    EXPANDABLE_TEXT_STYLE_NAMES,
-    HEADING_FONT_SIZE,
     JOURNAL_FOOTER_FONT_SIZE,
-    MATH_VECTOR_FONT,
-    MATH_VECTOR_FONT_PATHS,
     SHRINK_FIT_MIN_FONT_SIZE,
-    SOURCE_PARAGRAPH_FLOW_MAX_GAP_PT,
     TEXT_FIT_EPSILON_PT,
-    TEXT_FLOW_STYLE_NAMES,
     TEXT_FLOW_EXCLUDED_FALLBACK_REASONS,
-    TITLE_FONT_SIZE,
-    VECTOR_ACCENT_COLOR,
-    VECTOR_BODY_COLOR,
-    VECTOR_FONT,
-    TextBoxFitPlan,
     TextStyle,
-    anchor_between_body_items,
     avoid_protected_boxes,
-    body_group_heights_and_gap,
     body_group_limits,
-    body_group_max_gap,
     body_layout_lanes,
-    boxes_horizontally_conflict,
-    break_current_line,
     build_render_boxes as _layout_build_render_boxes,
-    clean_pdf_draw_tokens,
-    clamp_preserving_box_size,
-    distribute_text_across_segments,
-    drawable_pdf_line_tokens,
     expand_text_boxes_to_fit,
-    fitted_text_spacing,
     fit_font_and_lines,
-    item_is_body_layout_text,
-    item_is_expandable_body_text,
-    item_is_formula_intro_text,
-    lane_shares_item,
     layout_horizontal_conflict,
-    math_fitz_font,
-    math_vector_font_path,
-    merge_pdf_line_tokens,
-    minimum_text_height_for_item,
-    pdf_text_width,
-    pdf_token_font,
-    pdf_token_fontfile,
-    pdf_token_uses_math_font,
-    pdf_token_width,
     preferred_text_height_for_item,
     raster_font_path,
     raster_image_font,
@@ -145,41 +85,23 @@ from layout import (
     raster_text_should_render_vertical,
     rebalance_body_text_flows,
     release_visual_clip_overcapture_for_text_fit,
-    render_font_size_for_block,
     render_font_size_for_style,
     render_text_style_name,
-    shifted_boxes_around_protected,
-    small_overflow_tolerance,
-    source_line_count,
     split_body_layout_lane,
-    split_pdf_text_tokens,
-    split_pdf_wrap_units,
-    split_text_units,
     split_translated_text_around_protected,
-    strip_trailing_space_tokens,
     text_box_fit_plan,
-    text_box_overlaps_protected,
-    text_box_overlaps_text_anchor,
     text_height_for_lines,
     text_item_fit_metrics,
-    text_required_height,
-    text_segments_around_protected,
     text_style,
-    text_units_fit_segment,
-    token_list_width,
     target_font_size_for_block,
-    target_font_size_points_for_block,
-    usable_text_segment,
     validate_plan_style_policy,
     validate_plan_text_fit,
     vertical_expansion_limits,
-    wrap_text,
     wrap_mixed_pdf_text,
     style_name_for_block,
     style_name_for_heading_text,
 )
 from render_plan import (
-    ALLOWED_SKIP_CLASSES,
     CoverageEntry,
     DocumentRenderResult,
     PageRenderPlan,
@@ -187,54 +109,18 @@ from render_plan import (
     bbox_area,
     bbox_overlap_area,
     bbox_overlap_height,
-    bbox_to_json,
-    coverage_entry_to_json,
     item_significantly_overlaps_protected,
     ledger_classifications,
-    render_item_to_json,
-    render_plan_artifact_path,
-    render_plan_json_dumps,
-    render_plan_to_json,
     try_write_render_plan_artifact,
     update_ledger_render_kind,
-    validate_plan_coverage as _render_plan_validate_plan_coverage,
+    validate_plan_coverage,
     validate_plan_layout,
     validate_plan_text_overlaps,
     write_render_plan_artifact,
 )
-from render_pdf import (
-    draw_mixed_pdf_lines,
-    expanded_rect_for_text,
-    insert_source_clip,
-    insert_source_image_clip,
-    insert_vector_textbox,
-    insert_vertical_vector_text,
-    is_vertical_vector_block,
-    load_fitz,
-    preserve_drawings_on_page,
-    preserve_images_on_page,
-    render_plan_item,
-    should_preserve_drawing_rect,
-    source_image_clip_stream,
-    source_page_image_path,
-    vector_text_color,
-)
+from render_pdf import load_fitz, preserve_images_on_page, render_plan_item, source_page_image_path
 from regions import (
-    EDGE_ICON_MAX_SIZE_PT,
-    FORMULA_COLUMN_FRACTION,
-    FORMULA_PAD_BOTTOM_PX,
-    FORMULA_PAD_TOP_PX,
-    FULL_PAGE_IMAGE_AREA_FRACTION,
     HEADING_NUMBER_TITLE_MAX_GAP_PT,
-    HEURISTIC_HEADING_MAX_CHARS,
-    IMAGE_ROW_CLIP_PAD_BOTTOM_PT,
-    IMAGE_ROW_CLIP_PAD_TOP_PT,
-    IMAGE_ROW_CLIP_PAD_X_PT,
-    IMAGE_ROW_GROUP_CENTER_TOLERANCE_PT,
-    IMAGE_ROW_GROUP_MIN_COUNT,
-    IMAGE_ROW_GROUP_MIN_SPAN_PT,
-    LARGE_PROSE_VISUAL_AVOID_AREA_PT,
-    LARGE_PROSE_VISUAL_AVOID_HEIGHT_PT,
     TEXT_PROTECTED_GAP_PT,
     VISUAL_CLIP_PIXEL_FINAL_PAD_PT,
     VISUAL_CLIP_PIXEL_SEARCH_PAD_X_PT,
@@ -256,40 +142,25 @@ from regions import (
     cap_visual_bbox_before_following_text,
     clamp_bbox,
     clamped_expanded_bbox,
-    dark_pixel_bbox_in_source_image,
-    diagram_label_candidate_above_caption,
-    diagram_regions_above_visual_captions,
     expanded_bbox,
     formula_region_bbox_from_lines,
-    grouped_image_row_clips,
     code_comment_marker_has_delimiter_context,
-    has_intervening_wide_prose_block,
     has_code_comment_marker_to_left,
-    has_standalone_heading_number_to_left,
     heuristic_heading_from_block,
     horizontal_overlap,
-    image_info_preserve_bbox,
     is_adjacent_visual_table_row_cell,
     is_code_comment_marker_text,
-    is_large_prose_block,
-    is_nearby_table_header_cell,
-    is_table_body_candidate,
-    is_table_region_terminator,
     make_px_box,
-    merge_adjacent_code_visual_regions,
     merge_bbox_line_fragments,
     nontranslated_blocks_covered_by_visual_region,
     overlap_area,
-    pixel_search_bbox,
     protected_box_for_block,
     same_heading_line,
     source_is_short_continuation_fragment,
     short_heading_text,
     standalone_heading_number_text,
     starts_like_source_heading,
-    table_cells_already_seen_above_caption,
     translated_blocks_structurally_covered_by_visual_region,
-    valid_image_insert_bbox,
     vertical_overlap,
     visual_clip_bbox,
 )
@@ -558,8 +429,10 @@ def parse_bbox_lines(bbox_path: Path) -> list[dict]:
 def load_source_pages(job_paths) -> list[list[dict]]:
     source_pages_path = job_paths["source_pages_path"]
     if source_pages_path.exists():
-        return json.loads(source_pages_path.read_text(encoding="utf-8"))
-    return parse_bbox(job_paths["bbox_path"])
+        pages = json.loads(source_pages_path.read_text(encoding="utf-8"))
+    else:
+        pages = parse_bbox(job_paths["bbox_path"])
+    return [blocks for _, blocks in mark_running_headers(list(enumerate(pages, 1)), bbox_lines_by_page(job_paths))]
 
 
 def save_source_pages(pages, job_paths):
@@ -806,6 +679,7 @@ def load_or_build_source_pages(
     pages = parse_bbox(job_paths["bbox_path"])
     if force_ocr or should_use_ocr(pages) or text_extraction_looks_garbled(pages):
         pages = generate_ocr_pages(job_paths, pdf_size_pt)
+    pages = [blocks for _, blocks in mark_running_headers(list(enumerate(pages, 1)), bbox_lines_by_page(job_paths))]
     save_source_pages(pages, job_paths)
     return pages
 
@@ -1635,66 +1509,24 @@ SOURCE_CONTINUATION_HEAD_WORDS = {
 }
 
 
-def source_text_without_running_header(text: str, page_num: int) -> str:
-    text = strip_leading_running_header_text(text, page_num)
-    lines = [line.strip() for line in normalize_text(text).split("\n") if line.strip()]
-    if page_num > 1 and lines:
-        first = lines[0]
-        compact = re.sub(r"[^a-z0-9]+", "", first.lower())
-        if "waitfree" in compact and "synchronization" in compact:
-            lines = lines[1:]
-    while lines and (is_page_number(lines[0]) or is_decorated_ocr_page_number_text(lines[0])):
+def leading_running_header(block) -> str:
+    lines = normalize_text(block.get("text", "")).splitlines()
+    header = block.get("running_header", "")
+    return header if header and len(lines) >= 2 and lines[0] == header else ""
+
+
+def strip_block_running_header(block, text: str) -> str:
+    header = leading_running_header(block)
+    lines = normalize_text(text).splitlines()
+    # Only remove a separately emitted header. A fused translation has no safe
+    # character boundary and is preserved instead of guessing a Chinese prefix.
+    if header and len(lines) >= 2 and lines[0] == header:
         lines = lines[1:]
-    return strip_journal_footer_lines("\n".join(lines))
-
-
-def strip_running_header_prefix_from_line(line: str, page_num: int) -> str:
-    if page_num <= 1:
-        return line
-    stripped = line.strip()
-    stripped = re.sub(
-        r"^[·•]?\s*\d{1,3}\s*[·•.]?\s*(?=(?:Maurice\s*Herlihy|Wait-?\s*Free\s*Synchronization|Wait-FreeSynchronization|无等待同步)\b)",
-        "",
-        stripped,
-        flags=re.I,
-    )
-    for pattern, flags in (
-        (r"^(?:Maurice\s*Herlihy|MauriceHerlihy|Wait-?\s*Free\s*Synchronization|Wait-FreeSynchronization)\b", re.I),
-        (r"^无等待同步", 0),
-    ):
-        match = re.match(pattern, stripped, flags=flags)
-        if not match:
-            continue
-        rest = stripped[match.end() :]
-        page_match = re.match(r"\s*[·•.]?\s*\d{1,3}\s*", rest)
-        if page_match:
-            stripped = rest[page_match.end() :].strip()
-        elif not rest.strip() or rest[:1].isspace():
-            stripped = rest.strip()
-        break
-    if is_page_number(stripped) or is_decorated_ocr_page_number_text(stripped):
-        return ""
-    return stripped
-
-
-def strip_leading_running_header_text(text: str, page_num: int) -> str:
-    if page_num <= 1:
-        return normalize_text(text)
-    lines = normalize_text(text).split("\n")
-    cleaned = []
-    stripping = True
-    for line in lines:
-        if stripping:
-            line = strip_running_header_prefix_from_line(line, page_num)
-            if not line:
-                continue
-            stripping = False
-        cleaned.append(line)
-    return normalize_text("\n".join(cleaned))
+    return normalize_text("\n".join(lines))
 
 
 def source_boundary_text_for_block(block) -> str:
-    return source_text_without_running_header(block.get("text", ""), block.get("page", 1))
+    return strip_journal_footer_lines(strip_block_running_header(block, block.get("text", "")))
 
 
 def source_text_likely_continues(text: str) -> bool:
@@ -1852,7 +1684,7 @@ def detect_cross_page_sentence_splits(
     *,
     bbox_lines_by_page: dict[int, list[dict]] | None = None,
 ) -> list[dict]:
-    ordered_pages = sorted(selected_pages, key=lambda item: item[0])
+    ordered_pages = sorted(mark_running_headers(selected_pages, bbox_lines_by_page), key=lambda item: item[0])
     candidates = []
     for (previous_page_num, previous_blocks), (next_page_num, next_blocks) in zip(ordered_pages, ordered_pages[1:]):
         if next_page_num != previous_page_num + 1:
@@ -1903,7 +1735,7 @@ def detect_cross_page_sentence_splits(
     return candidates
 
 
-def remove_leading_translation_prefix(text: str, prefix: str) -> str:
+def remove_leading_translation_prefix(text: str, prefix: str, *, source_block=None) -> str:
     if not text or not prefix:
         return text
     variants = [prefix, prepare_render_translation(prefix)]
@@ -1918,8 +1750,7 @@ def remove_leading_translation_prefix(text: str, prefix: str) -> str:
             return prepared_text[len(variant) :].lstrip()
     lines = text.splitlines()
     if len(lines) >= 2:
-        first_compact = re.sub(r"\s+", "", lines[0].lower())
-        if first_compact in {"无等待同步", "wait-freesynchronization", "waitfreesynchronization"}:
+        if source_block and leading_running_header(source_block):
             tail = "\n".join(lines[1:])
             trimmed_tail = remove_leading_translation_prefix(tail, prefix)
             if trimmed_tail != tail:
@@ -2004,48 +1835,36 @@ def translate_boundary_sentence_repairs(
                 "next_translation": translations.get(candidate["next_id"], ""),
             }
         )
-    prompt = make_boundary_repair_prompt(prompt_items)
-    prompt_path = job_paths["job_dir"] / "boundary-sentence-repair.prompt.txt"
-    out_path = job_paths["job_dir"] / "boundary-sentence-repair.out.json"
-    log_path = job_paths["job_dir"] / "boundary-sentence-repair.log.txt"
-    prompt_path.write_text(prompt, encoding="utf-8")
-    proc = run(
-        [
-            "codex",
-            "exec",
-            "--skip-git-repo-check",
-            "-m",
-            model,
-            "-c",
-            f"model_reasoning_effort='{reasoning_effort}'",
-            "--disable",
-            "plugins",
-            "--disable",
-            "shell_snapshot",
-            "--sandbox",
-            "workspace-write",
-            "--ephemeral",
-            "--output-schema",
-            str(schema_path),
-            "-o",
-            str(out_path),
-            "-",
-        ],
-        input_text=prompt,
-        check=False,
+    return translation_batch.execute_json_task(
+        make_boundary_repair_prompt(prompt_items),
+        job_paths["job_dir"], "boundary-sentence-repair", schema_path,
+        validate=lambda payload: validate_boundary_repair_payload(
+            payload, {candidate["key"] for candidate in candidates},
+        ),
+        model=model, reasoning_effort=reasoning_effort,
     )
-    log_path.write_text(proc.stdout + "\n\nSTDERR\n" + proc.stderr, encoding="utf-8")
-    if proc.returncode != 0 or not out_path.exists():
-        raise RuntimeError(f"boundary sentence repair failed, see {log_path}")
-    data = json.loads(out_path.read_text(encoding="utf-8"))
-    return {
-        item["key"]: {
-            "translation": item.get("translation", "").strip(),
-            "next_prefix_translation": item.get("next_prefix_translation", "").strip(),
+
+
+def validate_boundary_repair_payload(payload, expected_keys: set[str]) -> dict:
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        raise ValueError("expected an items array")
+    items = payload["items"]
+    if any(not isinstance(item, dict) for item in items):
+        raise ValueError("expected repair objects")
+    translations = translation_batch.validate_translation_payload(
+        {"items": [{"id": item.get("key"), "translation": item.get("translation")} for item in items]},
+        expected_keys,
+    )
+    result = {}
+    for item in items:
+        prefix = item.get("next_prefix_translation")
+        if not isinstance(prefix, str):
+            raise ValueError("expected a string next_prefix_translation")
+        result[item["key"]] = {
+            "translation": translations[item["key"]],
+            "next_prefix_translation": normalize_translation(prefix),
         }
-        for item in data.get("items", [])
-        if item.get("key")
-    }
+    return result
 
 
 def postprocess_cross_page_sentence_splits(
@@ -2059,6 +1878,7 @@ def postprocess_cross_page_sentence_splits(
 ) -> dict:
     repaired_translations = dict(translations)
     lines_by_page = bbox_lines_by_page(job_paths) if job_paths else {}
+    selected_pages = mark_running_headers(selected_pages, lines_by_page)
     candidates = detect_cross_page_sentence_splits(selected_pages, bbox_lines_by_page=lines_by_page)
     repairs = {}
     repairs.update(load_boundary_repairs(job_paths))
@@ -2076,6 +1896,7 @@ def postprocess_cross_page_sentence_splits(
         repairs.update(generated)
         save_boundary_repairs(job_paths, repairs)
 
+    blocks_by_id = {block["id"]: block for _, blocks in selected_pages for block in blocks}
     for candidate in candidates:
         repair = repairs.get(candidate["key"])
         if not repair:
@@ -2088,6 +1909,7 @@ def postprocess_cross_page_sentence_splits(
             repaired_translations[candidate["next_id"]] = remove_leading_translation_prefix(
                 repaired_translations.get(candidate["next_id"], ""),
                 next_prefix,
+                source_block=blocks_by_id.get(candidate["next_id"]),
             )
     return repaired_translations
 
@@ -2155,7 +1977,7 @@ def draw_vertical(draw_img: Image.Image, text: str, box, fill_bg, fill_text):
 def translation_for_block(block, translations):
     translated = translations.get(block["id"])
     if translated:
-        return prepare_render_translation(translated)
+        return prepare_render_translation(strip_block_running_header(block, translated))
     if is_trivial_keep(block["text"]):
         return ""
     return block["text"]
@@ -2341,34 +2163,6 @@ def contained_standalone_label_ids(blocks, classes) -> set[str]:
                 skipped.add(block["id"])
                 break
     return skipped
-
-
-def filter_nested_vector_blocks(blocks, translations):
-    text_blocks = [
-        block
-        for block in blocks
-        if not should_preserve_as_image(block)
-        and not is_page_number(block["text"])
-        and translation_for_block(block, translations)
-    ]
-    skipped = set()
-    for block in text_blocks:
-        block_area = block_area_pt(block)
-        if block_area <= 0:
-            continue
-        block_text_len = len(block.get("text", ""))
-        for other in text_blocks:
-            if other["id"] == block["id"]:
-                continue
-            other_area = block_area_pt(other)
-            if other_area <= block_area * 2.5:
-                continue
-            if len(other.get("text", "")) <= block_text_len * 3:
-                continue
-            if block_overlap_area_pt(block, other) / block_area >= 0.85:
-                skipped.add(block["id"])
-                break
-    return [block for block in blocks if block["id"] not in skipped]
 
 
 def normalize_outline_match_text(text: str) -> str:
@@ -2575,10 +2369,6 @@ def reference_block_ids_for_bbox_line(line: dict, reference_blocks) -> list[str]
         if vertical_overlap(line_box, reference_box) > 0 and horizontal_overlap(line_box, reference_box) >= line_width * 0.55:
             matches.append(block["id"])
     return sorted(set(matches))
-
-
-def bbox_line_matches_reference_block(line: dict, reference_blocks) -> bool:
-    return bool(reference_block_ids_for_bbox_line(line, reference_blocks))
 
 
 def reference_line_render_items(blocks, bbox_lines, page_size, classes: dict[str, str] | None = None) -> list[RenderItem]:
@@ -3038,12 +2828,12 @@ def repair_incomplete_translation_from_source(block, text: str) -> str:
 
 def clean_render_text(block, text: str, raw_text: str | None = None) -> str:
     text = strip_journal_footer_lines(text)
-    text = strip_leading_running_header_text(text, block.get("page", 1))
+    if raw_text is None:
+        text = strip_block_running_header(block, text)
     if raw_text:
         visual_tail = translation_tail_after_visual_prefix(raw_text)
         if visual_tail and cjk_char_count(visual_tail) >= 6:
             text = strip_journal_footer_lines(visual_tail)
-            text = strip_leading_running_header_text(text, block.get("page", 1))
     text = drop_garbled_translation_lines(text)
     text = repair_incomplete_translation_from_source(block, text)
     lines = text.split("\n")
@@ -3051,15 +2841,6 @@ def clean_render_text(block, text: str, raw_text: str | None = None) -> str:
         source_first = normalize_text(block.get("text", "")).split("\n", 1)[0].strip()
         if source_first == lines[0].strip():
             return strip_journal_footer_lines("\n".join(lines[1:]).strip())
-    source_first = normalize_text(block.get("text", "")).split("\n", 1)[0].strip()
-    if block.get("page", 1) > 1 and re.search(r"wait-?free\s*synchronization", source_first, flags=re.I):
-        first = lines[0].strip() if lines else ""
-        if first in {"无等待同步", "Wait-Free Synchronization", "Wait-FreeSynchronization"}:
-            return strip_journal_footer_lines("\n".join(lines[1:]).strip())
-        stripped = text.strip()
-        for prefix in ("无等待同步", "Wait-Free Synchronization", "Wait-FreeSynchronization"):
-            if stripped.startswith(prefix) and len(stripped) > len(prefix):
-                return strip_journal_footer_lines(stripped[len(prefix) :].strip())
     return strip_journal_footer_lines(text)
 
 
@@ -3268,10 +3049,6 @@ def translated_lines_with_embedded_headings(text: str) -> list[str]:
     if not any(render_line_is_standalone_heading(line) for line in lines[1:]):
         return []
     return lines
-
-
-def source_heading_rows_for_block(block, bbox_lines: list[dict]) -> list[dict]:
-    return [row for row in bbox_line_rows_for_block(block, bbox_lines) if is_heading_text(row["text"])]
 
 
 def approximate_line_box(bbox, line_index: int, line_count: int) -> tuple[float, float, float, float]:
@@ -3997,6 +3774,7 @@ def build_page_render_plan(
     source_image_path: Path | None = None,
     force_reference: bool = False,
 ) -> PageRenderPlan:
+    blocks = mark_running_headers([(page_num, blocks)], {page_num: bbox_lines or []})[0][1]
     plan = PageRenderPlan(page_num=page_num, page_size=tuple(page_size))
     if not blocks and source_image_path:
         full_page_bbox = (0.0, 0.0, float(page_size[0]), float(page_size[1]))
@@ -4483,20 +4261,6 @@ def arrange_page_render_items(plan: PageRenderPlan, blocks, page_size, bbox_line
     # A new nonprose image fallback becomes an obstacle for translated text.
     convert_unfit_nonprose_text_to_image_clips(plan, blocks)
     split_translated_text_around_protected(plan, page_size)
-
-
-def nontrivial_block(block) -> bool:
-    text = normalize_text(block.get("text", ""))
-    return bool(text) and not is_trivial_keep(text)
-
-
-def validate_plan_coverage(page_num: int, blocks, plan: PageRenderPlan) -> list[str]:
-    return _render_plan_validate_plan_coverage(
-        page_num,
-        blocks,
-        plan,
-        is_nontrivial_block=nontrivial_block,
-    )
 
 
 def validate_plan_translation_quality(page_num: int, blocks, translations, plan: PageRenderPlan) -> list[str]:
@@ -5261,6 +5025,7 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
     fitz = load_fitz()
     src_doc = fitz.open(pdf_path)
     out_doc = fitz.open()
+    selected_pages = mark_running_headers(selected_pages, bbox_lines_by_page(job_paths))
     translations = postprocess_cross_page_sentence_splits(
         selected_pages,
         translations,

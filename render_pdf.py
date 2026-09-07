@@ -1,16 +1,12 @@
 import io
 import math
-import re
 import sys
 from pathlib import Path
 
 from PIL import Image
 
 from layout import (
-    DOCUMENT_STYLES,
-    VECTOR_ACCENT_COLOR,
     VECTOR_BODY_COLOR,
-    VECTOR_FONT,
     TextStyle,
     drawable_pdf_line_tokens,
     pdf_token_font,
@@ -41,24 +37,6 @@ def load_fitz():
     return fitz
 
 
-def vector_text_color(block) -> tuple[float, float, float]:
-    text = block.get("text", "")
-    if text.startswith("DeepSeek Scales") or text.startswith("NVIDIA ") or text.startswith("Figure "):
-        return VECTOR_ACCENT_COLOR if text.startswith("DeepSeek Scales") else VECTOR_BODY_COLOR
-    return VECTOR_BODY_COLOR
-
-
-def expanded_rect_for_text(fitz, block, page_rect):
-    pad_x = 1.5
-    pad_y = 1.5
-    return fitz.Rect(
-        max(page_rect.x0, block["xMin"] - pad_x),
-        max(page_rect.y0, block["yMin"] - pad_y),
-        min(page_rect.x1, block["xMax"] + pad_x),
-        min(page_rect.y1, block["yMax"] + pad_y),
-    )
-
-
 def insert_vector_textbox(
     page,
     fitz,
@@ -70,77 +48,27 @@ def insert_vector_textbox(
     line_height_factor: float = 1.22,
     paragraph_spacing: float = 0.0,
     letter_spacing: float = 0.0,
-    allow_shrink: bool = False,
     min_line_height_factor: float | None = None,
     min_paragraph_spacing: float | None = None,
 ):
     if not text.strip() or rect.is_empty:
         return True
 
-    def draw_if_fits(size: float, line_factor: float, para_spacing: float) -> bool:
-        style = TextStyle(
-            font_size=size,
-            line_height_factor=line_factor,
-            paragraph_spacing=para_spacing,
-            letter_spacing=letter_spacing,
-            color=color,
-            min_line_height_factor=min_line_height_factor,
-            min_paragraph_spacing=min_paragraph_spacing,
-        )
-        plan = text_box_fit_plan(fitz, text, rect.width, rect.height, style, font_size=size)
-        if plan is None:
-            return False
-        draw_mixed_pdf_lines(
-            page,
-            fitz,
-            rect,
-            plan.lines,
-            plan.font_size,
-            plan.font_size * plan.line_height_factor,
-            color,
-            paragraph_spacing=plan.paragraph_spacing,
-            letter_spacing=letter_spacing,
-        )
-        return True
-
-    if draw_if_fits(font_size, line_height_factor, paragraph_spacing):
-        return True
-    if not allow_shrink:
-        return False
-    size = font_size - 0.5
-    while size >= 5.0:
-        if draw_if_fits(size, line_height_factor, paragraph_spacing):
-            return True
-        size -= 0.5
-    return False
-
-
-def is_vertical_vector_block(block, text: str) -> bool:
-    return (block["yMax"] - block["yMin"]) > (block["xMax"] - block["xMin"]) * 3 and len(text) > 4
-
-
-def insert_vertical_vector_text(page, fitz, rect, text: str, font_size: float, color):
-    if not text.strip() or rect.is_empty:
-        return
-
-    fontname = VECTOR_FONT if re.search(r"[^\x00-\x7f]", text) else "helv"
-    size = min(font_size, max(5.0, rect.width * 0.85), 30.0)
-    while size >= 5.0:
-        text_length = fitz.get_text_length(text, fontname=fontname, fontsize=size)
-        if text_length <= rect.height:
-            break
-        size -= 0.5
-
-    x = rect.x0 + min(rect.width - 1.0, size * 0.9)
-    y = rect.y1 - 1.0
-    page.insert_text(
-        (x, y),
-        text,
-        fontsize=size,
-        fontname=fontname,
-        color=color,
-        rotate=90,
+    style = TextStyle(
+        font_size=font_size, line_height_factor=line_height_factor,
+        paragraph_spacing=paragraph_spacing, letter_spacing=letter_spacing,
+        color=color, min_line_height_factor=min_line_height_factor,
+        min_paragraph_spacing=min_paragraph_spacing,
     )
+    plan = text_box_fit_plan(fitz, text, rect.width, rect.height, style, font_size=font_size)
+    if plan is None:
+        return False
+    draw_mixed_pdf_lines(
+        page, fitz, rect, plan.lines, plan.font_size,
+        plan.font_size * plan.line_height_factor, color,
+        paragraph_spacing=plan.paragraph_spacing, letter_spacing=letter_spacing,
+    )
+    return True
 
 
 def draw_mixed_pdf_lines(
@@ -284,68 +212,21 @@ def insert_source_image_clip(out_page, fitz, source_image_path: Path, page_rect,
     return True
 
 
-def should_preserve_drawing_rect(rect, fill) -> bool:
-    if rect is None:
-        return False
-    if fill is not None:
-        return True
-    return rect.width <= 2.0 or rect.height <= 2.0
-
-
-def preserve_drawings_on_page(src_page, out_page):
-    for drawing in src_page.get_drawings():
-        rect = drawing.get("rect")
-        if rect is None:
-            continue
-        fill = drawing.get("fill")
-        if not should_preserve_drawing_rect(rect, fill):
-            continue
-        color = drawing.get("color") or (0, 0, 0)
-        width = drawing.get("width") or 0.5
-        if fill is not None:
-            out_page.draw_rect(rect, color=color, fill=fill, width=width)
-        else:
-            out_page.draw_rect(rect, color=color, width=width)
-
-
 def render_plan_item(out_page, src_page, fitz, item: RenderItem, dpi: int, source_image_path: Path | None = None):
     rect = fitz.Rect(item.bbox)
-    if item.kind == "translated_text":
+    if item.kind in {"translated_text", "original_selectable_text"}:
         style = text_style(render_text_style_name(item))
+        color = item.color if item.kind == "translated_text" else VECTOR_BODY_COLOR
         if insert_vector_textbox(
-            out_page,
-            fitz,
-            rect,
-            item.text,
-            item.font_size or style.font_size,
-            item.color,
+            out_page, fitz, rect, item.text, item.font_size or style.font_size, color,
             line_height_factor=style.line_height_factor,
             paragraph_spacing=style.paragraph_spacing,
             letter_spacing=style.letter_spacing,
             min_line_height_factor=style.min_line_height_factor,
             min_paragraph_spacing=style.min_paragraph_spacing,
-            allow_shrink=False,
         ):
             return
-        raise RuntimeError(f"text item {item.source_ids} did not fit during render")
-    if item.kind == "original_selectable_text":
-        style = text_style(render_text_style_name(item))
-        if insert_vector_textbox(
-            out_page,
-            fitz,
-            rect,
-            item.text,
-            item.font_size or style.font_size,
-            VECTOR_BODY_COLOR,
-            line_height_factor=style.line_height_factor,
-            paragraph_spacing=style.paragraph_spacing,
-            letter_spacing=style.letter_spacing,
-            min_line_height_factor=style.min_line_height_factor,
-            min_paragraph_spacing=style.min_paragraph_spacing,
-            allow_shrink=False,
-        ):
-            return
-        raise RuntimeError(f"selectable text item {item.source_ids or item.fallback_reason} did not fit during render")
+        raise RuntimeError(f"text item {item.source_ids or item.fallback_reason} did not fit during render")
     if item.kind == "original_image_clip":
         if source_image_path and insert_source_image_clip(out_page, fitz, source_image_path, src_page.rect, item.bbox):
             return

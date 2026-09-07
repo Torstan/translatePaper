@@ -8,6 +8,7 @@ from unittest.mock import patch
 from PIL import Image, ImageDraw
 
 import qa_visual
+import layout
 
 
 class VisualQaImageTests(unittest.TestCase):
@@ -830,7 +831,7 @@ class VisualQaImageTests(unittest.TestCase):
                     "text": "正文二",
                     "style_name": "body",
                     "font_size": 8.0,
-                    "fallback_reason": "fit_shrink",
+                    "fallback_reason": "body_flow_compact",
                 },
             ],
             "coverage_ledger": [
@@ -864,7 +865,7 @@ class VisualQaImageTests(unittest.TestCase):
                     "text": "压缩正文",
                     "style_name": "body",
                     "font_size": 8.0,
-                    "fallback_reason": "fit_shrink",
+                    "fallback_reason": "body_flow_compact",
                 },
                 {
                     "kind": "translated_text",
@@ -1826,7 +1827,7 @@ class VisualQaRulePairTests(unittest.TestCase):
                 {
                     **bad_plan["render_items"][0],
                     "style_name": "heading",
-                    "font_size": 12.0,
+                    "font_size": layout.text_style("heading").font_size,
                 }
             ],
         }
@@ -2341,6 +2342,8 @@ class VisualQaReportTests(unittest.TestCase):
             "render_items": [
                 {
                     "kind": "translated_text",
+                    "style_name": "body",
+                    "font_size": layout.BODY_FONT_SIZE,
                     "source_ids": ["p008b0001"],
                     "bbox": [-12, 10, 40, 30],
                     "text": "越界",

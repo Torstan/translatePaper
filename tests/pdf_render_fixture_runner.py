@@ -2,6 +2,9 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
+import classify
+import render_plan
+from classify import mark_running_headers
 import translate_pdf_via_codex as pdf
 
 
@@ -11,7 +14,7 @@ class RenderPlanFixture:
     blocks: list[dict]
     translations: dict[str, str]
     expected_plan: dict
-    plan: pdf.PageRenderPlan
+    plan: render_plan.PageRenderPlan
 
 
 def _load_json(path: Path) -> dict:
@@ -29,8 +32,9 @@ def iter_render_plan_fixtures(
     page_size=(623, 801),
 ):
     source_dir = fixture_root / "source_pages" / document_slug
-    for source_path in sorted(source_dir.glob("page-*.json")):
-        source = _load_json(source_path)
+    sources = [(path, _load_json(path)) for path in sorted(source_dir.glob("page-*.json"))]
+    marked_pages = dict(mark_running_headers([(int(source["page"]), source["blocks"]) for _, source in sources]))
+    for source_path, source in sources:
         page_num = int(source["page"])
         translation_path = _fixture_path(fixture_root, "translations", document_slug, page_num)
         expected_plan_path = _fixture_path(fixture_root, "expected_plans", document_slug, page_num)
@@ -44,7 +48,7 @@ def iter_render_plan_fixtures(
             if companion.get("document") != source.get("document") or int(companion.get("page", -1)) != page_num:
                 raise AssertionError(f"{companion_name} fixture does not match {source_path.name}")
 
-        blocks = source["blocks"]
+        blocks = marked_pages[page_num]
         cached_translations = translations["translations"]
         plan = pdf.build_page_render_plan(
             page_num,
@@ -69,7 +73,7 @@ def iter_wait_free_render_plan_fixtures(fixture_root: Path, *, page_size=(623, 8
 
 
 def assert_render_plan_fixture(fixture: RenderPlanFixture) -> None:
-    plan_json = pdf.render_plan_to_json(fixture.plan)
+    plan_json = render_plan.render_plan_to_json(fixture.plan)
     _assert_coverage_ledger_complete(fixture, plan_json)
 
     assertions = fixture.expected_plan.get("assertions") or []
@@ -199,7 +203,7 @@ def _assert_coverage_ledger_complete(fixture: RenderPlanFixture, plan_json: dict
     expected_ids = {
         block["id"]
         for block in fixture.blocks
-        if pdf.normalize_text(block.get("text", ""))
+        if classify.normalize_text(block.get("text", ""))
     }
     ledger_ids = [entry["block_id"] for entry in plan_json["coverage_ledger"]]
     actual_ids = {source_id for source_id in ledger_ids if source_id}
@@ -210,7 +214,7 @@ def _assert_coverage_ledger_complete(fixture: RenderPlanFixture, plan_json: dict
     )
     missing = sorted(expected_ids - actual_ids)
     extra = sorted(actual_ids - expected_ids)
-    validation_errors = pdf.validate_plan_coverage(fixture.page_num, fixture.blocks, fixture.plan)
+    validation_errors = render_plan.validate_plan_coverage(fixture.page_num, fixture.blocks, fixture.plan)
 
     if duplicates or missing or extra or validation_errors:
         raise AssertionError(

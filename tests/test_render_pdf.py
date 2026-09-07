@@ -6,18 +6,12 @@ from unittest.mock import patch
 from PIL import Image
 
 import render_pdf
+import layout
+import render_plan
 import translate_pdf_via_codex as pdf
 
 
 class RenderPdfExtractionModuleTests(unittest.TestCase):
-    def test_render_pdf_api_direct_and_compatibility_identity(self):
-        self.assertIs(pdf.load_fitz, render_pdf.load_fitz)
-        self.assertIs(pdf.insert_vector_textbox, render_pdf.insert_vector_textbox)
-        self.assertIs(pdf.draw_mixed_pdf_lines, render_pdf.draw_mixed_pdf_lines)
-        self.assertIs(pdf.insert_source_clip, render_pdf.insert_source_clip)
-        self.assertIs(pdf.source_image_clip_stream, render_pdf.source_image_clip_stream)
-        self.assertIs(pdf.insert_source_image_clip, render_pdf.insert_source_image_clip)
-        self.assertIs(pdf.render_plan_item, render_pdf.render_plan_item)
 
     def test_insert_vector_textbox_direct_api_rejects_fixed_style_overflow(self):
         fitz = render_pdf.load_fitz()
@@ -29,10 +23,9 @@ class RenderPdfExtractionModuleTests(unittest.TestCase):
             fitz,
             fitz.Rect(10, 10, 40, 18),
             "这是一个很长很长的译文，不能通过缩小字号塞进框里。",
-            pdf.DOCUMENT_STYLES["body"].font_size,
-            pdf.VECTOR_BODY_COLOR,
-            line_height_factor=pdf.DOCUMENT_STYLES["body"].line_height_factor,
-            allow_shrink=False,
+            layout.DOCUMENT_STYLES["body"].font_size,
+            layout.VECTOR_BODY_COLOR,
+            line_height_factor=layout.DOCUMENT_STYLES["body"].line_height_factor,
         )
         doc.close()
 
@@ -57,13 +50,12 @@ class RenderPdfExtractionModuleTests(unittest.TestCase):
                 fitz,
                 fitz.Rect(10, 10, 110, 70),
                 "第一段。\n第二段。",
-                pdf.DOCUMENT_STYLES["body"].font_size,
-                pdf.VECTOR_BODY_COLOR,
-                line_height_factor=pdf.DOCUMENT_STYLES["body"].line_height_factor,
-                paragraph_spacing=pdf.DOCUMENT_STYLES["body"].paragraph_spacing,
-                min_line_height_factor=pdf.DOCUMENT_STYLES["body"].min_line_height_factor,
-                min_paragraph_spacing=pdf.DOCUMENT_STYLES["body"].min_paragraph_spacing,
-                allow_shrink=False,
+                layout.DOCUMENT_STYLES["body"].font_size,
+                layout.VECTOR_BODY_COLOR,
+                line_height_factor=layout.DOCUMENT_STYLES["body"].line_height_factor,
+                paragraph_spacing=layout.DOCUMENT_STYLES["body"].paragraph_spacing,
+                min_line_height_factor=layout.DOCUMENT_STYLES["body"].min_line_height_factor,
+                min_paragraph_spacing=layout.DOCUMENT_STYLES["body"].min_paragraph_spacing,
             )
         finally:
             render_pdf.text_box_fit_plan = original
@@ -80,12 +72,12 @@ class RenderPdfExtractionModuleTests(unittest.TestCase):
         src_page = src_doc.new_page(width=100, height=100)
         out_doc = fitz.open()
         out_page = out_doc.new_page(width=100, height=100)
-        item = pdf.RenderItem(
+        item = render_plan.RenderItem(
             "translated_text",
             ["body"],
             (10, 10, 40, 18),
             text="这是一个很长很长的译文，渲染阶段不能偷偷贴回英文截图。" * 4,
-            font_size=pdf.DOCUMENT_STYLES["body"].font_size,
+            font_size=layout.DOCUMENT_STYLES["body"].font_size,
             style_name="body",
         )
 
@@ -109,7 +101,7 @@ class RenderPdfExtractionModuleTests(unittest.TestCase):
             src_page = src_doc.new_page(width=100, height=100)
             out_doc = fitz.open()
             out_page = out_doc.new_page(width=100, height=100)
-            item = pdf.RenderItem("original_image_clip", ["fig"], (10, 10, 40, 40))
+            item = render_plan.RenderItem("original_image_clip", ["fig"], (10, 10, 40, 40))
 
             render_pdf.render_plan_item(out_page, src_page, fitz, item, 72, source_image_path=source_image)
 

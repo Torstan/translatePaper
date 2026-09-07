@@ -22,6 +22,7 @@ import qa_semantic as qa  # noqa: E402
 import qa_visual  # noqa: E402
 import render_pdf  # noqa: E402
 import translation_batch  # noqa: E402
+import render_plan
 import translate_pdf_via_codex as pipeline  # noqa: E402
 
 
@@ -112,7 +113,7 @@ def normalize_artifact_paths(paths) -> list[str]:
 def render_plan_artifact_paths(selected_pages, job_paths) -> list[str]:
     paths = []
     for page_num, _ in selected_pages:
-        artifact_path = pipeline.render_plan_artifact_path(job_paths, page_num)
+        artifact_path = render_plan.render_plan_artifact_path(job_paths, page_num)
         if artifact_path is not None:
             paths.append(artifact_path)
     return normalize_artifact_paths(paths)
@@ -121,7 +122,7 @@ def render_plan_artifact_paths(selected_pages, job_paths) -> list[str]:
 def source_png_paths_for_pages(selected_pages, job_paths) -> dict[int, Path]:
     paths = {}
     for page_num, _ in selected_pages:
-        source_png = pipeline.source_page_image_path(job_paths, page_num)
+        source_png = render_pdf.source_page_image_path(job_paths, page_num)
         if source_png is not None:
             paths[int(page_num)] = source_png
     return paths
@@ -263,7 +264,7 @@ def run_qa_for_job(
     args,
     output_pdf_path: Path | None = None,
     *,
-    render_result: pipeline.DocumentRenderResult | None = None,
+    render_result: render_plan.DocumentRenderResult | None = None,
 ) -> dict:
     pages = [page for _, page in selected_pages]
     original_map = {

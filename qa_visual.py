@@ -8,7 +8,8 @@ from typing import Mapping
 from PIL import Image
 
 from classify import NORMAL_TRANSLATED_CLASSES, source_requires_chinese_translation
-from layout import STYLE_POLICY_ROLE_SPLIT_EXCEPTIONS
+from layout import document_style_hierarchy_errors, text_item_style_issues
+from render_plan import RenderItem
 
 
 TOOL_ROOT = Path(__file__).resolve().parent
@@ -18,17 +19,6 @@ SEVERITY_ORDER = {
     "info": 0,
     "warning": 1,
     "error": 2,
-}
-
-EXPECTED_STYLES_BY_CLASSIFICATION = {
-    "title": {"title"},
-    "heading": {"heading", "subheading"},
-    "subheading": {"subheading"},
-    "body": {"body"},
-    "reference": {"reference"},
-    "header_footer": {"footer"},
-    "journal_footer": {"footer"},
-    "page_number": {"footer"},
 }
 
 TEXT_RENDER_KINDS = {"translated_text", "original_selectable_text"}
@@ -944,59 +934,28 @@ def detect_geometry_issues(
 
 def detect_style_issues(plan, *, font_tolerance: float = 0.01) -> list[VisualQaIssue]:
     page_num = _plan_page_num(plan)
-    issues = []
+    issues = [
+        VisualQaIssue(category="style_hierarchy", severity="error", page_num=page_num, message=message)
+        for message in document_style_hierarchy_errors()
+    ]
     classifications_by_id = _classifications_by_block_id(plan)
-    body_items = []
-    for item in _plan_render_items(plan):
-        kind = _item_value(item, "kind")
-        if kind not in {"translated_text", "original_selectable_text"}:
-            continue
-        classification = _classification_for_item(item, classifications_by_id)
-        style_name = str(_item_value(item, "style_name", "") or "")
-        explicit_style_exception = (
-            str(_item_value(item, "fallback_reason", "") or "") in STYLE_POLICY_ROLE_SPLIT_EXCEPTIONS
+    for value in _plan_render_items(plan):
+        # JSON artifacts and in-memory plans share the domain policy. Only the
+        # artifact boundary adapts representations; it does not redefine styles.
+        item = value if isinstance(value, RenderItem) else RenderItem(
+            kind=value["kind"], source_ids=_source_ids_for_item(value),
+            bbox=_bbox_tuple(value["bbox"]), style_name=value.get("style_name", ""),
+            font_size=value.get("font_size"), fallback_reason=value.get("fallback_reason", ""),
         )
-        expected_styles = EXPECTED_STYLES_BY_CLASSIFICATION.get(classification)
-        if expected_styles and style_name and style_name not in expected_styles and not explicit_style_exception:
-            issues.append(
-                VisualQaIssue(
-                    category="style_hierarchy",
-                    severity="error",
-                    page_num=page_num,
-                    message=f"{classification} item uses {style_name} style",
-                    source_ids=_source_ids_for_item(item),
-                    bbox=_bbox_tuple(_item_value(item, "bbox")),
-                    render_kind=str(kind),
-                )
-            )
-
-        if (
-            classification == "body"
-            and style_name == "body"
-            and _item_value(item, "font_size") is not None
-            and not str(_item_value(item, "fallback_reason", "") or "")
-        ):
-            body_items.append(item)
-
-    if not body_items:
-        return issues
-
-    baseline_size = float(_item_value(body_items[0], "font_size"))
-    for item in body_items[1:]:
-        font_size = float(_item_value(item, "font_size"))
-        if abs(font_size - baseline_size) <= font_tolerance:
-            continue
-        issues.append(
-            VisualQaIssue(
-                category="body_font_consistency",
-                severity="error",
-                page_num=page_num,
-                message=f"body font size {font_size:g} differs from baseline {baseline_size:g}",
-                source_ids=_source_ids_for_item(item),
-                bbox=_bbox_tuple(_item_value(item, "bbox")),
-                render_kind=str(_item_value(item, "kind", "")),
-            )
-        )
+        classifications = {
+            classifications_by_id[source_id] for source_id in item.source_ids
+            if source_id in classifications_by_id
+        }
+        for category, message in text_item_style_issues(item, classifications, font_tolerance=font_tolerance):
+            issues.append(VisualQaIssue(
+                category=category, severity="error", page_num=page_num,
+                message=message, source_ids=item.source_ids, bbox=tuple(item.bbox), render_kind=item.kind,
+            ))
     return issues
 
 

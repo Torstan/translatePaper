@@ -1,8 +1,8 @@
-import json
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import render_plan
 import translate_pdf_via_codex as pdf
 from tests.pdf_render_fixture_runner import (
     assert_render_plan_fixture,
@@ -26,11 +26,11 @@ class PdfRenderFixtureRunnerTests(unittest.TestCase):
                     self.assertEqual(fixture.plan.page_num, fixture.page_num)
                     self.assertTrue(fixture.plan.items, "render plan has no items")
                     self.assertEqual(
-                        pdf.validate_plan_coverage(fixture.page_num, fixture.blocks, fixture.plan),
+                        render_plan.validate_plan_coverage(fixture.page_num, fixture.blocks, fixture.plan),
                         [],
                     )
                     self.assertEqual(
-                        pdf.validate_plan_layout(fixture.plan, PAGE_SIZE),
+                        render_plan.validate_plan_layout(fixture.plan, PAGE_SIZE),
                         [],
                     )
                     self.assertTrue(fixture.expected_plan.get("assertions"))

@@ -722,6 +722,15 @@ def is_conference_footer_fragment(block) -> bool:
     )
 
 
+def is_running_header_text(text: str) -> bool:
+    return bool(
+        is_page_number(text)
+        or is_decorated_ocr_page_number_text(text)
+        or is_noisy_ocr_page_number_text(text)
+        or re.fullmatch(r"[A-Z][A-Za-z-]+(?:\s+[A-Z][A-Za-z-]+){0,3}", text)
+    )
+
+
 def is_running_header_fragment(block) -> bool:
     text = normalize_text(block.get("text", ""))
     return (
@@ -729,14 +738,45 @@ def is_running_header_fragment(block) -> bool:
         and block["yMin"] < 62.0
         and (block["yMax"] - block["yMin"]) <= 28.0
         and len(text) <= 140
-        and (
-            is_page_number(text)
-            or is_decorated_ocr_page_number_text(text)
-            or is_noisy_ocr_page_number_text(text)
-            or re.fullmatch(r"[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3}", text)
-            or "wait-free" in text.lower()
-        )
+        and is_running_header_text(text)
     )
+
+
+def mark_running_headers(pages, lines_by_page=None):
+    """Attach source evidence before cleaning merged header/body blocks.
+
+    A title-cased first body line is insufficient: require the same margin line
+    on distinct pages, or actual extracted rows separated by a full line-height
+    gap. With neither kind of evidence, preserve the source unchanged.
+    """
+    seen = {}
+    for page_num, blocks in pages:
+        for block in blocks:
+            lines = normalize_text(block.get("text", "")).splitlines()
+            if page_num > 1 and block["yMin"] < 62 and lines and is_running_header_text(lines[0]):
+                seen.setdefault(lines[0], set()).add(page_num)
+    result = []
+    for page_num, blocks in pages:
+        marked = []
+        for block in blocks:
+            lines = normalize_text(block.get("text", "")).splitlines()
+            header = lines[0] if len(lines) > 1 else ""
+            confirmed = bool(header and len(seen.get(header, ())) >= 2 and block["yMin"] < 62 and page_num > 1)
+            rows = sorted(
+                [row for row in (lines_by_page or {}).get(page_num, [])
+                 if block["yMin"] - 1 <= row["bbox"][1] and row["bbox"][3] <= block["yMax"] + 1
+                 and block["xMin"] - 1 <= row["bbox"][0] and row["bbox"][2] <= block["xMax"] + 1],
+                key=lambda row: (row["bbox"][1], row["bbox"][0]),
+            )
+            if header and len(rows) >= 2 and normalize_text(rows[0]["text"]) == header:
+                box = rows[0]["bbox"]
+                confirmed |= (
+                    is_running_header_fragment({"page": page_num, "yMin": box[1], "yMax": box[3], "text": header})
+                    and rows[1]["bbox"][1] - box[3] >= max(8.0, box[3] - box[1])
+                )
+            marked.append({**block, "running_header": header} if confirmed else block)
+        result.append((page_num, marked))
+    return result
 
 
 def contains_reference_item(text: str) -> bool:

@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 import qa_visual
 import translate_pdf_parallel as parallel
+import render_pdf
+import render_plan
 import translate_pdf_via_codex as pipeline
 
 
@@ -16,7 +18,7 @@ class FinalRenderPlanTests(unittest.TestCase):
             root = Path(tmp)
             source = root / "source.pdf"
             output = root / "output.pdf"
-            fitz = pipeline.load_fitz()
+            fitz = render_pdf.load_fitz()
             with fitz.open() as doc:
                 for width in (200, 420, 300):
                     doc.new_page(width=width, height=300)
@@ -33,7 +35,7 @@ class FinalRenderPlanTests(unittest.TestCase):
             self.assertIsNotNone(result, "drawing must return its actual final plans")
             self.assertEqual([p.page_size for p in result.plans], [(420, 300), (300, 300)])
             self.assertEqual([p.output_page_num for p in result.plans], [1, 2])
-            before = [pipeline.render_plan_json_dumps(p) for p in result.plans]
+            before = [render_plan.render_plan_json_dumps(p) for p in result.plans]
             args = SimpleNamespace(render_mode="vector", strict_qa=True, qa_mode="sample",
                                    qa_sample_size=0, qa_batch_chars=7000, model="test", reasoning_effort="low", retries=1)
             with (
@@ -44,7 +46,7 @@ class FinalRenderPlanTests(unittest.TestCase):
             ):
                 report = parallel.run_qa_for_job(selected, translations, job, (200, 300), args,
                                                  output_pdf_path=output, render_result=result)
-            self.assertEqual([pipeline.render_plan_json_dumps(p) for p in result.plans], before)
+            self.assertEqual([render_plan.render_plan_json_dumps(p) for p in result.plans], before)
             payload = json.loads(Path(report["visual_report_json"]).read_text())
             self.assertEqual(payload["checked_pages"], [2, 3])
             self.assertEqual(set(payload["rendered_png_paths"]), {"2", "3"})
@@ -55,7 +57,7 @@ class FinalRenderPlanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             output = root / "one.pdf"
-            with pipeline.load_fitz().open() as doc:
+            with render_pdf.load_fitz().open() as doc:
                 doc.new_page()
                 doc.save(output)
             plan = root / "page-005.render-plan.json"

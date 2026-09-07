@@ -2,6 +2,9 @@ import json
 import unittest
 from pathlib import Path
 
+import layout
+import render_pdf
+import render_plan
 import translate_pdf_via_codex as pdf
 
 
@@ -200,8 +203,8 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
         ]
 
         self.assertTrue(body_items)
-        self.assertEqual({item.font_size for item in body_items}, {pdf.BODY_FONT_SIZE})
-        self.assertEqual(pdf.validate_plan_text_fit(plan), [])
+        self.assertEqual({item.font_size for item in body_items}, {layout.BODY_FONT_SIZE})
+        self.assertEqual(layout.validate_plan_text_fit(plan), [])
 
     def test_page16_top_decide_signature_is_code_image_not_body_fallback(self):
         bbox_lines = [
@@ -247,7 +250,7 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
             source_image_path=JOB / "pages" / "page-016.png",
         )
 
-        self.assertEqual(pdf.validate_plan_layout(plan, (623, 801)), [])
+        self.assertEqual(render_plan.validate_plan_layout(plan, (623, 801)), [])
 
     def test_page16_assertion_text_drops_ocr_garbage_and_keeps_prose_completion(self):
         bbox_lines = [
@@ -330,10 +333,10 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(len(subheadings), 1)
-        self.assertEqual(subheadings[0].font_size, pdf.DOCUMENT_STYLES["subheading"].font_size)
+        self.assertEqual(subheadings[0].font_size, layout.DOCUMENT_STYLES["subheading"].font_size)
         self.assertNotIn("3.3 队列、栈、列表等", body_text)
         self.assertLess(subheadings[0].bbox[1], first_following_body.bbox[1])
-        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
+        self.assertEqual(layout.validate_plan_style_policy(plan), [])
 
     def test_page20_drops_redundant_short_list_fragment(self):
         bbox_lines = [
@@ -512,7 +515,7 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
 
     def test_ocr_fragments_inside_large_body_are_merged_to_avoid_overlap(self):
         page18 = self.plan_for_page(18)
-        errors = pdf.validate_plan_text_overlaps(page18)
+        errors = render_plan.validate_plan_text_overlaps(page18)
         translated_ids = {source_id for item in page18.items if item.kind == "translated_text" for source_id in item.source_ids}
 
         self.assertFalse(any("p018b0002" in error for error in errors))
@@ -539,7 +542,7 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
         plan = self.plan_for_page(6)
         image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
         translated_ids = {source_id for item in plan.items if item.kind == "translated_text" for source_id in item.source_ids}
-        layout_errors = pdf.validate_plan_layout(plan, (623, 801))
+        layout_errors = render_plan.validate_plan_layout(plan, (623, 801))
         quality_errors = pdf.validate_plan_quality(6, self.pages[5], self.translations, plan)
 
         self.assertNotIn("p006b0004", image_ids)
@@ -559,7 +562,7 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
         plan = self.plan_for_page(11)
         image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
         translated_ids = {source_id for item in plan.items if item.kind == "translated_text" for source_id in item.source_ids}
-        layout_errors = pdf.validate_plan_layout(plan, (623, 801))
+        layout_errors = render_plan.validate_plan_layout(plan, (623, 801))
         quality_errors = pdf.validate_plan_quality(11, self.pages[10], self.translations, plan)
 
         self.assertNotIn("p011b0006", image_ids)
@@ -590,8 +593,8 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
 
         self.assertTrue(body_items)
         self.assertIn("另一个经典原语是 compare&swap", "\n".join(item.text for item in body_items))
-        self.assertEqual(pdf.validate_plan_layout(plan, (623, 801)), [])
-        self.assertEqual(pdf.validate_plan_text_fit(plan), [])
+        self.assertEqual(render_plan.validate_plan_layout(plan, (623, 801)), [])
+        self.assertEqual(layout.validate_plan_text_fit(plan), [])
 
     def test_page13_algorithm_prefix_is_image_only_not_body_text(self):
         bbox_lines = [
@@ -623,7 +626,7 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
     def test_page22_duplicate_body_fragment_is_merged_not_overlapped(self):
         plan = self.plan_for_page(22)
         translated_ids = {source_id for item in plan.items if item.kind == "translated_text" for source_id in item.source_ids}
-        layout_errors = pdf.validate_plan_layout(plan, (623, 801))
+        layout_errors = render_plan.validate_plan_layout(plan, (623, 801))
         quality_errors = pdf.validate_plan_quality(22, self.pages[21], self.translations, plan)
 
         self.assertIn("p022b0015", translated_ids)
@@ -635,7 +638,7 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
         plan = self.plan_for_page(22)
         image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
         translated_ids = {source_id for item in plan.items if item.kind == "translated_text" for source_id in item.source_ids}
-        layout_errors = pdf.validate_plan_layout(plan, (623, 801))
+        layout_errors = render_plan.validate_plan_layout(plan, (623, 801))
         quality_errors = pdf.validate_plan_quality(22, self.pages[21], self.translations, plan)
 
         self.assertNotIn("p022b0018", image_ids)
@@ -682,7 +685,7 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
             source_image_path=JOB / "pages" / "page-022.png",
         )
 
-        self.assertEqual(pdf.validate_plan_layout(plan, (623, 801)), [])
+        self.assertEqual(render_plan.validate_plan_layout(plan, (623, 801)), [])
         self.assertEqual(pdf.validate_plan_quality(22, self.pages[21], self.translations, plan), [])
 
     def test_pages21_22_formula_clips_are_tight_and_do_not_capture_previous_prose(self):
@@ -755,13 +758,13 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
             for item in sorted(plan.items, key=lambda candidate: candidate.bbox[1])
             if item.kind == "translated_text" and item.style_name == "body"
         ]
-        fitz = pdf.load_fitz()
+        fitz = render_pdf.load_fitz()
 
         self.assertGreaterEqual(len(body_items), 2)
         first = body_items[0]
-        first_style = pdf.text_style(first.style_name)
-        first_lines = pdf.wrap_mixed_pdf_text(fitz, first.text, first.bbox[2] - first.bbox[0], first.font_size)
-        first_preferred = pdf.text_height_for_lines(first_lines, first.font_size, first_style.line_height_factor, first_style.paragraph_spacing)
+        first_style = layout.text_style(first.style_name)
+        first_lines = layout.wrap_mixed_pdf_text(fitz, first.text, first.bbox[2] - first.bbox[0], first.font_size)
+        first_preferred = layout.text_height_for_lines(first_lines, first.font_size, first_style.line_height_factor, first_style.paragraph_spacing)
         visible_gap = body_items[1].bbox[1] - (body_items[0].bbox[1] + first_preferred)
 
         self.assertLessEqual(visible_gap, 22.0)
@@ -840,7 +843,7 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
         self.assertTrue(fallback_items)
         self.assertIn("PROOF. The protocol uses", "\n".join(item.text for item in fallback_items))
         self.assertTrue(ledger_entries)
-        self.assertEqual(pdf.validate_plan_coverage(17, self.pages[16], plan), [])
+        self.assertEqual(render_plan.validate_plan_coverage(17, self.pages[16], plan), [])
 
     def test_page17_fig13_code_clip_does_not_capture_proof_text(self):
         bbox_lines = [
@@ -891,7 +894,7 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(conclusion_item.style_name, "heading")
-        self.assertEqual(conclusion_item.font_size, pdf.DOCUMENT_STYLES["heading"].font_size)
+        self.assertEqual(conclusion_item.font_size, layout.DOCUMENT_STYLES["heading"].font_size)
 
     def test_page22_top_universal_code_is_not_split_as_body_text(self):
         bbox_lines = [
@@ -935,7 +938,7 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
                     font_sizes.append(item.font_size)
 
         self.assertTrue(font_sizes)
-        self.assertEqual(set(font_sizes), {pdf.BODY_FONT_SIZE})
+        self.assertEqual(set(font_sizes), {layout.BODY_FONT_SIZE})
 
     def test_pages25_26_references_are_not_translated(self):
         for page_num in (25, 26):
@@ -1011,7 +1014,7 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
 
             self.assertEqual(len(footers), 1, page_num)
             self.assertEqual(footers[0].kind, "original_selectable_text")
-            self.assertEqual(footers[0].font_size, pdf.JOURNAL_FOOTER_FONT_SIZE)
+            self.assertEqual(footers[0].font_size, layout.JOURNAL_FOOTER_FONT_SIZE)
             self.assertEqual(footers[0].bbox, pdf.journal_footer_bbox((623, 801)))
             self.assertIn("ACM Transactions on Programming Languages and Systems", footers[0].text)
             self.assertNotIn("ACM Transactions on Programming Languages and Systems", translated_text)

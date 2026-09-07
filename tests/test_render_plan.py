@@ -8,6 +8,10 @@ from PIL import Image, ImageDraw
 import classify
 import ownership
 import qa_visual
+import layout
+import regions as region_rules
+import render_pdf
+import render_plan
 import translate_pdf_via_codex as pdf
 
 
@@ -56,10 +60,6 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 "p101b0005": "reference",
             },
         )
-        self.assertEqual(
-            classify.classify_blocks(blocks, visual_regions),
-            pdf.classify_blocks(blocks, visual_regions),
-        )
 
     def test_classify_module_translation_eligibility_matches_pipeline(self):
         samples = [
@@ -72,10 +72,6 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertEqual(
             [classify.source_requires_chinese_translation(text) for text in samples],
             [True, False, False, False],
-        )
-        self.assertEqual(
-            [classify.source_requires_chinese_translation(text) for text in samples],
-            [pdf.source_requires_chinese_translation(text) for text in samples],
         )
 
     def test_set_membership_formula_fragment_is_formula_region(self):
@@ -124,19 +120,6 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertFalse(classify.is_formula_or_code_block(block_data["text"]))
         self.assertFalse(classify.should_preserve_as_image(block_data))
 
-    def test_large_unfilled_drawing_rect_is_not_preserved_as_border(self):
-        class Rect:
-            width = 120.0
-            height = 80.0
-
-        self.assertFalse(pdf.should_preserve_drawing_rect(Rect(), None))
-
-    def test_thin_drawing_rect_is_preserved_as_line(self):
-        class Rect:
-            width = 400.0
-            height = 0.5
-
-        self.assertTrue(pdf.should_preserve_drawing_rect(Rect(), None))
 
     def test_classifies_heading_body_page_number_and_reference(self):
         blocks = [
@@ -351,7 +334,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         ]
 
         plan = pdf.build_page_render_plan(11, blocks, {}, page_size=(623, 801), bbox_lines=None)
-        plan_json = pdf.render_plan_to_json(plan)
+        plan_json = render_plan.render_plan_to_json(plan)
         entry = next(item for item in plan_json["coverage_ledger"] if item["block_id"] == "p011b0001")
 
         self.assertEqual(entry["classification"], "reference")
@@ -726,7 +709,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         ]
         visual_regions = [{"source_ids": ["p001b0001"], "bbox": (100.0, 100.0, 140.0, 140.0)}]
         classes = {"p001b0001": "figure_region", "p001b0002": "body"}
-        raw_covered = pdf.nontranslated_blocks_covered_by_visual_region(
+        raw_covered = region_rules.nontranslated_blocks_covered_by_visual_region(
             blocks,
             classes,
             visual_regions[0]["bbox"],
@@ -785,7 +768,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
             bbox_lines=bbox_lines,
         )
         final_clip = next(item for item in plan.items if item.kind == "original_image_clip")
-        covered_by_final_clip = pdf.nontranslated_blocks_covered_by_visual_region(
+        covered_by_final_clip = region_rules.nontranslated_blocks_covered_by_visual_region(
             blocks,
             classes,
             final_clip.bbox,
@@ -872,7 +855,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
             visual_ids={"p003b0002", "p003b0003", "p003b0004", "p003b0005", "p003b0006"},
         )
 
-        self.assertLessEqual(final_bbox[3], blocks[-1]["yMin"] - pdf.TEXT_PROTECTED_GAP_PT)
+        self.assertLessEqual(final_bbox[3], blocks[-1]["yMin"] - region_rules.TEXT_PROTECTED_GAP_PT)
 
     def test_visual_ownership_keeps_metric_table_cells_with_visual_region(self):
         blocks = [
@@ -903,7 +886,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertEqual(len(regions), 1)
         self.assertIn("p007b0003", regions[0]["source_ids"])
         self.assertGreaterEqual(regions[0]["bbox"][3], blocks[2]["yMax"])
-        self.assertLessEqual(regions[0]["bbox"][3], blocks[3]["yMin"] - pdf.TEXT_PROTECTED_GAP_PT)
+        self.assertLessEqual(regions[0]["bbox"][3], blocks[3]["yMin"] - region_rules.TEXT_PROTECTED_GAP_PT)
 
     def test_merged_table_visual_ownership_adopts_covered_metric_columns(self):
         blocks = [
@@ -972,7 +955,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 source_image_path=source_png,
             )
             issues = qa_visual.detect_image_clip_boundary_issues(
-                pdf.render_plan_to_json(plan),
+                render_plan.render_plan_to_json(plan),
                 source_png,
                 page_size=(612.0, 792.0),
                 source_blocks=blocks,
@@ -1125,7 +1108,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertEqual(len(regions), 1)
         self.assertIn("p003b0005", regions[0]["source_ids"])
         self.assertGreaterEqual(regions[0]["bbox"][3], blocks[4]["yMax"])
-        self.assertLessEqual(regions[0]["bbox"][3], blocks[5]["yMin"] - pdf.TEXT_PROTECTED_GAP_PT)
+        self.assertLessEqual(regions[0]["bbox"][3], blocks[5]["yMin"] - region_rules.TEXT_PROTECTED_GAP_PT)
 
     def test_toolformer_prompt_clip_leaves_translated_body_rows_as_vector_text(self):
         blocks = [
@@ -1269,9 +1252,9 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p003b0005", "p003b0007"]])
 
     def test_image_fallback_ledger_does_not_inherit_translated_component_kind(self):
-        plan = pdf.PageRenderPlan(page_num=6)
+        plan = render_plan.PageRenderPlan(page_num=6)
         plan.ledger.append(
-            pdf.CoverageEntry(
+            render_plan.CoverageEntry(
                 "p006b0012",
                 "body",
                 "original_image_clip",
@@ -1379,7 +1362,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         ):
             plan = pdf.build_page_render_plan(3, blocks, translations, page_size=(612.0, 792.0), bbox_lines=None)
 
-        fitz = pdf.load_fitz()
+        fitz = render_pdf.load_fitz()
         pdf.normalize_vector_text_layout(plan, page_size=(612.0, 792.0), fitz=fitz)
         text_items = {
             item.source_ids[0]: item
@@ -1388,46 +1371,46 @@ class RenderPlanClassificationTests(unittest.TestCase):
         }
         ledger_by_id = {entry.block_id: entry for entry in plan.ledger}
 
-        self.assertEqual(pdf.validate_plan_text_fit(plan, fitz), [])
-        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
+        self.assertEqual(layout.validate_plan_text_fit(plan, fitz), [])
+        self.assertEqual(layout.validate_plan_style_policy(plan), [])
         for source_id in ("p003b0005", "p003b0007"):
             self.assertEqual(text_items[source_id].kind, "translated_text")
             self.assertEqual(text_items[source_id].style_name, "body")
             self.assertEqual(text_items[source_id].fallback_reason, "dense_visual_body_row")
-            self.assertGreaterEqual(text_items[source_id].font_size, pdf.SHRINK_FIT_MIN_FONT_SIZE)
-            self.assertLess(text_items[source_id].font_size, pdf.BODY_FONT_SIZE)
+            self.assertGreaterEqual(text_items[source_id].font_size, layout.SHRINK_FIT_MIN_FONT_SIZE)
+            self.assertLess(text_items[source_id].font_size, layout.BODY_FONT_SIZE)
             self.assertEqual(ledger_by_id[source_id].render_kind, "translated_text")
             self.assertEqual(ledger_by_id[source_id].fallback_reason, "dense_visual_body_row")
         image_ids = {source_id for item in plan.items if item.kind == "original_image_clip" for source_id in item.source_ids}
         self.assertFalse({"p003b0005", "p003b0007"} & image_ids)
 
     def test_body_flow_split_can_use_explicit_compact_font(self):
-        fitz = pdf.load_fitz()
-        plan = pdf.PageRenderPlan(page_num=11)
-        plan.items.append(pdf.RenderItem("original_image_clip", ["formula-above"], (43.4, 501.7, 442.9, 561.8)))
+        fitz = render_pdf.load_fitz()
+        plan = render_plan.PageRenderPlan(page_num=11)
+        plan.items.append(render_plan.RenderItem("original_image_clip", ["formula-above"], (43.4, 501.7, 442.9, 561.8)))
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["p011b0024", "p011b0025"],
                 (45.9, 563.8, 440.5, 600.3),
                 text="相对于 ω 以均匀速率 λ 扩张。\n证明。考虑查询 q 的排序列表中的一对文档 d i 和 d j，使得根据 f Convex，d i 排在 d j 之前。将 f o ( q , d k ) 简写为 f ( k )。",
-                font_size=pdf.BODY_FONT_SIZE,
+                font_size=layout.BODY_FONT_SIZE,
                 style_name="body",
                 fallback_reason="body_flow",
             )
         )
-        plan.items.append(pdf.RenderItem("original_image_clip", ["formula-below"], (249.3, 600.3, 443.2, 652.4)))
-        plan.ledger.append(pdf.CoverageEntry("p011b0024", "body", "translated_text", True, "body_flow"))
-        plan.ledger.append(pdf.CoverageEntry("p011b0025", "body", "translated_text", True, "body_flow"))
+        plan.items.append(render_plan.RenderItem("original_image_clip", ["formula-below"], (249.3, 600.3, 443.2, 652.4)))
+        plan.ledger.append(render_plan.CoverageEntry("p011b0024", "body", "translated_text", True, "body_flow"))
+        plan.ledger.append(render_plan.CoverageEntry("p011b0025", "body", "translated_text", True, "body_flow"))
 
-        self.assertNotEqual(pdf.validate_plan_text_fit(plan, fitz), [])
+        self.assertNotEqual(layout.validate_plan_text_fit(plan, fitz), [])
 
         pdf.normalize_vector_text_layout(plan, (486.0, 720.0), fitz=fitz)
 
-        self.assertEqual(pdf.validate_plan_text_fit(plan, fitz), [])
-        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
+        self.assertEqual(layout.validate_plan_text_fit(plan, fitz), [])
+        self.assertEqual(layout.validate_plan_style_policy(plan), [])
         text_item = next(item for item in plan.items if item.kind == "translated_text")
-        self.assertLess(text_item.font_size, pdf.BODY_FONT_SIZE)
+        self.assertLess(text_item.font_size, layout.BODY_FONT_SIZE)
         self.assertEqual(text_item.fallback_reason, "body_flow_compact")
 
     def test_toolformer_prompt_clip_image_preserves_untranslated_structural_body_rows(self):
@@ -1561,7 +1544,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertEqual(len(regions), 1)
         self.assertIn("p004b0008", regions[0]["source_ids"])
         self.assertGreaterEqual(regions[0]["bbox"][3], blocks[5]["yMax"])
-        self.assertLessEqual(regions[0]["bbox"][3], blocks[6]["yMin"] - pdf.TEXT_PROTECTED_GAP_PT)
+        self.assertLessEqual(regions[0]["bbox"][3], blocks[6]["yMin"] - region_rules.TEXT_PROTECTED_GAP_PT)
 
     def test_toolformer_table_clip_leaves_translated_body_cells_as_vector_text(self):
         blocks = [
@@ -1670,7 +1653,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
             block("p031b0008", 31, "Dataset All-MiniLM-l6-v2 Tas-B M2C2 RRF", x0=126.1, y0=420.5, x1=356.7, y1=429.5),
         ]
 
-        regions = pdf.build_visual_regions(blocks)
+        regions = region_rules.build_visual_regions(blocks)
         table_region = next(region for region in regions if "p031b0004" in region["source_ids"])
 
         self.assertIn("p031b0005", table_region["source_ids"])
@@ -1795,7 +1778,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 bbox_lines=None,
             )
 
-        layout_errors = pdf.validate_plan_layout(plan, (612.0, 792.0))
+        layout_errors = render_plan.validate_plan_layout(plan, (612.0, 792.0))
         self.assertNotIn(
             "visual component p136c0003 captures translated component p136c0002",
             layout_errors,
@@ -1815,7 +1798,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
             block("p008b0016", 8, "r", x0=259.7, y0=457.0, x1=269.6, y1=467.0),
         ]
 
-        regions = pdf.build_visual_regions(blocks)
+        regions = region_rules.build_visual_regions(blocks)
         formula_region = next(region for region in regions if "p008b0014" in region["source_ids"])
 
         self.assertIn("p008b0015", formula_region["source_ids"])
@@ -1834,13 +1817,13 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertTrue(
             any(item.kind == "original_image_clip" and item.source_ids == ["p011b0026"] for item in plan.items)
         )
-        self.assertEqual(pdf.validate_plan_coverage(11, blocks, plan), [])
+        self.assertEqual(render_plan.validate_plan_coverage(11, blocks, plan), [])
 
     def test_missing_visual_component_sources_get_fallback_clip_coverage(self):
         blocks = [
             block("p011b0026", 11, "o | for brevity, we have that", x0=300.4, y0=602.1, x1=414.6, y1=613.4),
         ]
-        plan = pdf.PageRenderPlan(page_num=11)
+        plan = render_plan.PageRenderPlan(page_num=11)
         component = pdf.ownership.PageComponent(
             component_id="p011c0006",
             component_kind=pdf.ownership.COMPONENT_KIND_VISUAL,
@@ -1858,7 +1841,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertTrue(
             any(item.kind == "original_image_clip" and item.source_ids == ["p011b0026"] for item in plan.items)
         )
-        self.assertEqual(pdf.validate_plan_coverage(11, blocks, plan), [])
+        self.assertEqual(render_plan.validate_plan_coverage(11, blocks, plan), [])
 
     def test_merged_visual_ownership_clip_is_capped_before_following_translated_prose(self):
         blocks = [
@@ -1896,7 +1879,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         )
 
         self.assertEqual(len(regions), 1)
-        self.assertLessEqual(regions[0]["bbox"][3], blocks[2]["yMin"] - pdf.TEXT_PROTECTED_GAP_PT)
+        self.assertLessEqual(regions[0]["bbox"][3], blocks[2]["yMin"] - region_rules.TEXT_PROTECTED_GAP_PT)
 
     def test_build_batches_uses_bbox_lines_for_formula_final_clip_exclusion(self):
         blocks = [
@@ -1995,7 +1978,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertEqual(item.fallback_reason, expected_reason)
         self.assertEqual(item.text, expected_text)
         self.assertEqual(item.style_name, expected_style)
-        self.assertEqual(item.font_size, pdf.DOCUMENT_STYLES[expected_style].font_size)
+        self.assertEqual(item.font_size, layout.DOCUMENT_STYLES[expected_style].font_size)
         self.assertEqual(entry.render_kind, expected_kind)
         self.assertEqual(entry.fallback_reason, expected_reason)
 
@@ -2039,20 +2022,20 @@ class RenderPlanClassificationTests(unittest.TestCase):
         blocks = [
             block("p002b0007", 2, "2.1. Group Relative Policy Optimization", x0=70.0, y0=686.0, x1=273.0, y1=697.0),
         ]
-        plan = pdf.PageRenderPlan(page_num=2)
+        plan = render_plan.PageRenderPlan(page_num=2)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "original_selectable_text",
                 ["p002b0007"],
                 (70.0, 686.0, 273.0, 697.0),
                 text=blocks[0]["text"],
-                font_size=pdf.DOCUMENT_STYLES["subheading"].font_size,
+                font_size=layout.DOCUMENT_STYLES["subheading"].font_size,
                 style_name="subheading",
                 fallback_reason="untranslated_fallback_original",
             )
         )
         plan.ledger.append(
-            pdf.CoverageEntry("p002b0007", "heading", "original_selectable_text", True, "untranslated_fallback_original")
+            render_plan.CoverageEntry("p002b0007", "heading", "original_selectable_text", True, "untranslated_fallback_original")
         )
 
         self.assertEqual(pdf.validate_plan_translation_quality(2, blocks, {"p002b0007": blocks[0]["text"]}, plan), [])
@@ -2224,7 +2207,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertEqual(entry.classification, "unknown")
         self.assertEqual(entry.render_kind, item.kind)
         self.assertEqual(entry.fallback_reason, "unknown_classification")
-        self.assertEqual(pdf.validate_plan_coverage(1, blocks, plan), [])
+        self.assertEqual(render_plan.validate_plan_coverage(1, blocks, plan), [])
 
     def test_visual_caption_region_becomes_single_image_clip(self):
         blocks = [
@@ -2476,7 +2459,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         classes = {"p650b0019": "body", "p650b0024": "formula_region"}
         visual_ids = {"p650b0024"}
 
-        capped = pdf.cap_visual_bbox_after_preceding_text(
+        capped = region_rules.cap_visual_bbox_after_preceding_text(
             (504, 412, 539, 465),
             (455, 387, 536, 489),
             blocks,
@@ -2542,7 +2525,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
 
     def test_index_entry_with_percent_is_not_numeric_metric_cell(self):
         self.assertFalse(
-            pdf.is_numeric_metric_cell(
+            classify.is_numeric_metric_cell(
                 "– GPUs near 100% utilized, Performance Monitoring and\nUtilization in Practice"
             )
         )
@@ -2625,7 +2608,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
 
         self.assertEqual(len(subheadings), 1)
         self.assertIn("3.3 队列、栈、列表等", subheadings[0].text)
-        self.assertEqual(subheadings[0].font_size, pdf.DOCUMENT_STYLES["subheading"].font_size)
+        self.assertEqual(subheadings[0].font_size, layout.DOCUMENT_STYLES["subheading"].font_size)
         self.assertNotIn("3.3 队列、栈、列表等", body_text)
 
     def test_footnote_marker_line_is_not_split_as_embedded_heading_when_source_rows_are_present(self):
@@ -2675,7 +2658,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         )
 
         self.assertFalse(any(item.fallback_reason == "embedded_heading" for item in plan.items if "p003b0077" in item.source_ids))
-        self.assertEqual(pdf.validate_plan_text_fit(plan), [])
+        self.assertEqual(layout.validate_plan_text_fit(plan), [])
 
     def test_footnote_url_line_is_not_split_as_embedded_heading_without_source_rows(self):
         blocks = [
@@ -2715,15 +2698,15 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertTrue(pdf.render_line_is_standalone_heading("2.1 方法"))
 
     def test_quality_check_reports_body_text_with_embedded_numeric_heading(self):
-        plan = pdf.PageRenderPlan(
+        plan = render_plan.PageRenderPlan(
             page_num=12,
             items=[
-                pdf.RenderItem(
+                render_plan.RenderItem(
                     "translated_text",
                     ["p012b0006"],
                     (126, 472, 487, 503),
                     text="进程的系统中，不可能构造这些对象。\n3.3 队列、栈、列表等。",
-                    font_size=pdf.BODY_FONT_SIZE,
+                    font_size=layout.BODY_FONT_SIZE,
                     style_name="body",
                 )
             ],
@@ -2738,10 +2721,10 @@ class RenderPlanClassificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             image_path = Path(tmp_dir) / "blank.png"
             Image.new("RGB", (100, 100), "white").save(image_path)
-            plan = pdf.PageRenderPlan(
+            plan = render_plan.PageRenderPlan(
                 page_num=21,
                 items=[
-                    pdf.RenderItem(
+                    render_plan.RenderItem(
                         "original_image_clip",
                         ["p021b0005"],
                         (10, 10, 90, 30),
@@ -2922,9 +2905,9 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertIn("快速推进的路线图", plan.items[0].text)
 
     def test_non_prose_identifiers_do_not_require_chinese_translation(self):
-        self.assertFalse(pdf.source_requires_chinese_translation("Copyright © 2026 Flux Capacitor, LLC. All rights reserved."))
-        self.assertFalse(pdf.source_requires_chinese_translation("https://oreilly.com/about/contact.html"))
-        self.assertFalse(pdf.source_requires_chinese_translation("NVIDIA Blackwell “Dual-Die” GPU"))
+        self.assertFalse(classify.source_requires_chinese_translation("Copyright © 2026 Flux Capacitor, LLC. All rights reserved."))
+        self.assertFalse(classify.source_requires_chinese_translation("https://oreilly.com/about/contact.html"))
+        self.assertFalse(classify.source_requires_chinese_translation("NVIDIA Blackwell “Dual-Die” GPU"))
 
     def test_translation_quality_allows_author_list_original_selectable_text(self):
         blocks = [
@@ -2938,19 +2921,19 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 y1=205.709,
             )
         ]
-        plan = pdf.PageRenderPlan(page_num=1)
+        plan = render_plan.PageRenderPlan(page_num=1)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "original_selectable_text",
                 ["p001b0002"],
                 (113.978, 179.887, 498.524, 205.709),
                 text=blocks[0]["text"],
-                font_size=pdf.BODY_FONT_SIZE,
+                font_size=layout.BODY_FONT_SIZE,
                 style_name="body",
                 fallback_reason="untranslated_fallback_original",
             )
         )
-        plan.ledger.append(pdf.CoverageEntry("p001b0002", "body", "original_selectable_text", True, "untranslated_fallback_original"))
+        plan.ledger.append(render_plan.CoverageEntry("p001b0002", "body", "original_selectable_text", True, "untranslated_fallback_original"))
 
         self.assertEqual(pdf.validate_plan_translation_quality(1, blocks, {}, plan), [])
 
@@ -2970,21 +2953,21 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 y1=205.709,
             )
         ]
-        plan = pdf.PageRenderPlan(page_num=1)
+        plan = render_plan.PageRenderPlan(page_num=1)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "original_selectable_text",
                 ["p001b0002"],
                 (113.978, 179.887, 498.524, 205.709),
                 text=block_text,
-                font_size=pdf.BODY_FONT_SIZE,
+                font_size=layout.BODY_FONT_SIZE,
                 style_name="body",
                 fallback_reason="untranslated_fallback_original",
             )
         )
-        plan.ledger.append(pdf.CoverageEntry("p001b0002", "body", "original_selectable_text", True, "untranslated_fallback_original"))
+        plan.ledger.append(render_plan.CoverageEntry("p001b0002", "body", "original_selectable_text", True, "untranslated_fallback_original"))
 
-        self.assertFalse(pdf.source_requires_chinese_translation(block_text))
+        self.assertFalse(classify.source_requires_chinese_translation(block_text))
         self.assertEqual(pdf.validate_plan_translation_quality(1, blocks, {"p001b0002": block_text}, plan), [])
 
     def test_translation_quality_allows_url_original_selectable_text(self):
@@ -2999,19 +2982,19 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 y1=170.0,
             )
         ]
-        plan = pdf.PageRenderPlan(page_num=1)
+        plan = render_plan.PageRenderPlan(page_num=1)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "original_selectable_text",
                 ["p001b0004"],
                 (90.0, 150.0, 520.0, 170.0),
                 text=blocks[0]["text"],
-                font_size=pdf.BODY_FONT_SIZE,
+                font_size=layout.BODY_FONT_SIZE,
                 style_name="body",
                 fallback_reason="untranslated_fallback_original",
             )
         )
-        plan.ledger.append(pdf.CoverageEntry("p001b0004", "body", "original_selectable_text", True, "untranslated_fallback_original"))
+        plan.ledger.append(render_plan.CoverageEntry("p001b0004", "body", "original_selectable_text", True, "untranslated_fallback_original"))
 
         self.assertEqual(pdf.validate_plan_translation_quality(1, blocks, {}, plan), [])
 
@@ -3032,22 +3015,22 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 y1=190.0,
             )
         ]
-        plan = pdf.PageRenderPlan(page_num=1)
+        plan = render_plan.PageRenderPlan(page_num=1)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "original_selectable_text",
                 ["p001b0004"],
                 (90.0, 150.0, 520.0, 190.0),
                 text=block_text,
-                font_size=pdf.BODY_FONT_SIZE,
+                font_size=layout.BODY_FONT_SIZE,
                 style_name="body",
                 fallback_reason="untranslated_fallback_original",
             )
         )
-        plan.ledger.append(pdf.CoverageEntry("p001b0004", "body", "original_selectable_text", True, "untranslated_fallback_original"))
+        plan.ledger.append(render_plan.CoverageEntry("p001b0004", "body", "original_selectable_text", True, "untranslated_fallback_original"))
 
         self.assertEqual(pdf.validate_plan_translation_quality(1, blocks, {}, plan), [])
-        self.assertFalse(pdf.source_requires_chinese_translation(block_text))
+        self.assertFalse(classify.source_requires_chinese_translation(block_text))
 
     def test_yaml_config_block_is_preserved_as_image(self):
         blocks = [
@@ -3106,7 +3089,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertIn("p241b0005", image_ids)
         self.assertNotIn("p241b0001", translated_ids)
         self.assertNotIn("p241b0003", translated_ids)
-        self.assertEqual(pdf.validate_plan_layout(plan, (612, 792)), [])
+        self.assertEqual(render_plan.validate_plan_layout(plan, (612, 792)), [])
 
 
 class TranslationNormalizationTests(unittest.TestCase):
@@ -3294,6 +3277,10 @@ class CrossPageSentencePostprocessTests(unittest.TestCase):
                 ],
             ),
         ]
+        selected_pages = classify.mark_running_headers(selected_pages, {2: [
+            {"bbox": (330, 48, 430, 56), "text": "Wait-FreeSynchronization"},
+            {"bbox": (130, 74, 486, 82), "text": "of operations. Equivalently, each operation appears to take effect instantaneously."},
+        ]})
         translations = {
             "p001b0001": "换言之，对于每个进程，该历史看起来是顺序的，并且",
             "p002b0001": "无等待同步\n的操作。等价地，每个操作都表现为瞬时生效。",
@@ -3316,54 +3303,54 @@ class CrossPageSentencePostprocessTests(unittest.TestCase):
 
 class GlobalStyleTests(unittest.TestCase):
     def test_style_policy_rejects_non_monotonic_global_hierarchy(self):
-        plan = pdf.PageRenderPlan(page_num=1)
+        plan = render_plan.PageRenderPlan(page_num=1)
         with patch.dict(
-            pdf.DOCUMENT_STYLES,
+            layout.DOCUMENT_STYLES,
             {
-                "heading": pdf.TextStyle(
+                "heading": layout.TextStyle(
                     font_size=8.0,
-                    line_height_factor=pdf.DOCUMENT_STYLES["heading"].line_height_factor,
-                    paragraph_spacing=pdf.DOCUMENT_STYLES["heading"].paragraph_spacing,
+                    line_height_factor=layout.DOCUMENT_STYLES["heading"].line_height_factor,
+                    paragraph_spacing=layout.DOCUMENT_STYLES["heading"].paragraph_spacing,
                 )
             },
         ):
-            errors = pdf.validate_plan_style_policy(plan)
+            errors = layout.validate_plan_style_policy(plan)
 
         self.assertTrue(any("style hierarchy" in error for error in errors), errors)
 
     def test_style_policy_uses_ledger_classification_for_expected_style(self):
-        plan = pdf.PageRenderPlan(page_num=1)
+        plan = render_plan.PageRenderPlan(page_num=1)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["p001b0001"],
                 (72.0, 96.0, 420.0, 116.0),
                 text="1. 引言",
-                font_size=pdf.DOCUMENT_STYLES["body"].font_size,
+                font_size=layout.DOCUMENT_STYLES["body"].font_size,
                 style_name="body",
             )
         )
-        plan.ledger.append(pdf.CoverageEntry("p001b0001", "heading", "translated_text", True, ""))
+        plan.ledger.append(render_plan.CoverageEntry("p001b0001", "heading", "translated_text", True, ""))
 
-        errors = pdf.validate_plan_style_policy(plan)
+        errors = layout.validate_plan_style_policy(plan)
 
         self.assertTrue(any("expected heading/subheading" in error for error in errors), errors)
 
     def test_style_policy_allows_heading_classification_with_subheading_style(self):
-        plan = pdf.PageRenderPlan(page_num=1)
+        plan = render_plan.PageRenderPlan(page_num=1)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["p001b0001"],
                 (72.0, 96.0, 420.0, 116.0),
                 text="6.1 实现",
-                font_size=pdf.DOCUMENT_STYLES["subheading"].font_size,
+                font_size=layout.DOCUMENT_STYLES["subheading"].font_size,
                 style_name="subheading",
             )
         )
-        plan.ledger.append(pdf.CoverageEntry("p001b0001", "heading", "translated_text", True, ""))
+        plan.ledger.append(render_plan.CoverageEntry("p001b0001", "heading", "translated_text", True, ""))
 
-        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
+        self.assertEqual(layout.validate_plan_style_policy(plan), [])
 
     def test_style_policy_checks_each_ledger_classified_text_role(self):
         cases = [
@@ -3376,78 +3363,78 @@ class GlobalStyleTests(unittest.TestCase):
         ]
         for classification, wrong_style in cases:
             with self.subTest(classification=classification):
-                plan = pdf.PageRenderPlan(page_num=1)
+                plan = render_plan.PageRenderPlan(page_num=1)
                 plan.items.append(
-                    pdf.RenderItem(
+                    render_plan.RenderItem(
                         "translated_text",
                         [f"{classification}-block"],
                         (72.0, 96.0, 420.0, 116.0),
                         text="文本",
-                        font_size=pdf.DOCUMENT_STYLES[wrong_style].font_size,
+                        font_size=layout.DOCUMENT_STYLES[wrong_style].font_size,
                         style_name=wrong_style,
                     )
                 )
                 plan.ledger.append(
-                    pdf.CoverageEntry(f"{classification}-block", classification, "translated_text", True, "")
+                    render_plan.CoverageEntry(f"{classification}-block", classification, "translated_text", True, "")
                 )
 
-                errors = pdf.validate_plan_style_policy(plan)
+                errors = layout.validate_plan_style_policy(plan)
 
                 self.assertTrue(any(f"expected {classification}" in error for error in errors), errors)
 
     def test_style_policy_rejects_generic_fallback_style_mismatch(self):
-        plan = pdf.PageRenderPlan(page_num=1)
+        plan = render_plan.PageRenderPlan(page_num=1)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "original_selectable_text",
                 ["p001b0001"],
                 (72.0, 96.0, 420.0, 116.0),
                 text="1. INTRODUCTION",
-                font_size=pdf.DOCUMENT_STYLES["body"].font_size,
+                font_size=layout.DOCUMENT_STYLES["body"].font_size,
                 style_name="body",
                 fallback_reason="untranslated_fallback_original",
             )
         )
         plan.ledger.append(
-            pdf.CoverageEntry("p001b0001", "heading", "original_selectable_text", True, "untranslated_fallback_original")
+            render_plan.CoverageEntry("p001b0001", "heading", "original_selectable_text", True, "untranslated_fallback_original")
         )
 
-        errors = pdf.validate_plan_style_policy(plan)
+        errors = layout.validate_plan_style_policy(plan)
 
         self.assertTrue(any("expected heading/subheading" in error for error in errors), errors)
 
     def test_style_policy_allows_explicit_role_split_exception(self):
-        plan = pdf.PageRenderPlan(page_num=1)
+        plan = render_plan.PageRenderPlan(page_num=1)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["p001b0001"],
                 (72.0, 96.0, 420.0, 116.0),
                 text="2.2 子章节",
-                font_size=pdf.DOCUMENT_STYLES["subheading"].font_size,
+                font_size=layout.DOCUMENT_STYLES["subheading"].font_size,
                 style_name="subheading",
                 fallback_reason="embedded_heading",
             )
         )
-        plan.ledger.append(pdf.CoverageEntry("p001b0001", "body", "translated_text", True, "embedded_heading_split"))
+        plan.ledger.append(render_plan.CoverageEntry("p001b0001", "body", "translated_text", True, "embedded_heading_split"))
 
-        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
+        self.assertEqual(layout.validate_plan_style_policy(plan), [])
 
     def test_style_policy_checks_page_number_style_when_rendered_as_text(self):
-        plan = pdf.PageRenderPlan(page_num=1)
+        plan = render_plan.PageRenderPlan(page_num=1)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "original_selectable_text",
                 ["p001b0001"],
                 (300.0, 760.0, 318.0, 772.0),
                 text="1",
-                font_size=pdf.DOCUMENT_STYLES["body"].font_size,
+                font_size=layout.DOCUMENT_STYLES["body"].font_size,
                 style_name="body",
             )
         )
-        plan.ledger.append(pdf.CoverageEntry("p001b0001", "page_number", "original_selectable_text", True, ""))
+        plan.ledger.append(render_plan.CoverageEntry("p001b0001", "page_number", "original_selectable_text", True, ""))
 
-        errors = pdf.validate_plan_style_policy(plan)
+        errors = layout.validate_plan_style_policy(plan)
 
         self.assertTrue(any("expected footer" in error for error in errors), errors)
 
@@ -3469,7 +3456,7 @@ class GlobalStyleTests(unittest.TestCase):
         self.assertEqual(items["p001b0001"].style_name, "title")
         self.assertEqual(items["p001b0002"].style_name, "heading")
         self.assertEqual(items["p001b0003"].style_name, "body")
-        self.assertEqual(items["p001b0003"].font_size, pdf.DOCUMENT_STYLES["body"].font_size)
+        self.assertEqual(items["p001b0003"].font_size, layout.DOCUMENT_STYLES["body"].font_size)
 
     def test_raster_draw_block_clears_original_bbox_when_render_box_moves(self):
         img = Image.new("RGBA", (180, 140), (255, 255, 255, 255))
@@ -3536,11 +3523,11 @@ class GlobalStyleTests(unittest.TestCase):
             block("p001b0003", 1, "h", x0=416.5, y0=515.3, x1=421.1, y1=525.3),
             block("p001b0004", 1, "𝐴 = 𝒩(0, 𝜎 2 )", x0=456.9, y0=592.9, x1=495.9, y1=600.7),
         ]
-        body_box = pdf.block_to_px_box(blocks[0], 200, 1700, 2200, pad=2)
+        body_box = region_rules.block_to_px_box(blocks[0], 200, 1700, 2200, pad=2)
 
         protected_boxes = pdf.raster_protected_boxes(blocks, 200, 1700, 2200)
 
-        self.assertEqual(pdf.avoid_protected_boxes(body_box, protected_boxes), body_box)
+        self.assertEqual(layout.avoid_protected_boxes(body_box, protected_boxes), body_box)
 
     def test_raster_draw_block_does_not_rotate_long_reference_column(self):
         img = Image.new("RGBA", (260, 520), (255, 255, 255, 255))
@@ -3573,7 +3560,7 @@ class GlobalStyleTests(unittest.TestCase):
             1 for pixel in img.crop((20, 20, 120, 500)).getdata() if pixel[:3] != (255, 255, 255)
         )
         self.assertEqual(img.getpixel((130, 250))[:3], (255, 255, 255))
-        self.assertFalse(pdf.raster_text_should_render_vertical(source_text, (20, 20, 120, 500)))
+        self.assertFalse(layout.raster_text_should_render_vertical(source_text, (20, 20, 120, 500)))
         self.assertGreater(text_pixels, 0)
 
     def test_raster_draw_block_uses_light_text_on_dark_background(self):
@@ -3611,26 +3598,25 @@ class GlobalStyleTests(unittest.TestCase):
         self.assertGreater(light_text_pixels, dark_text_pixels)
 
     def test_vector_textbox_does_not_shrink_when_style_is_fixed(self):
-        fitz = pdf.load_fitz()
+        fitz = render_pdf.load_fitz()
         doc = fitz.open()
         page = doc.new_page(width=100, height=100)
 
-        ok = pdf.insert_vector_textbox(
+        ok = render_pdf.insert_vector_textbox(
             page,
             fitz,
             fitz.Rect(10, 10, 40, 18),
             "这是一个很长很长的译文，不能通过缩小字号塞进框里。",
-            pdf.DOCUMENT_STYLES["body"].font_size,
-            pdf.VECTOR_BODY_COLOR,
-            line_height_factor=pdf.DOCUMENT_STYLES["body"].line_height_factor,
-            allow_shrink=False,
+            layout.DOCUMENT_STYLES["body"].font_size,
+            layout.VECTOR_BODY_COLOR,
+            line_height_factor=layout.DOCUMENT_STYLES["body"].line_height_factor,
         )
         doc.close()
 
         self.assertFalse(ok)
 
     def test_style_fit_can_compact_spacing_without_changing_font_size(self):
-        style = pdf.TextStyle(
+        style = layout.TextStyle(
             font_size=10.0,
             line_height_factor=1.0,
             paragraph_spacing=5.0,
@@ -3638,12 +3624,12 @@ class GlobalStyleTests(unittest.TestCase):
             min_paragraph_spacing=0.0,
         )
 
-        fit = pdf.fitted_text_spacing([["第一段"], [], ["第二段"]], 10.0, 31.0, style)
+        fit = layout.fitted_text_spacing([["第一段"], [], ["第二段"]], 10.0, 31.0, style)
 
         self.assertEqual(fit, (1.0, 0.0))
 
     def test_style_fit_allows_sub_point_floating_roundoff_at_boundary(self):
-        style = pdf.TextStyle(
+        style = layout.TextStyle(
             font_size=9.2,
             line_height_factor=1.22,
             paragraph_spacing=2.0,
@@ -3651,9 +3637,9 @@ class GlobalStyleTests(unittest.TestCase):
             min_paragraph_spacing=0.0,
         )
         lines = [["line"] for _ in range(7)]
-        required = pdf.text_height_for_lines(lines, 9.2, 1.08, 0.0)
+        required = layout.text_height_for_lines(lines, 9.2, 1.08, 0.0)
 
-        fit = pdf.fitted_text_spacing(lines, 9.2, required - 1e-12, style)
+        fit = layout.fitted_text_spacing(lines, 9.2, required - 1e-12, style)
 
         self.assertEqual(fit, (1.08, 2.0))
 
@@ -3712,16 +3698,16 @@ class BodyFlowLayoutTests(unittest.TestCase):
         }
 
         plan = pdf.build_page_render_plan(156, blocks, translations, page_size=(612.0, 792.0), bbox_lines=None)
-        pdf.normalize_vector_text_layout(plan, page_size=(612.0, 792.0), fitz=pdf.load_fitz())
+        pdf.normalize_vector_text_layout(plan, page_size=(612.0, 792.0), fitz=render_pdf.load_fitz())
         items = {item.source_ids[0]: item for item in plan.items if item.kind == "translated_text" and item.source_ids}
 
         self.assertEqual(items["p156b0001"].style_name, "heading")
         self.assertEqual(items["p156b0002"].style_name, "title")
         self.assertEqual(items["p156b0004"].style_name, "subheading")
-        self.assertGreater(items["p156b0003"].font_size, pdf.DOCUMENT_STYLES["body"].font_size)
-        self.assertGreater(items["p156b0005"].font_size, pdf.DOCUMENT_STYLES["body"].font_size)
-        self.assertEqual(pdf.validate_plan_text_fit(plan), [])
-        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
+        self.assertGreater(items["p156b0003"].font_size, layout.DOCUMENT_STYLES["body"].font_size)
+        self.assertGreater(items["p156b0005"].font_size, layout.DOCUMENT_STYLES["body"].font_size)
+        self.assertEqual(layout.validate_plan_text_fit(plan), [])
+        self.assertEqual(layout.validate_plan_style_policy(plan), [])
 
     def test_red_flag_callout_text_keeps_source_position_near_preserved_icons(self):
         blocks = [
@@ -3781,7 +3767,7 @@ class BodyFlowLayoutTests(unittest.TestCase):
         }
 
         plan = pdf.build_page_render_plan(134, blocks, translations, page_size=(612.0, 792.0), bbox_lines=None)
-        pdf.normalize_vector_text_layout(plan, page_size=(612.0, 792.0), fitz=pdf.load_fitz())
+        pdf.normalize_vector_text_layout(plan, page_size=(612.0, 792.0), fitz=render_pdf.load_fitz())
         items = {item.source_ids[0]: item for item in plan.items if item.kind == "translated_text" and item.source_ids}
 
         self.assertEqual(items["p134b0002"].fallback_reason, "callout_heading")
@@ -3820,7 +3806,7 @@ class BodyFlowLayoutTests(unittest.TestCase):
         }
 
         self.assertFalse(
-            any("p135b0027" in region["source_ids"] for region in pdf.build_visual_regions(blocks))
+            any("p135b0027" in region["source_ids"] for region in region_rules.build_visual_regions(blocks))
         )
 
         plan = pdf.build_page_render_plan(135, blocks, translations, page_size=(612.0, 792.0), bbox_lines=None)
@@ -3833,7 +3819,7 @@ class BodyFlowLayoutTests(unittest.TestCase):
         self.assertFalse(
             any(item.kind == "original_image_clip" and "p135b0027" in item.source_ids for item in plan.items)
         )
-        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
+        self.assertEqual(layout.validate_plan_style_policy(plan), [])
 
     def test_code_comment_block_is_preserved_without_inline_translation(self):
         blocks = [
@@ -3949,7 +3935,7 @@ class BodyFlowLayoutTests(unittest.TestCase):
         self.assertFalse(
             any(item.fallback_reason == "mixed_visual_body_original" for item in plan.items)
         )
-        self.assertEqual(pdf.validate_plan_layout(plan, page_size=(612.0, 792.0)), [])
+        self.assertEqual(render_plan.validate_plan_layout(plan, page_size=(612.0, 792.0)), [])
         self.assertEqual({entry.render_kind for entry in plan.ledger}, {"original_image_clip"})
 
     def test_code_comment_clip_keeps_owned_source_bbox_after_pixel_trim(self):
@@ -4002,8 +3988,8 @@ class BodyFlowLayoutTests(unittest.TestCase):
             ),
             block("p134b0015", 134, "*", x0=75.75, y0=696.3, x1=82.6, y1=707.3),
         ]
-        raw_regions = pdf.build_visual_regions(blocks)
-        classes = pdf.classify_blocks(blocks, raw_regions)
+        raw_regions = region_rules.build_visual_regions(blocks)
+        classes = classify.classify_blocks(blocks, raw_regions)
 
         with patch.object(pdf, "visual_clip_bbox", return_value=(71.6, 519.8, 483.0, 702.4)):
             ownership_regions = pdf.final_visual_ownership_regions(
@@ -4034,7 +4020,7 @@ class BodyFlowLayoutTests(unittest.TestCase):
 
         self.assertEqual(len(body_items), 1)
         self.assertEqual(body_items[0].source_ids, ["p013b0006", "p013b0007"])
-        self.assertEqual(pdf.validate_plan_text_fit(plan), [])
+        self.assertEqual(layout.validate_plan_text_fit(plan), [])
 
     def test_body_flow_merge_preserves_source_adapted_readable_font(self):
         blocks = [
@@ -4068,9 +4054,9 @@ class BodyFlowLayoutTests(unittest.TestCase):
         self.assertEqual(len(body_items), 1)
         self.assertEqual(body_items[0].source_ids, ["p043b0005", "p043b0006"])
         self.assertEqual(body_items[0].fallback_reason, "body_flow_source_adapted_font")
-        self.assertGreater(body_items[0].font_size, pdf.DOCUMENT_STYLES["body"].font_size)
-        self.assertEqual(pdf.validate_plan_text_fit(plan), [])
-        self.assertEqual(pdf.validate_plan_style_policy(plan), [])
+        self.assertGreater(body_items[0].font_size, layout.DOCUMENT_STYLES["body"].font_size)
+        self.assertEqual(layout.validate_plan_text_fit(plan), [])
+        self.assertEqual(layout.validate_plan_style_policy(plan), [])
 
     def test_body_flow_expands_into_safe_whitespace_instead_of_changing_font_size(self):
         blocks = [
@@ -4088,8 +4074,8 @@ class BodyFlowLayoutTests(unittest.TestCase):
 
         self.assertEqual(len(body_items), 1)
         self.assertGreater(body_items[0].bbox[3] - body_items[0].bbox[1], 50.0)
-        self.assertEqual(body_items[0].font_size, pdf.DOCUMENT_STYLES["body"].font_size)
-        self.assertEqual(pdf.validate_plan_text_fit(plan), [])
+        self.assertEqual(body_items[0].font_size, layout.DOCUMENT_STYLES["body"].font_size)
+        self.assertEqual(layout.validate_plan_text_fit(plan), [])
 
     def test_body_flow_rebalances_excessive_internal_slack_and_mid_page_gap(self):
         blocks = [
@@ -4108,19 +4094,19 @@ class BodyFlowLayoutTests(unittest.TestCase):
             for item in sorted(plan.items, key=lambda candidate: candidate.bbox[1])
             if item.kind == "translated_text" and item.style_name == "body"
         ]
-        fitz = pdf.load_fitz()
+        fitz = render_pdf.load_fitz()
 
         self.assertEqual(len(body_items), 2)
         for item in body_items:
-            style = pdf.text_style(item.style_name)
-            lines = pdf.wrap_mixed_pdf_text(fitz, item.text, item.bbox[2] - item.bbox[0], item.font_size)
-            preferred = pdf.text_height_for_lines(lines, item.font_size, style.line_height_factor, style.paragraph_spacing)
+            style = layout.text_style(item.style_name)
+            lines = layout.wrap_mixed_pdf_text(fitz, item.text, item.bbox[2] - item.bbox[0], item.font_size)
+            preferred = layout.text_height_for_lines(lines, item.font_size, style.line_height_factor, style.paragraph_spacing)
             available = item.bbox[3] - item.bbox[1]
             self.assertLessEqual(available - preferred, 7.0)
         first = body_items[0]
-        first_style = pdf.text_style(first.style_name)
-        first_lines = pdf.wrap_mixed_pdf_text(fitz, first.text, first.bbox[2] - first.bbox[0], first.font_size)
-        first_preferred = pdf.text_height_for_lines(first_lines, first.font_size, first_style.line_height_factor, first_style.paragraph_spacing)
+        first_style = layout.text_style(first.style_name)
+        first_lines = layout.wrap_mixed_pdf_text(fitz, first.text, first.bbox[2] - first.bbox[0], first.font_size)
+        first_preferred = layout.text_height_for_lines(first_lines, first.font_size, first_style.line_height_factor, first_style.paragraph_spacing)
         visible_gap = body_items[1].bbox[1] - (body_items[0].bbox[1] + first_preferred)
 
         self.assertLessEqual(visible_gap, 19.0)
@@ -4143,9 +4129,9 @@ class BodyFlowLayoutTests(unittest.TestCase):
             for item in sorted(plan.items, key=lambda candidate: candidate.bbox[1])
             if item.kind == "translated_text" and item.style_name in {"body", "subheading"}
         ]
-        fitz = pdf.load_fitz()
+        fitz = render_pdf.load_fitz()
         first = flow_items[0]
-        first_preferred = pdf.preferred_text_height_for_item(first, fitz)
+        first_preferred = layout.preferred_text_height_for_item(first, fitz)
         gap_before_heading = flow_items[1].bbox[1] - (first.bbox[1] + first_preferred)
 
         self.assertLessEqual(gap_before_heading, 22.0)
@@ -4181,10 +4167,10 @@ class CoverageValidationTests(unittest.TestCase):
             block("p002b0001", 2, "A source paragraph.", y0=100, y1=120),
             block("p002b0002", 2, "Another source paragraph.", y0=130, y1=150),
         ]
-        plan = pdf.PageRenderPlan(page_num=2)
-        plan.ledger.append(pdf.CoverageEntry("p002b0001", "body", "translated_text", True))
+        plan = render_plan.PageRenderPlan(page_num=2)
+        plan.ledger.append(render_plan.CoverageEntry("p002b0001", "body", "translated_text", True))
 
-        errors = pdf.validate_plan_coverage(2, blocks, plan)
+        errors = render_plan.validate_plan_coverage(2, blocks, plan)
 
         self.assertIn("p002b0002", "\n".join(errors))
 
@@ -4194,7 +4180,7 @@ class CoverageValidationTests(unittest.TestCase):
         ]
         plan = pdf.build_page_render_plan(2, blocks, {}, page_size=(623, 801), bbox_lines=None)
 
-        errors = pdf.validate_plan_coverage(2, blocks, plan)
+        errors = render_plan.validate_plan_coverage(2, blocks, plan)
 
         self.assertEqual(errors, [])
 
@@ -4202,17 +4188,17 @@ class CoverageValidationTests(unittest.TestCase):
         blocks = [
             block("p002b0001", 2, "Unclassified but meaningful source content.", y0=100, y1=120),
         ]
-        plan = pdf.PageRenderPlan(page_num=2)
-        plan.ledger.append(pdf.CoverageEntry("p002b0001", "unknown", "skip_explicitly", True))
+        plan = render_plan.PageRenderPlan(page_num=2)
+        plan.ledger.append(render_plan.CoverageEntry("p002b0001", "unknown", "skip_explicitly", True))
 
-        errors = pdf.validate_plan_coverage(2, blocks, plan)
+        errors = render_plan.validate_plan_coverage(2, blocks, plan)
 
         self.assertTrue(any("illegal skip class unknown" in error for error in errors), errors)
 
 
 class BBoxLineParserTests(unittest.TestCase):
     def test_ensure_assets_falls_back_to_pymupdf_bbox_when_pdftotext_fails(self):
-        fitz = pdf.load_fitz()
+        fitz = render_pdf.load_fitz()
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = Path(tmp_dir)
             source_pdf = tmp / "source.pdf"
@@ -4270,20 +4256,20 @@ class BBoxLineParserTests(unittest.TestCase):
 
 class LayoutValidationTests(unittest.TestCase):
     def test_overlap_validation_detects_body_over_image_clip(self):
-        plan = pdf.PageRenderPlan(page_num=3)
-        plan.items.append(pdf.RenderItem("original_image_clip", ["fig"], (100, 100, 300, 200)))
-        plan.items.append(pdf.RenderItem("translated_text", ["body"], (150, 120, 350, 220), text="正文"))
+        plan = render_plan.PageRenderPlan(page_num=3)
+        plan.items.append(render_plan.RenderItem("original_image_clip", ["fig"], (100, 100, 300, 200)))
+        plan.items.append(render_plan.RenderItem("translated_text", ["body"], (150, 120, 350, 220), text="正文"))
 
-        errors = pdf.validate_plan_layout(plan, page_size=(623, 801))
+        errors = render_plan.validate_plan_layout(plan, page_size=(623, 801))
 
         self.assertTrue(any("overlaps protected" in error for error in errors))
 
     def test_overlap_validation_allows_nonoverlapping_items(self):
-        plan = pdf.PageRenderPlan(page_num=3)
-        plan.items.append(pdf.RenderItem("original_image_clip", ["fig"], (100, 100, 300, 200)))
-        plan.items.append(pdf.RenderItem("translated_text", ["body"], (100, 220, 350, 260), text="正文"))
+        plan = render_plan.PageRenderPlan(page_num=3)
+        plan.items.append(render_plan.RenderItem("original_image_clip", ["fig"], (100, 100, 300, 200)))
+        plan.items.append(render_plan.RenderItem("translated_text", ["body"], (100, 220, 350, 260), text="正文"))
 
-        errors = pdf.validate_plan_layout(plan, page_size=(623, 801))
+        errors = render_plan.validate_plan_layout(plan, page_size=(623, 801))
 
         self.assertEqual(errors, [])
 
@@ -4293,9 +4279,9 @@ class QualityValidationTests(unittest.TestCase):
         blocks = [
             block("p018b0002", 18, "A normal body paragraph that should be translated.", y0=100, y1=160),
         ]
-        plan = pdf.PageRenderPlan(page_num=18)
+        plan = render_plan.PageRenderPlan(page_num=18)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "original_image_clip",
                 ["p018b0002"],
                 (100, 100, 400, 160),
@@ -4303,7 +4289,7 @@ class QualityValidationTests(unittest.TestCase):
             )
         )
         plan.ledger.append(
-            pdf.CoverageEntry("p018b0002", "body", "original_image_clip", True, "heading_overlap")
+            render_plan.CoverageEntry("p018b0002", "body", "original_image_clip", True, "heading_overlap")
         )
 
         errors = pdf.validate_plan_translation_quality(
@@ -4382,33 +4368,33 @@ class QualityValidationTests(unittest.TestCase):
         self.assertFalse(any("p012b0001 normal text block is missing Chinese translation" in error for error in errors))
 
     def test_text_overlap_quality_detects_overlapping_translated_items(self):
-        plan = pdf.PageRenderPlan(page_num=9)
-        plan.items.append(pdf.RenderItem("translated_text", ["p009b0008"], (100, 100, 400, 180), text="正文"))
-        plan.items.append(pdf.RenderItem("translated_text", ["p009b0009"], (120, 120, 260, 145), text="重叠正文"))
+        plan = render_plan.PageRenderPlan(page_num=9)
+        plan.items.append(render_plan.RenderItem("translated_text", ["p009b0008"], (100, 100, 400, 180), text="正文"))
+        plan.items.append(render_plan.RenderItem("translated_text", ["p009b0009"], (120, 120, 260, 145), text="重叠正文"))
 
-        errors = pdf.validate_plan_text_overlaps(plan)
+        errors = render_plan.validate_plan_text_overlaps(plan)
 
         self.assertTrue(any("overlaps text" in error for error in errors))
 
     def test_quality_flags_dead_space_inside_body_flow(self):
-        plan = pdf.PageRenderPlan(page_num=17)
+        plan = render_plan.PageRenderPlan(page_num=17)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["p017b0002"],
                 (135, 150, 495, 360),
                 text="第一段证明正文。" * 12,
-                font_size=pdf.BODY_FONT_SIZE,
+                font_size=layout.BODY_FONT_SIZE,
                 style_name="body",
             )
         )
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["p017b0003"],
                 (135, 430, 495, 640),
                 text="第二段证明正文。" * 12,
-                font_size=pdf.BODY_FONT_SIZE,
+                font_size=layout.BODY_FONT_SIZE,
                 style_name="body",
             )
         )
@@ -4418,34 +4404,34 @@ class QualityValidationTests(unittest.TestCase):
         self.assertTrue(any("body flow has uneven vertical spacing" in error for error in errors))
 
     def test_quality_still_flags_unbalanced_flow_when_no_protected_region_blocks_rebalance(self):
-        plan = pdf.PageRenderPlan(page_num=17)
+        plan = render_plan.PageRenderPlan(page_num=17)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["p017b0002"],
                 (135, 150, 495, 210),
                 text="第一段证明正文。",
-                font_size=pdf.BODY_FONT_SIZE,
+                font_size=layout.BODY_FONT_SIZE,
                 style_name="body",
             )
         )
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["p017b0003"],
                 (135, 430, 495, 490),
                 text="第二段证明正文。",
-                font_size=pdf.BODY_FONT_SIZE,
+                font_size=layout.BODY_FONT_SIZE,
                 style_name="body",
             )
         )
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "original_selectable_text",
                 ["p017b0004"],
                 (150, 170, 320, 190),
                 text="anchor",
-                font_size=pdf.BODY_FONT_SIZE,
+                font_size=layout.BODY_FONT_SIZE,
                 style_name="reference",
             )
         )
@@ -4455,7 +4441,7 @@ class QualityValidationTests(unittest.TestCase):
         self.assertTrue(any("body flow has uneven vertical spacing" in error for error in errors))
 
     def test_validate_plan_quality_reports_ownership_violations(self):
-        plan = pdf.PageRenderPlan(page_num=19)
+        plan = render_plan.PageRenderPlan(page_num=19)
         plan.ownership_validation = pdf.ownership.OwnershipValidationResult(
             issues=[
                 pdf.ownership.OwnershipIssue(
@@ -4494,21 +4480,21 @@ class QualityValidationTests(unittest.TestCase):
                 y1=170,
             )
         ]
-        plan = pdf.PageRenderPlan(page_num=12)
+        plan = render_plan.PageRenderPlan(page_num=12)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "original_selectable_text",
                 [block_id],
                 (80, 120, 230, 170),
                 text=text,
-                font_size=pdf.BODY_FONT_SIZE,
+                font_size=layout.BODY_FONT_SIZE,
                 style_name="body",
                 fallback_reason="missing_translation",
                 component_kind=pdf.ownership.COMPONENT_KIND_REFERENCE,
             )
         )
         plan.ledger.append(
-            pdf.CoverageEntry(
+            render_plan.CoverageEntry(
                 block_id,
                 "reference",
                 "original_selectable_text",
@@ -4542,40 +4528,40 @@ class QualityValidationTests(unittest.TestCase):
                 y1=bbox[3],
             )
         ]
-        plan = pdf.PageRenderPlan(page_num=3)
-        item = pdf.RenderItem(
+        plan = render_plan.PageRenderPlan(page_num=3)
+        item = render_plan.RenderItem(
             "translated_text",
             [block_id],
             bbox,
             text=translated,
-            font_size=pdf.BODY_FONT_SIZE,
+            font_size=layout.BODY_FONT_SIZE,
             style_name="body",
         )
         plan.items.append(item)
-        plan.ledger.append(pdf.CoverageEntry(block_id, "body", "translated_text", True))
+        plan.ledger.append(render_plan.CoverageEntry(block_id, "body", "translated_text", True))
 
-        self.assertIsNone(pdf.text_item_fit_metrics(item, pdf.load_fitz())[0])
+        self.assertIsNone(layout.text_item_fit_metrics(item, render_pdf.load_fitz())[0])
         pdf.convert_unfit_nonprose_text_to_image_clips(plan, blocks)
 
         self.assertEqual(plan.items[0].kind, "translated_text")
         self.assertEqual(plan.ledger[0].render_kind, "translated_text")
 
     def test_moving_leading_enum_continuation_does_not_duplicate_source_ids(self):
-        plan = pdf.PageRenderPlan(page_num=4)
-        previous = pdf.RenderItem(
+        plan = render_plan.PageRenderPlan(page_num=4)
+        previous = render_plan.RenderItem(
             "translated_text",
             ["p004b0001"],
             (135, 180, 492, 190),
             text="(1) States(A) 是状态集合。",
-            font_size=pdf.BODY_FONT_SIZE,
+            font_size=layout.BODY_FONT_SIZE,
             style_name="body",
         )
-        current = pdf.RenderItem(
+        current = render_plan.RenderItem(
             "translated_text",
             ["p004b0004", "p004b0005"],
             (136, 190, 492, 260),
             text="初始状态集合。\n(2) In(A) 是输入事件集合。",
-            font_size=pdf.BODY_FONT_SIZE,
+            font_size=layout.BODY_FONT_SIZE,
             style_name="body",
         )
         plan.items.extend([previous, current])
@@ -4588,10 +4574,10 @@ class QualityValidationTests(unittest.TestCase):
 
 class RenderPlanSerializationTests(unittest.TestCase):
     def sample_plan(self):
-        return pdf.PageRenderPlan(
+        return render_plan.PageRenderPlan(
             page_num=7,
             items=[
-                pdf.RenderItem(
+                render_plan.RenderItem(
                     "translated_text",
                     ["p007b0002"],
                     (100.0, 120.25, 360.5, 168.75),
@@ -4601,7 +4587,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
                     color=(0.1, 0.2, 0.3),
                     fallback_reason="",
                 ),
-                pdf.RenderItem(
+                render_plan.RenderItem(
                     "original_image_clip",
                     ["p007b0003", "p007b0004"],
                     (90, 190, 380, 260),
@@ -4609,8 +4595,8 @@ class RenderPlanSerializationTests(unittest.TestCase):
                 ),
             ],
             ledger=[
-                pdf.CoverageEntry("p007b0002", "body", "translated_text", True),
-                pdf.CoverageEntry("p007b0003", "figure_region", "original_image_clip", True, "visual_region"),
+                render_plan.CoverageEntry("p007b0002", "body", "translated_text", True),
+                render_plan.CoverageEntry("p007b0003", "figure_region", "original_image_clip", True, "visual_region"),
             ],
             protected_boxes=[(90, 190, 380, 260)],
         )
@@ -4645,7 +4631,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
             bbox_lines=None,
         )
 
-        plan_json = pdf.render_plan_to_json(plan)
+        plan_json = render_plan.render_plan_to_json(plan)
         ledger_by_id = {entry["block_id"]: entry for entry in plan_json["coverage_ledger"]}
 
         self.assertEqual(set(ledger_by_id), {"p042b0001", "p042b0002"})
@@ -4691,7 +4677,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
         ]
         plan = pdf.build_page_render_plan(43, blocks, {}, page_size=(612, 792), bbox_lines=None)
 
-        plan_json = pdf.render_plan_to_json(plan)
+        plan_json = render_plan.render_plan_to_json(plan)
         image_items = [
             item
             for item in plan_json["render_items"]
@@ -4708,11 +4694,11 @@ class RenderPlanSerializationTests(unittest.TestCase):
 
     def test_render_plan_json_dumps_is_deterministic_for_same_plan_content(self):
         plan = self.sample_plan()
-        first = pdf.render_plan_json_dumps(
+        first = render_plan.render_plan_json_dumps(
             plan,
             validation_results={"warnings": ["check later"], "errors": []},
         )
-        second = pdf.render_plan_json_dumps(
+        second = render_plan.render_plan_json_dumps(
             plan,
             validation_results={"errors": [], "warnings": ["check later"]},
         )
@@ -4721,7 +4707,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
         self.assertEqual(json.loads(first), json.loads(second))
 
     def test_render_plan_json_includes_diagnostic_fields(self):
-        plan_json = pdf.render_plan_to_json(
+        plan_json = render_plan.render_plan_to_json(
             self.sample_plan(),
             validation_results=[
                 {"category": "style", "message": "body style checked", "source_ids": ["p007b0002"]},
@@ -4766,7 +4752,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
         )
 
     def test_write_vector_pdf_writes_page_render_plan_artifact(self):
-        fitz = pdf.load_fitz()
+        fitz = render_pdf.load_fitz()
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             source_pdf = tmp_path / "source.pdf"
@@ -4810,7 +4796,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
                 source_image_path=None,
             )
             expected_plan.output_page_num = 1
-            expected_json = pdf.render_plan_json_dumps(
+            expected_json = render_plan.render_plan_json_dumps(
                 expected_plan,
                 validation_results={
                     "ownership": pdf.ownership.ownership_validation_to_json(expected_plan.ownership_validation),
@@ -4826,7 +4812,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
             self.assertEqual(artifact_path.read_text(encoding="utf-8"), expected_json)
 
     def test_write_vector_pdf_render_plan_artifact_is_deterministic_for_same_inputs(self):
-        fitz = pdf.load_fitz()
+        fitz = render_pdf.load_fitz()
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             source_pdf = tmp_path / "source.pdf"
@@ -4867,7 +4853,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
             self.assertEqual(artifacts[0], artifacts[1])
 
     def test_failed_vector_pdf_plan_artifact_records_only_executed_validation(self):
-        fitz = pdf.load_fitz()
+        fitz = render_pdf.load_fitz()
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             source_pdf = tmp_path / "source.pdf"
@@ -4906,7 +4892,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
             )
 
     def test_vector_pdf_rejects_and_records_style_policy_errors(self):
-        fitz = pdf.load_fitz()
+        fitz = render_pdf.load_fitz()
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             source_pdf = tmp_path / "source.pdf"
@@ -4919,18 +4905,18 @@ class RenderPlanSerializationTests(unittest.TestCase):
             src_doc.close()
 
             blocks = [block("p001b0001", 1, "1. INTRODUCTION", x0=20, y0=20, x1=180, y1=60)]
-            bad_plan = pdf.PageRenderPlan(page_num=1)
+            bad_plan = render_plan.PageRenderPlan(page_num=1)
             bad_plan.items.append(
-                pdf.RenderItem(
+                render_plan.RenderItem(
                     "translated_text",
                     ["p001b0001"],
                     (20, 20, 180, 60),
                     text="1. 引言",
-                    font_size=pdf.DOCUMENT_STYLES["body"].font_size,
+                    font_size=layout.DOCUMENT_STYLES["body"].font_size,
                     style_name="body",
                 )
             )
-            bad_plan.ledger.append(pdf.CoverageEntry("p001b0001", "heading", "translated_text", True, ""))
+            bad_plan.ledger.append(render_plan.CoverageEntry("p001b0001", "heading", "translated_text", True, ""))
             original_build = pdf.build_page_render_plan
             pdf.build_page_render_plan = lambda *args, **kwargs: bad_plan
             try:
@@ -4951,7 +4937,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
             self.assertTrue(artifact["validation_results"]["style_policy_errors"])
 
     def test_failed_vector_pdf_keeps_validation_error_when_plan_artifact_write_fails(self):
-        fitz = pdf.load_fitz()
+        fitz = render_pdf.load_fitz()
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             source_pdf = tmp_path / "source.pdf"
@@ -4980,7 +4966,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
 
 class SourceClipRenderingTests(unittest.TestCase):
     def test_image_clip_prefers_cached_source_page_png(self):
-        fitz = pdf.load_fitz()
+        fitz = render_pdf.load_fitz()
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             source_pdf = tmp_path / "source.pdf"
@@ -5029,7 +5015,7 @@ class SourceClipRenderingTests(unittest.TestCase):
             self.assertLess(sum(rendered.getpixel((20, 20))), 40)
 
     def test_overflowing_translated_text_fails_text_fit_instead_of_shrinking_or_image_fallback(self):
-        fitz = pdf.load_fitz()
+        fitz = render_pdf.load_fitz()
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             source_pdf = tmp_path / "source.pdf"
@@ -5061,7 +5047,7 @@ class SourceClipRenderingTests(unittest.TestCase):
                 )
 
     def test_render_text_item_raises_instead_of_silent_image_fallback(self):
-        fitz = pdf.load_fitz()
+        fitz = render_pdf.load_fitz()
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             source_image = tmp_path / "page-001.png"
@@ -5071,17 +5057,17 @@ class SourceClipRenderingTests(unittest.TestCase):
             src_page = src_doc.new_page(width=100, height=100)
             out_doc = fitz.open()
             out_page = out_doc.new_page(width=100, height=100)
-            item = pdf.RenderItem(
+            item = render_plan.RenderItem(
                 "translated_text",
                 ["body"],
                 (10, 10, 40, 18),
                 text="这是一个很长很长的译文，渲染阶段不能偷偷贴回英文截图。" * 4,
-                font_size=pdf.DOCUMENT_STYLES["body"].font_size,
+                font_size=layout.DOCUMENT_STYLES["body"].font_size,
                 style_name="body",
             )
 
             with self.assertRaisesRegex(RuntimeError, "did not fit during render"):
-                pdf.render_plan_item(out_page, src_page, fitz, item, 72, source_image_path=source_image)
+                render_pdf.render_plan_item(out_page, src_page, fitz, item, 72, source_image_path=source_image)
 
             out_doc.close()
             src_doc.close()

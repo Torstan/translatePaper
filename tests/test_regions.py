@@ -3,6 +3,7 @@ from pathlib import Path
 import unittest
 
 import regions
+import classify
 import translate_pdf_via_codex as pdf
 
 
@@ -23,7 +24,7 @@ def block(block_id, page, text, x0=100, y0=100, x1=400, y1=120, preserve_image=F
 
 
 class RegionExtractionModuleTests(unittest.TestCase):
-    def test_build_visual_regions_direct_api_matches_pipeline_compatibility(self):
+    def test_build_visual_regions_preserves_formula_and_caption(self):
         blocks = [
             block("p301b0001", 301, "1: procedure Enq(x)", x0=100, y0=100, x1=245, y1=114),
             block("p301b0002", 301, "2: if tail = null then", x0=100, y0=116, x1=270, y1=130),
@@ -49,10 +50,8 @@ class RegionExtractionModuleTests(unittest.TestCase):
             }
         ]
         self.assertEqual(regions.build_visual_regions(blocks), expected)
-        self.assertIs(pdf.build_visual_regions, regions.build_visual_regions)
-        self.assertIs(pdf.heuristic_heading_from_block, regions.heuristic_heading_from_block)
 
-    def test_protected_region_capping_direct_api_matches_pipeline_compatibility(self):
+    def test_protected_region_capping_leaves_adjacent_prose(self):
         blocks = [
             block("p401b0001", 401, "The paragraph before the display.", x0=90, y0=100, x1=500, y1=118),
             block("p401b0002", 401, "x := y + z", x0=120, y0=130, x1=220, y1=144),
@@ -66,7 +65,6 @@ class RegionExtractionModuleTests(unittest.TestCase):
         capped = regions.cap_visual_bbox_after_preceding_text(region_bbox, oversized_bbox, blocks, classes, visual_ids)
 
         self.assertEqual(capped, (104.0, 118, 238.0, 166.0))
-        self.assertIs(pdf.cap_visual_bbox_after_preceding_text, regions.cap_visual_bbox_after_preceding_text)
 
     def test_visual_clip_side_intrusion_is_capped_before_adjacent_body_column(self):
         blocks = [
@@ -95,10 +93,6 @@ class RegionExtractionModuleTests(unittest.TestCase):
         )
 
         self.assertLess(capped[2], blocks[1]["xMin"])
-        self.assertIs(
-            pdf.cap_visual_bbox_against_adjacent_translated_text,
-            regions.cap_visual_bbox_against_adjacent_translated_text,
-        )
 
     def test_diagram_region_above_caption_ignores_distant_title_and_authors(self):
         blocks = [
@@ -182,7 +176,7 @@ class RegionExtractionModuleTests(unittest.TestCase):
 
         visual_regions = regions.build_visual_regions(blocks)
         visual_ids = {source_id for region in visual_regions for source_id in region["source_ids"]}
-        classes = pdf.classify_blocks(blocks, visual_regions)
+        classes = classify.classify_blocks(blocks, visual_regions)
         ownership_result = pdf.build_translation_page_components(1, blocks, page_size=(612.0, 792.0))
 
         self.assertIn("p001b0014", visual_ids)
@@ -338,7 +332,6 @@ class RegionExtractionModuleTests(unittest.TestCase):
             regions.grouped_image_row_clips(image_entries, (300.0, 400.0)),
             [{"bbox": (38.0, 77.0, 262.0, 132.0), "indices": {0, 1, 2}}],
         )
-        self.assertIs(pdf.grouped_image_row_clips, regions.grouped_image_row_clips)
 
     def test_formula_region_bbox_from_lines_uses_direct_module_api(self):
         region = {"bbox": (100.0, 100.0, 180.0, 118.0)}
@@ -351,7 +344,6 @@ class RegionExtractionModuleTests(unittest.TestCase):
             regions.formula_region_bbox_from_lines(region, bbox_lines, (500.0, 700.0)),
             (104.0, 101.0, 174.0, 113.0),
         )
-        self.assertIs(pdf.formula_region_bbox_from_lines, regions.formula_region_bbox_from_lines)
 
     def test_nontranslated_visual_region_coverage_excludes_large_prose(self):
         small_label = block("p501b0001", 501, "Δ", x0=120, y0=120, x1=130, y1=132)
@@ -376,7 +368,6 @@ class RegionExtractionModuleTests(unittest.TestCase):
             ),
             {"p501b0001"},
         )
-        self.assertIs(pdf.nontranslated_blocks_covered_by_visual_region, regions.nontranslated_blocks_covered_by_visual_region)
 
     def test_diagram_caption_region_preserves_distant_internal_labels(self):
         blocks = [
@@ -547,7 +538,7 @@ class RegionExtractionModuleTests(unittest.TestCase):
         fixture_path = Path(__file__).resolve().parent / "fixtures" / "pdf_render" / "source_pages" / "bert" / "page-009.json"
         blocks = json.loads(fixture_path.read_text(encoding="utf-8"))["blocks"]
         visual_regions = regions.build_visual_regions(blocks)
-        classes = pdf.classify_blocks(blocks, visual_regions)
+        classes = classify.classify_blocks(blocks, visual_regions)
 
         ownership_regions = pdf.final_visual_ownership_regions(
             blocks,

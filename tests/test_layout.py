@@ -3,6 +3,8 @@ from unittest.mock import patch
 
 import layout
 import ownership
+import render_pdf
+import render_plan
 import translate_pdf_via_codex as pdf
 
 
@@ -12,14 +14,11 @@ class FakeFitz:
 
 
 class LayoutExtractionModuleTests(unittest.TestCase):
-    def test_style_api_direct_and_compatibility_identity(self):
-        self.assertIs(pdf.TextStyle, layout.TextStyle)
-        self.assertIs(pdf.DOCUMENT_STYLES, layout.DOCUMENT_STYLES)
-        self.assertIs(pdf.text_style, layout.text_style)
+    def test_style_lookup_defaults_to_body(self):
         self.assertEqual(layout.text_style("body").font_size, layout.BODY_FONT_SIZE)
         self.assertEqual(layout.text_style("missing").font_size, layout.BODY_FONT_SIZE)
 
-    def test_fit_spacing_direct_api_matches_pipeline_compatibility(self):
+    def test_spacing_compacts_to_available_height(self):
         style = layout.TextStyle(
             font_size=10.0,
             line_height_factor=1.2,
@@ -31,12 +30,10 @@ class LayoutExtractionModuleTests(unittest.TestCase):
 
         self.assertEqual(layout.text_height_for_lines(lines, 10.0, 1.0, 0.0), 30.0)
         self.assertEqual(layout.fitted_text_spacing(lines, 10.0, 31.0, style), (1.0, 0.0))
-        self.assertIs(pdf.fitted_text_spacing, layout.fitted_text_spacing)
-        self.assertIs(pdf.text_box_fit_plan, layout.text_box_fit_plan)
 
     def test_text_item_fit_metrics_uses_shared_text_box_fit_plan(self):
         fitz = FakeFitz()
-        item = pdf.RenderItem(
+        item = render_plan.RenderItem(
             "translated_text",
             ["body"],
             (10.0, 10.0, 70.0, 40.0),
@@ -62,7 +59,7 @@ class LayoutExtractionModuleTests(unittest.TestCase):
 
     def test_reference_fit_metrics_allow_compact_line_height(self):
         fitz = FakeFitz()
-        item = pdf.RenderItem(
+        item = render_plan.RenderItem(
             "original_selectable_text",
             ["ref"],
             (0.0, 0.0, 30.0, 42.0),
@@ -82,7 +79,6 @@ class LayoutExtractionModuleTests(unittest.TestCase):
             layout.wrap_mixed_pdf_text(fitz, "alpha beta 中文", max_width=30.0, font_size=10.0),
             [["alpha"], ["beta", " ", "中", "文"]],
         )
-        self.assertIs(pdf.wrap_mixed_pdf_text, layout.wrap_mixed_pdf_text)
 
     def test_math_tokens_do_not_use_unregistered_font_without_font_file(self):
         fitz = FakeFitz()
@@ -169,8 +165,8 @@ class LayoutExtractionModuleTests(unittest.TestCase):
 
         self.assertEqual(layout.target_font_size_for_block(block, dpi=72, vertical=False), expected)
 
-    def test_protected_region_split_direct_api_matches_pipeline_compatibility(self):
-        protected = [pdf.RenderItem("original_image_clip", ["fig"], (100.0, 100.0, 180.0, 160.0))]
+    def test_protected_region_split_leaves_usable_segments(self):
+        protected = [render_plan.RenderItem("original_image_clip", ["fig"], (100.0, 100.0, 180.0, 160.0))]
 
         shifted = layout.shifted_boxes_around_protected(
             (120.0, 110.0, 220.0, 150.0),
@@ -184,15 +180,12 @@ class LayoutExtractionModuleTests(unittest.TestCase):
 
         self.assertIn((180.75, 110.0, 280.75, 150.0), shifted)
         self.assertIn((90.0, 160.75, 220.0, 180.0), segments)
-        self.assertIs(pdf.shifted_boxes_around_protected, layout.shifted_boxes_around_protected)
-        self.assertIs(pdf.text_segments_around_protected, layout.text_segments_around_protected)
-        self.assertIs(pdf.vertical_expansion_limits, layout.vertical_expansion_limits)
 
     def test_split_translated_text_around_protected_preserves_ledger_update(self):
-        plan = pdf.PageRenderPlan(page_num=7)
-        plan.items.append(pdf.RenderItem("original_image_clip", ["fig"], (100.0, 100.0, 180.0, 160.0)))
+        plan = render_plan.PageRenderPlan(page_num=7)
+        plan.items.append(render_plan.RenderItem("original_image_clip", ["fig"], (100.0, 100.0, 180.0, 160.0)))
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["body"],
                 (90.0, 90.0, 220.0, 180.0),
@@ -201,7 +194,7 @@ class LayoutExtractionModuleTests(unittest.TestCase):
                 style_name="body",
             )
         )
-        plan.ledger.append(pdf.CoverageEntry("body", "body", "translated_text", True, None))
+        plan.ledger.append(render_plan.CoverageEntry("body", "body", "translated_text", True, None))
 
         layout.split_translated_text_around_protected(plan, page_size=(300.0, 300.0), fitz=FakeFitz())
 
@@ -209,12 +202,11 @@ class LayoutExtractionModuleTests(unittest.TestCase):
         self.assertTrue(body_items)
         self.assertTrue(all(item.fallback_reason == "split_around_visual" for item in body_items))
         self.assertEqual(plan.ledger[0].fallback_reason, "split_around_visual")
-        self.assertIs(pdf.split_translated_text_around_protected, layout.split_translated_text_around_protected)
 
     def test_split_translated_text_around_protected_keeps_item_when_segments_get_no_text(self):
-        plan = pdf.PageRenderPlan(page_num=7)
-        plan.items.append(pdf.RenderItem("original_image_clip", ["fig"], (100.0, 100.0, 180.0, 160.0)))
-        original = pdf.RenderItem(
+        plan = render_plan.PageRenderPlan(page_num=7)
+        plan.items.append(render_plan.RenderItem("original_image_clip", ["fig"], (100.0, 100.0, 180.0, 160.0)))
+        original = render_plan.RenderItem(
             "translated_text",
             ["body"],
             (90.0, 90.0, 220.0, 180.0),
@@ -223,7 +215,7 @@ class LayoutExtractionModuleTests(unittest.TestCase):
             style_name="body",
         )
         plan.items.append(original)
-        plan.ledger.append(pdf.CoverageEntry("body", "body", "translated_text", True, None))
+        plan.ledger.append(render_plan.CoverageEntry("body", "body", "translated_text", True, None))
 
         def empty_segments(_text, segments, _style=None, fitz=None):
             return ["" for _segment in segments]
@@ -236,9 +228,9 @@ class LayoutExtractionModuleTests(unittest.TestCase):
         self.assertIsNone(plan.ledger[0].fallback_reason)
 
     def test_text_fit_validation_rejects_unrecorded_font_shrinking(self):
-        plan = pdf.PageRenderPlan(page_num=8)
+        plan = render_plan.PageRenderPlan(page_num=8)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["body"],
                 (10.0, 10.0, 40.0, 21.0),
@@ -254,9 +246,9 @@ class LayoutExtractionModuleTests(unittest.TestCase):
 
     def test_expand_text_boxes_to_fit_grows_tight_body_line_into_available_space(self):
         fitz = FakeFitz()
-        plan = pdf.PageRenderPlan(page_num=2)
+        plan = render_plan.PageRenderPlan(page_num=2)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["p002b0004"],
                 (70.0, 120.0, 520.0, 127.0),
@@ -266,7 +258,7 @@ class LayoutExtractionModuleTests(unittest.TestCase):
             )
         )
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["p002b0005"],
                 (70.0, 170.0, 520.0, 190.0),
@@ -287,7 +279,7 @@ class LayoutExtractionModuleTests(unittest.TestCase):
 
     def test_normalize_vector_text_layout_releases_toolformer_visual_overcapture(self):
         fitz = FakeFitz()
-        plan = pdf.PageRenderPlan(page_num=2)
+        plan = render_plan.PageRenderPlan(page_num=2)
         plan.components.append(
             ownership.PageComponent(
                 "p002c0002",
@@ -301,7 +293,7 @@ class LayoutExtractionModuleTests(unittest.TestCase):
             )
         )
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "original_image_clip",
                 ["p002b0005", "p002b0006", "p002b0007", "p002b0008"],
                 (106.14, 137.909818, 506.22, 250.98),
@@ -312,7 +304,7 @@ class LayoutExtractionModuleTests(unittest.TestCase):
         )
         plan.protected_boxes.append(plan.items[0].bbox)
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["p002b0003"],
                 (114.360956, 108.497817, 382.92205, 128.869817),
@@ -322,7 +314,7 @@ class LayoutExtractionModuleTests(unittest.TestCase):
             )
         )
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["p002b0004"],
                 (114.361822, 130.869817, 383.581771, 137.909818),
@@ -344,8 +336,8 @@ class LayoutExtractionModuleTests(unittest.TestCase):
         self.assertEqual(plan.protected_boxes, [visual.bbox])
 
     def test_normalize_vector_text_layout_backfills_prose_before_visual_clip(self):
-        fitz = pdf.load_fitz()
-        plan = pdf.PageRenderPlan(page_num=3)
+        fitz = render_pdf.load_fitz()
+        plan = render_plan.PageRenderPlan(page_num=3)
         visual_bbox = (106.08, 100.375998, 505.92, 125.765999)
         plan.components.append(
             ownership.PageComponent(
@@ -360,7 +352,7 @@ class LayoutExtractionModuleTests(unittest.TestCase):
             )
         )
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["p003b0001"],
                 (114.748011, 77.539998, 494.253315, 87.485998),
@@ -370,7 +362,7 @@ class LayoutExtractionModuleTests(unittest.TestCase):
             )
         )
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "translated_text",
                 ["p003b0002"],
                 (114.748011, 89.485998, 494.3392, 96.525998),
@@ -380,7 +372,7 @@ class LayoutExtractionModuleTests(unittest.TestCase):
             )
         )
         plan.items.append(
-            pdf.RenderItem(
+            render_plan.RenderItem(
                 "original_image_clip",
                 ["p003b0003", "p003b0004"],
                 visual_bbox,

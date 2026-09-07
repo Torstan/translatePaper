@@ -11,6 +11,7 @@ from render_plan import (
     RenderItem,
     bbox_area,
     item_significantly_overlaps_protected,
+    ledger_classifications,
     update_ledger_render_kind,
 )
 from regions import (
@@ -290,15 +291,6 @@ def pdf_token_width(fitz, token: str, font_size: float) -> float:
         if font is not None:
             return font.text_length(token, fontsize=font_size)
     return fitz.get_text_length(token, fontname=pdf_token_font(token), fontsize=font_size)
-
-
-def pdf_text_width(fitz, text: str, font_size: float) -> float:
-    if not text:
-        return 0.0
-    return sum(
-        pdf_token_width(fitz, token, font_size)
-        for token in drawable_pdf_line_tokens([text])
-    )
 
 
 def split_pdf_text_tokens(text: str) -> list[str]:
@@ -1032,10 +1024,6 @@ def style_name_for_block(block, classification: str) -> str:
     return "body"
 
 
-def render_font_size_for_block(block, classification: str) -> float:
-    return render_font_size_for_style(block, style_name_for_block(block, classification))
-
-
 def source_adapted_font_size_allowed(block, style_name: str) -> bool:
     if style_name not in SOURCE_ADAPTED_FONT_MAX_BY_STYLE:
         return False
@@ -1252,16 +1240,12 @@ def split_translated_text_around_protected(plan: PageRenderPlan, page_size=None,
     plan.items = new_items
 
 
-def validate_plan_style_policy(plan: PageRenderPlan) -> list[str]:
+def document_style_hierarchy_errors() -> list[str]:
     errors = []
-    hierarchy = [
-        ("title", "heading"),
-        ("heading", "subheading"),
-        ("subheading", "body"),
-        ("body", "footer"),
-        ("body", "reference"),
-    ]
-    for larger, smaller in hierarchy:
+    for larger, smaller in (
+        ("title", "heading"), ("heading", "subheading"), ("subheading", "body"),
+        ("body", "footer"), ("body", "reference"),
+    ):
         larger_size = text_style(larger).font_size
         smaller_size = text_style(smaller).font_size
         if larger_size <= smaller_size:
@@ -1269,28 +1253,42 @@ def validate_plan_style_policy(plan: PageRenderPlan) -> list[str]:
                 f"style hierarchy violation: {larger} font size {larger_size} must be greater than"
                 f" {smaller} font size {smaller_size}"
             )
+    return errors
 
-    ledger_by_id = {entry.block_id: entry for entry in plan.ledger}
+
+def text_item_style_issues(
+    item: RenderItem, classifications: set[str], *, font_tolerance: float = 0.01,
+) -> list[tuple[str, str]]:
+    """Drawing and offline QA enforce the same roles, sizes and explicit exceptions."""
+    if item.kind not in {"translated_text", "original_selectable_text"}:
+        return []
+    if item.fallback_reason in STYLE_POLICY_ROLE_SPLIT_EXCEPTIONS:
+        return []
+    allowed_styles = set().union(*(
+        STYLE_POLICY_CLASSIFICATION_STYLES[classification]
+        for classification in classifications if classification in STYLE_POLICY_CLASSIFICATION_STYLES
+    ))
+    actual_name = render_text_style_name(item)
+    issues = []
+    if allowed_styles and actual_name not in allowed_styles:
+        expected = "/".join(sorted(allowed_styles))
+        issues.append(("style_hierarchy", f"has style {actual_name}, expected {expected}"))
+    expected_size = text_style(actual_name).font_size
+    if item.font_size is None or abs(item.font_size - expected_size) > font_tolerance:
+        category = "body_font_consistency" if actual_name == "body" else "style_hierarchy"
+        issues.append((category, f"has font size {item.font_size}, expected {expected_size}"))
+    return issues
+
+
+def validate_plan_style_policy(plan: PageRenderPlan) -> list[str]:
+    errors = document_style_hierarchy_errors()
+    classes = ledger_classifications(plan)
     for item in plan.items:
-        if item.kind not in {"translated_text", "original_selectable_text"}:
-            continue
-        item_ledger_entries = [ledger_by_id[source_id] for source_id in item.source_ids if source_id in ledger_by_id]
-        explicit_exception = item.fallback_reason in STYLE_POLICY_ROLE_SPLIT_EXCEPTIONS
-        allowed_styles = set().union(*(
-            STYLE_POLICY_CLASSIFICATION_STYLES[entry.classification]
-            for entry in item_ledger_entries
-            if entry.classification in STYLE_POLICY_CLASSIFICATION_STYLES
-        ))
-        actual_name = render_text_style_name(item)
-        if not allowed_styles:
-            allowed_styles = {actual_name}
-        expected_name = actual_name if actual_name in allowed_styles else sorted(allowed_styles)[0]
-        style = text_style(actual_name)
-        if not explicit_exception and actual_name not in allowed_styles:
-            expected = "/".join(sorted(allowed_styles))
-            errors.append(f"page {plan.page_num} item {item.source_ids} has style {actual_name}, expected {expected}")
-        if not explicit_exception and (item.font_size is None or abs(item.font_size - style.font_size) > 0.01):
-            errors.append(f"page {plan.page_num} item {item.source_ids} has font size {item.font_size}, expected {style.font_size}")
+        classifications = {classes[source_id] for source_id in item.source_ids if source_id in classes}
+        errors.extend(
+            f"page {plan.page_num} item {item.source_ids} {message}"
+            for _, message in text_item_style_issues(item, classifications)
+        )
     return errors
 
 
