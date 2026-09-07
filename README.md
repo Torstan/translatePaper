@@ -27,6 +27,13 @@ final translations without applying cached repairs again. Layout planning and
 visual QA share the same protected-region overlap predicate (over 6pt vertically
 and over 5% of the smaller box's area).
 
+Rendering no longer completes sentences from hardcoded source phrases: complete
+translations remain intact, and incomplete translations must be checked through
+semantic QA rather than silently rewritten during drawing. Coverage validation
+uses the document classifier's trivial-content rule in every entry point.
+Vector drawing uses the planned font size and reports overflow; font-size
+adjustments belong to layout planning.
+
 ## Usage
 
 ```bash

@@ -2782,17 +2782,6 @@ def drop_garbled_translation_lines(text: str) -> str:
     return normalize_text("\n".join(lines))
 
 
-def repair_incomplete_translation_from_source(block, text: str) -> str:
-    source = normalize_text(block.get("text", "")).lower()
-    if "validity follows because each process initializes its position in prefer before" in source:
-        text = re.sub(
-            r"有效性成立，因为每个进程在[。.]?",
-            "有效性成立，因为每个进程在执行 swap 前初始化其在 prefer 中的位置。",
-            text,
-        )
-    return text
-
-
 def clean_render_text(block, text: str, raw_text: str | None = None) -> str:
     text = strip_journal_footer_lines(text)
     if raw_text is None:
@@ -2802,7 +2791,6 @@ def clean_render_text(block, text: str, raw_text: str | None = None) -> str:
         if visual_tail and cjk_char_count(visual_tail) >= 6:
             text = strip_journal_footer_lines(visual_tail)
     text = drop_garbled_translation_lines(text)
-    text = repair_incomplete_translation_from_source(block, text)
     lines = text.split("\n")
     if len(lines) >= 2 and re.fullmatch(r"[a-z][a-z-]{3,}", lines[0].strip()) and re.search(r"[\u4e00-\u9fff]", lines[1]):
         source_first = normalize_text(block.get("text", "")).split("\n", 1)[0].strip()

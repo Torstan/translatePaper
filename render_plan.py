@@ -160,11 +160,6 @@ def try_write_render_plan_artifact(plan: PageRenderPlan, validation_results: dic
         return None
 
 
-def nontrivial_block(block) -> bool:
-    text = normalize_text(block.get("text", ""))
-    return bool(text) and not is_trivial_keep(text)
-
-
 def validate_plan_coverage(
     page_num: int,
     blocks,
@@ -175,7 +170,7 @@ def validate_plan_coverage(
     for entry in plan.ledger:
         ledger_by_id.setdefault(entry.block_id, []).append(entry)
     for block in blocks:
-        if not nontrivial_block(block):
+        if is_trivial_keep(normalize_text(block.get("text", ""))):
             continue
         entries = ledger_by_id.get(block["id"], [])
         if not entries:
