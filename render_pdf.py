@@ -1,6 +1,5 @@
 import io
 import math
-import re
 import sys
 from pathlib import Path
 
@@ -8,9 +7,7 @@ from PIL import Image
 
 from layout import (
     DOCUMENT_STYLES,
-    VECTOR_ACCENT_COLOR,
     VECTOR_BODY_COLOR,
-    VECTOR_FONT,
     TextStyle,
     drawable_pdf_line_tokens,
     pdf_token_font,
@@ -39,24 +36,6 @@ def load_fitz():
             "Install it with: python3 -m pip install --target vendor pymupdf"
         ) from exc
     return fitz
-
-
-def vector_text_color(block) -> tuple[float, float, float]:
-    text = block.get("text", "")
-    if text.startswith("DeepSeek Scales") or text.startswith("NVIDIA ") or text.startswith("Figure "):
-        return VECTOR_ACCENT_COLOR if text.startswith("DeepSeek Scales") else VECTOR_BODY_COLOR
-    return VECTOR_BODY_COLOR
-
-
-def expanded_rect_for_text(fitz, block, page_rect):
-    pad_x = 1.5
-    pad_y = 1.5
-    return fitz.Rect(
-        max(page_rect.x0, block["xMin"] - pad_x),
-        max(page_rect.y0, block["yMin"] - pad_y),
-        min(page_rect.x1, block["xMax"] + pad_x),
-        min(page_rect.y1, block["yMax"] + pad_y),
-    )
 
 
 def insert_vector_textbox(
@@ -113,34 +92,6 @@ def insert_vector_textbox(
             return True
         size -= 0.5
     return False
-
-
-def is_vertical_vector_block(block, text: str) -> bool:
-    return (block["yMax"] - block["yMin"]) > (block["xMax"] - block["xMin"]) * 3 and len(text) > 4
-
-
-def insert_vertical_vector_text(page, fitz, rect, text: str, font_size: float, color):
-    if not text.strip() or rect.is_empty:
-        return
-
-    fontname = VECTOR_FONT if re.search(r"[^\x00-\x7f]", text) else "helv"
-    size = min(font_size, max(5.0, rect.width * 0.85), 30.0)
-    while size >= 5.0:
-        text_length = fitz.get_text_length(text, fontname=fontname, fontsize=size)
-        if text_length <= rect.height:
-            break
-        size -= 0.5
-
-    x = rect.x0 + min(rect.width - 1.0, size * 0.9)
-    y = rect.y1 - 1.0
-    page.insert_text(
-        (x, y),
-        text,
-        fontsize=size,
-        fontname=fontname,
-        color=color,
-        rotate=90,
-    )
 
 
 def draw_mixed_pdf_lines(
@@ -282,30 +233,6 @@ def insert_source_image_clip(out_page, fitz, source_image_path: Path, page_rect,
         return False
     out_page.insert_image(rect, stream=stream, keep_proportion=False)
     return True
-
-
-def should_preserve_drawing_rect(rect, fill) -> bool:
-    if rect is None:
-        return False
-    if fill is not None:
-        return True
-    return rect.width <= 2.0 or rect.height <= 2.0
-
-
-def preserve_drawings_on_page(src_page, out_page):
-    for drawing in src_page.get_drawings():
-        rect = drawing.get("rect")
-        if rect is None:
-            continue
-        fill = drawing.get("fill")
-        if not should_preserve_drawing_rect(rect, fill):
-            continue
-        color = drawing.get("color") or (0, 0, 0)
-        width = drawing.get("width") or 0.5
-        if fill is not None:
-            out_page.draw_rect(rect, color=color, fill=fill, width=width)
-        else:
-            out_page.draw_rect(rect, color=color, width=width)
 
 
 def render_plan_item(out_page, src_page, fitz, item: RenderItem, dpi: int, source_image_path: Path | None = None):

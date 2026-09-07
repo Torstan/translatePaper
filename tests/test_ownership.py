@@ -1,5 +1,8 @@
 import json
 import unittest
+from unittest.mock import patch
+
+import translate_pdf_via_codex as pipeline
 
 import ownership
 
@@ -571,15 +574,12 @@ class OwnershipTranslationFilterTests(unittest.TestCase):
             duplicate_ids=set(),
         )
 
-        items = ownership.translation_items_from_components(
-            blocks,
-            components,
-            classes={"p020b0001": "heading", "p020b0002": "body"},
-        )
+        with patch.object(ownership, "build_page_components", return_value=components):
+            batches = pipeline.build_batches([blocks], 7000, page_numbers=[20])
 
         self.assertEqual(
-            items,
-            [{"id": "p020b0001", "text": "Heading"}, {"id": "p020b0002", "text": "Body paragraph."}],
+            batches,
+            [[{"id": "p020b0001", "text": "Heading"}, {"id": "p020b0002", "text": "Body paragraph."}]],
         )
 
 

@@ -15,6 +15,18 @@ Python 3.10+, Codex CLI, Poppler, `PyMuPDF`, `Pillow` and a Chinese font. Defaul
 Both vector rendering and raster PDF assembly use PyMuPDF. Raster mode assembles
 the rendered page images directly; XeLaTeX and `.tex` files are no longer used.
 
+Serial and parallel entry points both generate missing cross-page sentence
+repairs before vector or raster rendering. Translation batches and sentence
+repairs share command execution and retries: failed commands, stale output,
+invalid fields, and missing, extra, or duplicate IDs/keys cannot enter the cache.
+An empty repair prefix is valid; an empty repaired sentence is not.
+
+`render_translated_pdf` applies boundary repairs once and returns the translations
+used for rendering and QA. The lower-level `write_vector_pdf` draws the supplied
+final translations without applying cached repairs again. Layout planning and
+visual QA share the same protected-region overlap predicate (over 6pt vertically
+and over 5% of the smaller box's area).
+
 ## Usage
 
 ```bash

@@ -20,7 +20,6 @@ SUMMARY_MD = TMP_DIR / "parallel_translation_summary.md"
 sys.path.insert(0, str(TOOL_ROOT))
 import qa_semantic as qa  # noqa: E402
 import qa_visual  # noqa: E402
-import render_pdf  # noqa: E402
 import translation_batch  # noqa: E402
 import translate_pdf_via_codex as pipeline  # noqa: E402
 
@@ -385,25 +384,12 @@ def translate_one_pdf(pdf_path: Path, output_dir: Path, args) -> dict:
     )
     translations = run_parallel_translation(batches, translations, job_paths, args)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    render_result = None
-    if args.render_mode == "raster":
-        pipeline.render_pages(selected_pages, translations, args.dpi, job_paths)
-        render_pdf.write_raster_pdf(
-            output_path,
-            [pipeline.translated_page_path(idx, job_paths) for idx, _ in selected_pages],
-            pdf_size_pt,
-        )
-    else:
-        render_result = pipeline.write_vector_pdf(
-            pdf_path,
-            output_path,
-            selected_pages,
-            translations,
-            pdf_size_pt,
-            args.dpi,
-            job_paths=job_paths,
-        )
+    render_result = pipeline.render_translated_pdf(
+        pdf_path, output_path, selected_pages, translations, pdf_size_pt, args.dpi,
+        job_paths, render_mode=args.render_mode, model=args.model,
+        reasoning_effort=args.reasoning_effort, retries=args.retries,
+    )
+    translations = render_result.translations
 
     result = {
         "pdf": str(pdf_path),

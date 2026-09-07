@@ -124,20 +124,6 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertFalse(classify.is_formula_or_code_block(block_data["text"]))
         self.assertFalse(classify.should_preserve_as_image(block_data))
 
-    def test_large_unfilled_drawing_rect_is_not_preserved_as_border(self):
-        class Rect:
-            width = 120.0
-            height = 80.0
-
-        self.assertFalse(pdf.should_preserve_drawing_rect(Rect(), None))
-
-    def test_thin_drawing_rect_is_preserved_as_line(self):
-        class Rect:
-            width = 400.0
-            height = 0.5
-
-        self.assertTrue(pdf.should_preserve_drawing_rect(Rect(), None))
-
     def test_classifies_heading_body_page_number_and_reference(self):
         blocks = [
             block("p001b0001", 1, "1. INTRODUCTION", y0=80, y1=92),
@@ -719,7 +705,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
 
         self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0003"]])
 
-    def test_visual_translation_protected_ids_uses_final_visual_clip_padding(self):
+    def test_translation_ownership_uses_final_visual_clip_padding(self):
         blocks = [
             block("p001b0001", 1, "Figure 1", x0=100, y0=100, x1=140, y1=140),
             block("p001b0002", 1, "short protected-side label", x0=145, y0=110, x1=150, y1=120),
@@ -733,18 +719,19 @@ class RenderPlanClassificationTests(unittest.TestCase):
             {"p001b0001"},
         )
 
-        protected = pdf.visual_translation_protected_ids(
-            blocks,
-            classes,
-            visual_regions,
-            page_size=(400, 400),
-            page_num=1,
-        )
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=visual_regions),
+            patch.object(pdf, "classify_blocks", return_value=classes),
+        ):
+            result = pdf.build_translation_page_components(
+                1, blocks, page_size=(400, 400),
+            )
+        protected = {b["id"] for b in blocks if classes[b["id"]] == "body"} - set(result.translatable_ids)
 
         self.assertEqual(raw_covered, set())
         self.assertEqual(protected, {"p001b0002"})
 
-    def test_visual_translation_protected_ids_matches_formula_only_final_clip(self):
+    def test_translation_ownership_matches_formula_only_final_clip(self):
         blocks = [
             block("p001b0001", 1, "x + y = z", x0=100, y0=100, x1=160, y1=140),
             block("p001b0002", 1, "short protected formula-side text", x0=105, y0=140.25, x1=150, y1=140.45),
@@ -752,17 +739,18 @@ class RenderPlanClassificationTests(unittest.TestCase):
         visual_regions = [{"source_ids": ["p001b0001"], "bbox": (100.0, 100.0, 160.0, 140.0)}]
         classes = {"p001b0001": "formula_region", "p001b0002": "body"}
 
-        protected = pdf.visual_translation_protected_ids(
-            blocks,
-            classes,
-            visual_regions,
-            page_size=(400, 400),
-            page_num=1,
-        )
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=visual_regions),
+            patch.object(pdf, "classify_blocks", return_value=classes),
+        ):
+            result = pdf.build_translation_page_components(
+                1, blocks, page_size=(400, 400),
+            )
+        protected = {b["id"] for b in blocks if classes[b["id"]] == "body"} - set(result.translatable_ids)
 
         self.assertEqual(protected, {"p001b0002"})
 
-    def test_visual_translation_protected_ids_uses_formula_bbox_lines_final_clip(self):
+    def test_translation_ownership_uses_formula_bbox_lines_final_clip(self):
         blocks = [
             block("p001b0001", 1, "x + y = z", x0=100, y0=100, x1=160, y1=140),
             block("p001b0002", 1, "short text covered only by line-refined formula clip", x0=105, y0=140.25, x1=150, y1=140.45),
@@ -791,14 +779,14 @@ class RenderPlanClassificationTests(unittest.TestCase):
             final_clip.bbox,
             {"p001b0001"},
         )
-        protected = pdf.visual_translation_protected_ids(
-            blocks,
-            classes,
-            visual_regions,
-            page_size=(400, 400),
-            page_num=1,
-            bbox_lines=bbox_lines,
-        )
+        with (
+            patch.object(pdf, "build_visual_regions", return_value=visual_regions),
+            patch.object(pdf, "classify_blocks", return_value=classes),
+        ):
+            result = pdf.build_translation_page_components(
+                1, blocks, page_size=(400, 400), bbox_lines=bbox_lines,
+            )
+        protected = {b["id"] for b in blocks if classes[b["id"]] == "body"} - set(result.translatable_ids)
 
         self.assertEqual(covered_by_final_clip, {"p001b0002"})
         self.assertEqual(protected, covered_by_final_clip)
