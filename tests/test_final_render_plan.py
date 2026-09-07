@@ -13,6 +13,31 @@ import translate_pdf_via_codex as pipeline
 
 
 class FinalRenderPlanTests(unittest.TestCase):
+    def test_cached_boundary_repair_is_applied_once_before_vector_drawing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.pdf"
+            with pipeline.load_fitz().open() as doc:
+                doc.new_page(width=623, height=801)
+                doc.new_page(width=623, height=801)
+                doc.save(source)
+            selected = [(page, [{"id": f"p{page:03d}b0001", "page": page, "block_index": 1,
+                                 "text": text, "xMin": 130, "yMin": y, "xMax": 486, "yMax": y + 40}])
+                        for page, text, y in [(1, "The history appears sequential to each process, and", 590),
+                                              (2, "of operations. Equivalently, each operation appears instantaneously.", 50)]]
+            job = {"job_dir": root, "plans_dir": root / "plans", "boundary_repairs_path": root / "repairs.json"}
+            job["boundary_repairs_path"].write_text(json.dumps({"p001b0001->p002b0001": {
+                "translation": "完整句子。", "next_prefix_translation": "的操作。"}}))
+            translations = {"p001b0001": "未完成，并且", "p002b0001": "的操作。的操作。后续句子。"}
+            with patch("subprocess.run", side_effect=AssertionError("cached repair must not invoke Codex")):
+                result = pipeline.render_translated_pdf(
+                    source, root / "output.pdf", selected, translations, (623, 801), 72, job,
+                    render_mode="vector", model="test",
+                )
+            self.assertEqual(result.translations["p002b0001"], "的操作。后续句子。")
+            self.assertTrue(any("的操作。后续句子。" in item.text for item in result.plans[1].items))
+            self.assertEqual(translations["p002b0001"], "的操作。的操作。后续句子。")
+
     def test_subset_qa_checks_the_drawn_plan_with_each_pages_actual_dimensions(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -687,23 +687,6 @@ def build_page_components(
     return components
 
 
-def translation_items_from_components(blocks, components: list[PageComponent], *, classes: dict[str, str]) -> list[dict]:
-    block_by_id = {str(block["id"]): block for block in blocks}
-    items = []
-    for component in sorted(components, key=lambda item: (item.source_bbox[1], item.source_bbox[0], item.component_id)):
-        if component.component_kind != COMPONENT_KIND_TRANSLATED_TEXT:
-            continue
-        for source_id in component.source_ids:
-            block = block_by_id.get(str(source_id))
-            if block is None:
-                continue
-            text = str(block.get("text", ""))
-            if not text.strip():
-                continue
-            items.append({"id": str(source_id), "text": text})
-    return items
-
-
 def _item_attr(item, name, default=None):
     if isinstance(item, Mapping):
         return item.get(name, default)

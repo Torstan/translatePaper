@@ -9,7 +9,7 @@ from PIL import Image
 
 from classify import NORMAL_TRANSLATED_CLASSES, source_requires_chinese_translation
 from layout import document_style_hierarchy_errors, text_item_style_issues
-from render_plan import RenderItem
+from render_plan import RenderItem, bbox_significantly_overlaps_protected
 
 
 TOOL_ROOT = Path(__file__).resolve().parent
@@ -251,13 +251,6 @@ def _bbox_overlap_height(left, right) -> float:
 
 def _bbox_overlap_width(left, right) -> float:
     return max(0.0, min(left[2], right[2]) - max(left[0], right[0]))
-
-
-def _significant_protected_overlap(text_bbox, protected_bbox) -> bool:
-    if _bbox_overlap_height(text_bbox, protected_bbox) <= 6.0:
-        return False
-    overlap = _bbox_overlap_area(text_bbox, protected_bbox)
-    return overlap > min(_bbox_area(text_bbox), _bbox_area(protected_bbox)) * 0.05
 
 
 def _significant_text_overlap(left_bbox, right_bbox) -> bool:
@@ -885,7 +878,7 @@ def detect_geometry_issues(
         item_bbox = _bbox_tuple(_item_value(item, "bbox"))
         for protected_region in protected_regions:
             protected_bbox = protected_region["bbox"]
-            if not _significant_protected_overlap(item_bbox, protected_bbox):
+            if not bbox_significantly_overlaps_protected(item_bbox, protected_bbox):
                 continue
             protected_source_ids = protected_region["source_ids"]
             issues.append(

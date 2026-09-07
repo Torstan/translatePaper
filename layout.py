@@ -10,7 +10,7 @@ from render_plan import (
     PageRenderPlan,
     RenderItem,
     bbox_area,
-    item_significantly_overlaps_protected,
+    bbox_significantly_overlaps_protected,
     ledger_classifications,
     update_ledger_render_kind,
 )
@@ -54,7 +54,6 @@ MATH_VECTOR_FONT_PATHS = (
     "/usr/share/texmf/fonts/opentype/public/lm-math/latinmodern-math.otf",
 )
 VECTOR_BODY_COLOR = (0, 0, 0)
-VECTOR_ACCENT_COLOR = (0.58, 0.0, 0.06)
 BODY_TEXT_BOX_CUSHION_PT = 5.0
 BODY_FLOW_MIN_GAP_PT = 3.0
 BODY_FLOW_TARGET_GAP_PT = 8.0
@@ -1053,13 +1052,11 @@ def usable_text_segment(segment) -> bool:
 
 
 def text_box_overlaps_protected(box, protected_boxes) -> bool:
-    probe = RenderItem("translated_text", [], box)
-    return any(item_significantly_overlaps_protected(probe, protected) for protected in protected_boxes)
+    return any(bbox_significantly_overlaps_protected(box, protected.bbox) for protected in protected_boxes)
 
 
 def text_box_overlaps_text_anchor(box, anchors: list[RenderItem]) -> bool:
-    probe = RenderItem("translated_text", [], box)
-    return any(item_significantly_overlaps_protected(probe, anchor) for anchor in anchors)
+    return any(bbox_significantly_overlaps_protected(box, anchor.bbox) for anchor in anchors)
 
 
 def clamp_preserving_box_size(box, page_size) -> tuple[float, float, float, float] | None:
@@ -1114,8 +1111,7 @@ def text_segments_around_protected(box, protected_boxes) -> list[tuple[float, fl
     for protected in sorted(protected_boxes, key=lambda item: item.bbox[1]):
         next_segments = []
         for segment in segments:
-            probe = RenderItem("translated_text", [], segment)
-            if not item_significantly_overlaps_protected(probe, protected):
+            if not bbox_significantly_overlaps_protected(segment, protected.bbox):
                 next_segments.append(segment)
                 continue
             top = (segment[0], segment[1], segment[2], min(segment[3], protected.bbox[1] - TEXT_PROTECTED_GAP_PT))
@@ -1195,7 +1191,7 @@ def split_translated_text_around_protected(plan: PageRenderPlan, page_size=None,
         if item.kind != "translated_text":
             new_items.append(item)
             continue
-        if not any(item_significantly_overlaps_protected(item, protected_item) for protected_item in protected):
+        if not any(bbox_significantly_overlaps_protected(item.bbox, protected_item.bbox) for protected_item in protected):
             new_items.append(item)
             continue
         segments = []

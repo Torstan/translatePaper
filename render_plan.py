@@ -208,11 +208,12 @@ def bbox_overlap_height(a, b) -> float:
     return max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
 
 
-def item_significantly_overlaps_protected(item: RenderItem, protected_item: RenderItem) -> bool:
-    if bbox_overlap_height(item.bbox, protected_item.bbox) <= 6.0:
+def bbox_significantly_overlaps_protected(box, protected_box) -> bool:
+    """Ignore edge contact up to 6pt or 5% of the smaller box in layout and QA."""
+    if bbox_overlap_height(box, protected_box) <= 6.0:
         return False
-    overlap = bbox_overlap_area(item.bbox, protected_item.bbox)
-    return overlap > min(bbox_area(item.bbox), bbox_area(protected_item.bbox)) * 0.05
+    overlap = bbox_overlap_area(box, protected_box)
+    return overlap > min(bbox_area(box), bbox_area(protected_box)) * 0.05
 
 
 def validate_plan_layout(plan: PageRenderPlan, page_size) -> list[str]:
@@ -226,7 +227,7 @@ def validate_plan_layout(plan: PageRenderPlan, page_size) -> list[str]:
         if item.kind != "translated_text":
             continue
         for protected_item in protected:
-            if item_significantly_overlaps_protected(item, protected_item):
+            if bbox_significantly_overlaps_protected(item.bbox, protected_item.bbox):
                 errors.append(f"page {plan.page_num} text {item.source_ids} overlaps protected {protected_item.source_ids}")
     ownership_result = ownership.validate_render_layer_exclusivity(plan, plan.components)
     errors.extend(issue.message for issue in ownership_result.issues)

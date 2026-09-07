@@ -109,7 +109,7 @@ from render_plan import (
     bbox_area,
     bbox_overlap_area,
     bbox_overlap_height,
-    item_significantly_overlaps_protected,
+    bbox_significantly_overlaps_protected,
     ledger_classifications,
     try_write_render_plan_artifact,
     update_ledger_render_kind,
@@ -682,42 +682,6 @@ def load_or_build_source_pages(
     pages = [blocks for _, blocks in mark_running_headers(list(enumerate(pages, 1)), bbox_lines_by_page(job_paths))]
     save_source_pages(pages, job_paths)
     return pages
-
-
-def visual_translation_protected_ids(
-    page,
-    classes,
-    visual_regions,
-    *,
-    page_size=None,
-    page_num: int = 1,
-    source_image_path: Path | None = None,
-    bbox_lines=None,
-    translations=None,
-) -> set[str]:
-    visual_ids = {source_id for region in visual_regions for source_id in region["source_ids"]}
-    protected_ids = set()
-    for region in visual_regions:
-        region_bbox, _mixed_body_item = final_visual_region_bbox(
-            page,
-            classes,
-            region,
-            page_size=page_size,
-            page_num=page_num,
-            source_image_path=source_image_path,
-            bbox_lines=bbox_lines,
-            translations=translations,
-            visual_ids=visual_ids,
-        )
-        protected_ids.update(
-            nontranslated_blocks_covered_by_visual_region(
-                page,
-                classes,
-                region_bbox,
-                visual_ids,
-            )
-        )
-    return protected_ids
 
 
 def visual_region_has_code_comment_context(region, block_by_id: dict[str, dict]) -> bool:
@@ -1818,6 +1782,7 @@ def translate_boundary_sentence_repairs(
     *,
     model: str,
     reasoning_effort: str = "low",
+    retries: int = 3,
 ) -> dict:
     if not candidates:
         return {}
@@ -1841,7 +1806,7 @@ def translate_boundary_sentence_repairs(
         validate=lambda payload: validate_boundary_repair_payload(
             payload, {candidate["key"] for candidate in candidates},
         ),
-        model=model, reasoning_effort=reasoning_effort,
+        model=model, reasoning_effort=reasoning_effort, retries=retries,
     )
 
 
@@ -1875,6 +1840,7 @@ def postprocess_cross_page_sentence_splits(
     job_paths=None,
     model: str | None = None,
     reasoning_effort: str = "low",
+    retries: int = 3,
 ) -> dict:
     repaired_translations = dict(translations)
     lines_by_page = bbox_lines_by_page(job_paths) if job_paths else {}
@@ -1892,6 +1858,7 @@ def postprocess_cross_page_sentence_splits(
             job_paths,
             model=model,
             reasoning_effort=reasoning_effort,
+            retries=retries,
         )
         repairs.update(generated)
         save_boundary_repairs(job_paths, repairs)
@@ -2974,29 +2941,13 @@ def coalesce_paragraph_boxes(boxes: list[tuple[float, float, float, float]], tar
     return boxes
 
 
-def box_area_value(box) -> float:
-    return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
-
-
-def box_significantly_overlaps_protected(box, protected_box) -> bool:
-    x0 = max(box[0], protected_box[0])
-    y0 = max(box[1], protected_box[1])
-    x1 = min(box[2], protected_box[2])
-    y1 = min(box[3], protected_box[3])
-    if x1 <= x0 or y1 <= y0:
-        return False
-    overlap_height = y1 - y0
-    overlap_area = (x1 - x0) * overlap_height
-    return overlap_height > 6.0 and overlap_area > min(box_area_value(box), box_area_value(protected_box)) * 0.05
-
-
 def paragraph_boxes_overlap_protected(
     boxes: list[tuple[float, float, float, float]],
     protected_boxes: list[tuple[float, float, float, float]] | None,
 ) -> bool:
     return bool(
         protected_boxes
-        and any(box_significantly_overlaps_protected(box, protected) for box in boxes for protected in protected_boxes)
+        and any(bbox_significantly_overlaps_protected(box, protected) for box in boxes for protected in protected_boxes)
     )
 
 
@@ -4639,10 +4590,9 @@ def fit_body_flow_text_items(plan: PageRenderPlan, fitz=None) -> None:
 
 
 def diagnose_source_layout(selected_pages, translations, page_size, job_paths=None) -> list[str]:
-    """Plan source blocks for standalone/raster diagnostics, not a drawn-vector QA."""
+    """Diagnose source layout with final translations, without repairing them again."""
     plans = []
     fitz = load_fitz()
-    translations = postprocess_cross_page_sentence_splits(selected_pages, translations, job_paths=job_paths)
     lines_by_page = bbox_lines_by_page(job_paths)
     in_reference_section = False
     for page_num, blocks in selected_pages:
@@ -4762,7 +4712,7 @@ def merge_contained_text_fragments(plan: PageRenderPlan) -> None:
                 continue
             if not (
                 bbox_contains_point(large.bbox, bbox_center(small.bbox))
-                or item_significantly_overlaps_protected(small, large)
+                or bbox_significantly_overlaps_protected(small.bbox, large.bbox)
             ):
                 continue
             relative_y = (bbox_center(small.bbox)[1] - large.bbox[1]) / max(1.0, large_height)
@@ -4871,8 +4821,7 @@ def merge_adjacent_body_text_flows(plan: PageRenderPlan) -> None:
     for group in groups:
         ordered_items = [item for _idx, item in group]
         candidate_bbox = bbox_union([item.bbox for item in ordered_items])
-        candidate = RenderItem("translated_text", [], candidate_bbox)
-        if any(item_significantly_overlaps_protected(candidate, protected_item) for protected_item in protected):
+        if any(bbox_significantly_overlaps_protected(candidate_bbox, protected_item.bbox) for protected_item in protected):
             continue
         first_idx = group[0][0]
         source_ids = [source_id for item in ordered_items for source_id in item.source_ids]
@@ -5026,11 +4975,6 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
     src_doc = fitz.open(pdf_path)
     out_doc = fitz.open()
     selected_pages = mark_running_headers(selected_pages, bbox_lines_by_page(job_paths))
-    translations = postprocess_cross_page_sentence_splits(
-        selected_pages,
-        translations,
-        job_paths=job_paths,
-    )
     lines_by_page = bbox_lines_by_page(job_paths)
     total_pages = len(selected_pages)
     in_reference_section = False
@@ -5106,6 +5050,27 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
     return DocumentRenderResult(plans, translations)
 
 
+def render_translated_pdf(
+    pdf_path: Path, pdf_output: Path, selected_pages, translations, page_size,
+    dpi: int, job_paths, *, render_mode: str, model: str,
+    reasoning_effort: str = "low", retries: int = 3,
+) -> DocumentRenderResult:
+    """Repair boundaries once before drawing; return the translations used by QA."""
+    translations = postprocess_cross_page_sentence_splits(
+        selected_pages, translations, job_paths=job_paths, model=model,
+        reasoning_effort=reasoning_effort, retries=retries,
+    )
+    if render_mode == "raster":
+        render_pages(selected_pages, translations, dpi, job_paths)
+        render_pdf.write_raster_pdf(
+            pdf_output, [translated_page_path(idx, job_paths) for idx, _ in selected_pages], page_size,
+        )
+        return DocumentRenderResult([], translations)
+    return write_vector_pdf(
+        pdf_path, pdf_output, selected_pages, translations, page_size, dpi, job_paths=job_paths,
+    )
+
+
 def get_pdf_page_size(pdf_path: Path):
     proc = run(["pdfinfo", str(pdf_path)], check=True)
     match = re.search(r"Page size:\s*([0-9.]+)\s+x\s+([0-9.]+)\s+pts", proc.stdout)
@@ -5162,30 +5127,11 @@ def main():
         model=args.model,
         reasoning_effort=args.reasoning_effort,
     )
-    translations = postprocess_cross_page_sentence_splits(
-        selected_pages,
-        translations,
-        job_paths=job_paths,
-        model=args.model,
+    render_translated_pdf(
+        pdf_path, Path(args.pdf_output), selected_pages, translations, pdf_size_pt,
+        args.dpi, job_paths, render_mode=args.render_mode, model=args.model,
         reasoning_effort=args.reasoning_effort,
     )
-    if args.render_mode == "raster":
-        render_pages(selected_pages, translations, args.dpi, job_paths)
-        render_pdf.write_raster_pdf(
-            Path(args.pdf_output),
-            [translated_page_path(idx, job_paths) for idx, _ in selected_pages],
-            pdf_size_pt,
-        )
-    else:
-        write_vector_pdf(
-            pdf_path,
-            Path(args.pdf_output),
-            selected_pages,
-            translations,
-            pdf_size_pt,
-            args.dpi,
-            job_paths=job_paths,
-        )
 
 
 if __name__ == "__main__":
