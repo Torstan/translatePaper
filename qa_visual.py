@@ -1163,23 +1163,23 @@ def detect_body_flow_whitespace_issues(
 def render_pdf_pages_to_png(
     pdf_path: str | Path,
     output_dir: str | Path,
-    pages,
+    page_numbers: Mapping[int, int],
     *,
     dpi: int = 150,
 ) -> list[Path]:
     fitz = load_fitz()
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    requested_pages = sorted({int(page_num) for page_num in pages})
+    requested_pages = sorted(page_numbers.items())
 
     rendered_paths = []
     doc = fitz.open(pdf_path)
     try:
         matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
-        for page_num in requested_pages:
-            if page_num < 1 or page_num > doc.page_count:
-                continue
-            page = doc.load_page(page_num - 1)
+        for page_num, output_page_num in requested_pages:
+            if output_page_num < 1 or output_page_num > doc.page_count:
+                raise ValueError(f"source page {page_num} maps to missing output page {output_page_num}")
+            page = doc.load_page(output_page_num - 1)
             pix = page.get_pixmap(matrix=matrix, alpha=False)
             image_path = output_path / f"page-{page_num:03d}.png"
             pix.save(image_path)
@@ -1352,6 +1352,7 @@ def generate_visual_qa_report(
     plan_artifact_paths,
     *,
     output_dir: str | Path,
+    plans=None,
     translated_pdf_path: str | Path | None = None,
     source_png_paths: Mapping[int | str, str | Path] | None = None,
     source_blocks_by_page: Mapping[int | str, list[dict]] | None = None,
@@ -1361,14 +1362,18 @@ def generate_visual_qa_report(
     dpi: int = 150,
 ) -> VisualQaReport:
     normalized_plan_paths = sorted(Path(path) for path in plan_artifact_paths)
-    loaded_plans = [_load_plan_artifact(path) for path in normalized_plan_paths]
-    checked_pages = sorted({int(plan["page_num"]) for plan in loaded_plans})
+    loaded_plans = (
+        [_load_plan_artifact(path) for path in normalized_plan_paths]
+        if plans is None else list(plans)
+    )
+    checked_pages = sorted({_plan_page_num(plan) for plan in loaded_plans})
     png_paths = {}
     if translated_pdf_path is not None:
         rendered_paths = render_pdf_pages_to_png(
             translated_pdf_path,
             Path(output_dir) / "rendered_png",
-            checked_pages,
+            {_plan_page_num(plan): int(_item_value(plan, "output_page_num") or _plan_page_num(plan))
+             for plan in loaded_plans},
             dpi=dpi,
         )
         for path in rendered_paths:
@@ -1385,13 +1390,14 @@ def generate_visual_qa_report(
         for page_num, blocks in (source_blocks_by_page or {}).items()
     }
     for plan in loaded_plans:
-        page_num = int(plan["page_num"])
+        page_num = _plan_page_num(plan)
         report_issues.extend(detect_ownership_issues(plan))
 
-    if page_size is not None:
-        for plan in loaded_plans:
-            page_num = int(plan["page_num"])
-            report_issues.extend(detect_geometry_issues(plan, page_size))
+    for plan in loaded_plans:
+        plan_page_size = _item_value(plan, "page_size") or page_size
+        if plan_page_size is not None:
+            page_num = _plan_page_num(plan)
+            report_issues.extend(detect_geometry_issues(plan, plan_page_size))
             report_issues.extend(detect_style_issues(plan))
             report_issues.extend(
                 detect_body_flow_whitespace_issues(plan, strict=strict_body_flow)
@@ -1400,13 +1406,13 @@ def generate_visual_qa_report(
             if source_png is None:
                 continue
             report_issues.extend(
-                detect_blank_image_clips(plan, source_png, page_size)
+                detect_blank_image_clips(plan, source_png, plan_page_size)
             )
             report_issues.extend(
                 detect_image_clip_boundary_issues(
                     plan,
                     source_png,
-                    page_size,
+                    plan_page_size,
                     source_blocks=normalized_source_blocks.get(page_num, []),
                 )
             )

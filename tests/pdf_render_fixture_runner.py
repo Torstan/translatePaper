@@ -438,7 +438,7 @@ def _assert_max_visible_gap(fixture: RenderPlanFixture, plan_json: dict, asserti
 
 
 def _ownership_components(plan_json: dict) -> list[dict]:
-    return list(plan_json.get("components") or plan_json.get("ownership_components") or [])
+    return list(plan_json["components"])
 
 
 def _bbox_area(bbox) -> float:

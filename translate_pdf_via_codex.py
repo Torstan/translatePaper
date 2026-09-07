@@ -11,7 +11,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import textwrap
 import time
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -22,6 +21,9 @@ from statistics import median
 from PIL import Image, ImageDraw, ImageFont
 
 import ownership
+import render_pdf
+import translation_batch
+from translation_batch import normalize_translation
 from classify import (
     ENGLISH_FUNCTION_WORDS,
     NORMAL_TRANSLATED_CLASSES,
@@ -179,6 +181,7 @@ from layout import (
 from render_plan import (
     ALLOWED_SKIP_CLASSES,
     CoverageEntry,
+    DocumentRenderResult,
     PageRenderPlan,
     RenderItem,
     bbox_area,
@@ -331,8 +334,6 @@ def build_job_paths(pdf_path: Path, job_name: str | None):
         "boundary_repairs_path": job_dir / "boundary_sentence_repairs.json",
         "boundary_schema_path": job_dir / "boundary_sentence_schema.json",
         "translations_path": job_dir / "translations.json",
-        "tex_path": job_dir / "claudeCodeChinese.tex",
-        "pdf_path": job_dir / "claudeCodeChinese.pdf",
     }
 
 
@@ -1190,70 +1191,8 @@ def final_visual_ownership_regions(
     return merged_regions
 
 
-def build_page_components_compat(
-    page_num: int,
-    page,
-    classes: dict[str, str],
-    *,
-    visual_regions: list[dict],
-    duplicate_ids: set[str],
-    skip_ids: set[str],
-) -> list[ownership.PageComponent]:
-    try:
-        return ownership.build_page_components(
-            page_num=page_num,
-            blocks=page,
-            classes=classes,
-            visual_regions=visual_regions,
-            visual_covered_text_ids=set(),
-            duplicate_ids=duplicate_ids,
-            skip_ids=skip_ids,
-        )
-    except TypeError:
-        return ownership.build_page_components(
-            page_num,
-            page,
-            classes,
-            visual_regions=visual_regions,
-            duplicate_ids=duplicate_ids,
-            skip_ids=skip_ids,
-        )
-
-
-def validate_ownership_compat(page_num: int, page, components) -> ownership.OwnershipValidationResult:
-    try:
-        return ownership.validate_ownership(page_num=page_num, blocks=page, components=components)
-    except TypeError:
-        try:
-            return ownership.validate_ownership(page_num, page, components)
-        except TypeError:
-            return ownership.validate_ownership(page, components)
-
-
-def components_by_source_id_compat(components) -> dict[str, list[ownership.PageComponent]]:
-    helper = getattr(ownership, "components_by_source_id", None)
-    if helper is not None:
-        return helper(components)
-    result: dict[str, list[ownership.PageComponent]] = {}
-    for component in components:
-        for source_id in component.source_ids:
-            result.setdefault(str(source_id), []).append(component)
-    return result
-
-
-def component_by_source_id_compat(components) -> dict[str, ownership.PageComponent]:
-    helper = getattr(ownership, "component_by_source_id", None)
-    if helper is not None:
-        return helper(components)
-    return {
-        source_id: source_components[-1]
-        for source_id, source_components in components_by_source_id_compat(components).items()
-        if source_components
-    }
-
-
 def component_has_reason(component, reason: str) -> bool:
-    return reason in {str(code) for code in getattr(component, "reason_codes", [])}
+    return reason in {str(code) for code in component.reason_codes}
 
 
 def block_has_valid_chinese_translation(block, translations) -> bool:
@@ -1289,7 +1228,7 @@ def mixed_visual_body_components(components) -> list[ownership.PageComponent]:
 def merge_ownership_validation_results(*results) -> ownership.OwnershipValidationResult:
     issues = []
     for result in results:
-        issues.extend(list(getattr(result, "issues", []) or []))
+        issues.extend(result.issues)
     return ownership.OwnershipValidationResult(issues=issues)
 
 
@@ -1385,7 +1324,7 @@ def build_translation_page_components(
         if should_preserve_first_page_metadata_as_image(block)
         or should_preserve_as_image(block)
     }
-    components = build_page_components_compat(
+    components = ownership.build_page_components(
         page_num,
         page,
         classes,
@@ -1393,7 +1332,7 @@ def build_translation_page_components(
         duplicate_ids=duplicate_ids,
         skip_ids=skip_ids,
     )
-    validation = validate_ownership_compat(page_num, page, components)
+    validation = ownership.validate_ownership(page_num, page, components)
     translatable_ids = []
     for component in sorted(components, key=lambda item: (item.source_bbox[1], item.source_bbox[0], item.component_id)):
         if component.component_kind != ownership.COMPONENT_KIND_TRANSLATED_TEXT:
@@ -1477,74 +1416,6 @@ def build_batches(pages, max_chars: int, *, page_size=None, job_paths=None, page
     return batches
 
 
-def write_schema(path: Path):
-    schema = {
-        "type": "object",
-        "properties": {
-            "items": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string"},
-                        "translation": {"type": "string"},
-                    },
-                    "required": ["id", "translation"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-        "required": ["items"],
-        "additionalProperties": False,
-    }
-    path.write_text(json.dumps(schema, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def make_prompt(batch):
-    glossary = textwrap.dedent(
-        """
-        你在翻译一篇计算机领域的学术论文，主题可能涉及 AI 智能体、工具使用、语言模型、推理、系统架构或对齐训练。
-        请将每个 text 字段翻译为严谨、流畅、自然的简体中文。
-
-        强制要求：
-        1. 忠实原意，不省略信息，不总结，不扩写。
-        2. 保持学术写作风格，术语统一。
-        3. 保留以下内容原样或仅在必要时做最小调整：
-           - URL、邮箱、文件路径、命令行、代码标识、模型名、版本号
-           - 作者姓名、机构名、系统名，如 Claude Code、OpenClaw、Anthropic、MCP
-           - 引用格式与年份，如 (Chen et al., 2021)
-        4. 对纯数字、页码或明显无需翻译的标识，原样返回。
-        5. 以完整句子为最小翻译单元。遇到明显跨块或跨页的断句时，不要把残缺片段硬补成新意思，也不要重复相邻片段；后处理会用跨页上下文修复完整句。
-        6. 输出必须是 JSON，对象格式固定为 {"items":[{"id":"...","translation":"..."}]}。
-        7. 不要输出解释，不要使用 Markdown 代码块。
-
-        术语约定：
-        - agentic -> 代理式
-        - agent system -> 智能体系统
-        - coding agent -> 编码智能体
-        - agentic loop -> 代理循环
-        - permission system -> 权限系统
-        - sandboxing -> 沙箱化
-        - context window -> 上下文窗口
-        - compaction -> 压缩
-        - subagent -> 子代理
-        - hook -> 钩子
-        - plugin -> 插件
-        - skill -> 技能
-        - deny-first -> 默认拒绝
-        - append-only -> 仅追加
-        - trust spectrum -> 信任梯度
-        - execution harness / harness -> 执行框架
-
-        如果某个术语约定不适用于当前论文语境，请以原文上下文为准，选择更准确的译法。
-
-        待翻译条目如下：
-        """
-    ).strip()
-    payload = {"items": batch}
-    return glossary + "\n" + json.dumps(payload, ensure_ascii=False, indent=2)
-
-
 def translate_batches(batches, job_paths, *, model: str = "gpt-5.5", reasoning_effort: str = "low"):
     schema_path = job_paths["schema_path"]
     translations_path = job_paths["translations_path"]
@@ -1563,77 +1434,21 @@ def translate_batches(batches, job_paths, *, model: str = "gpt-5.5", reasoning_e
         todo = [item for item in batch if item["id"] not in translations]
         if not todo:
             continue
-        write_schema(schema_path)
-
-        prompt = make_prompt(todo)
-        prompt_path = job_paths["job_dir"] / f"batch-{idx:02d}.prompt.txt"
-        out_path = job_paths["job_dir"] / f"batch-{idx:02d}.out.json"
-        log_path = job_paths["job_dir"] / f"batch-{idx:02d}.log.txt"
-        prompt_path.write_text(prompt, encoding="utf-8")
-
-        success = False
-        for attempt in range(1, 4):
-            proc = run(
-                [
-                    "codex",
-                    "exec",
-                    "--skip-git-repo-check",
-                    "-m",
-                    model,
-                    "-c",
-                    f"model_reasoning_effort='{reasoning_effort}'",
-                    "--disable",
-                    "plugins",
-                    "--disable",
-                    "shell_snapshot",
-                    "--sandbox",
-                    "workspace-write",
-                    "--ephemeral",
-                    "--output-schema",
-                    str(schema_path),
-                    "-o",
-                    str(out_path),
-                    "-",
-                ],
-                input_text=prompt,
-                check=False,
-            )
-            log_path.write_text(proc.stdout + "\n\nSTDERR\n" + proc.stderr, encoding="utf-8")
-            if proc.returncode == 0 and out_path.exists():
-                try:
-                    payload = json.loads(out_path.read_text(encoding="utf-8"))
-                    items = payload["items"]
-                    seen = {item["id"] for item in items}
-                    expected = {item["id"] for item in todo}
-                    if seen != expected:
-                        missing = sorted(expected - seen)
-                        extra = sorted(seen - expected)
-                        raise ValueError(f"mismatched ids, missing={missing[:5]}, extra={extra[:5]}")
-                    for item in items:
-                        translations[item["id"]] = normalize_translation(item["translation"])
-                    translations_path.write_text(
-                        json.dumps(translations, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-                    success = True
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    log_path.write_text(
-                        log_path.read_text(encoding="utf-8")
-                        + f"\n\nPARSE ERROR\n{exc}\n",
-                        encoding="utf-8",
-                    )
-            time.sleep(3 * attempt)
-        if not success:
-            raise RuntimeError(f"translation batch {idx} failed, see {log_path}")
+        translation_batch.write_schema(schema_path)
+        result = translation_batch.execute_translation_batch(
+            todo,
+            job_paths["job_dir"],
+            f"batch-{idx:02d}",
+            schema_path,
+            model=model,
+            reasoning_effort=reasoning_effort,
+        )
+        translations.update(result)
+        translations_path.write_text(
+            json.dumps(translations, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
 
     return translations
-
-
-def normalize_translation(text: str) -> str:
-    text = text.strip()
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text
 
 
 TERMINAL_PUNCTUATION = set("。！？；：.!?;:）】》”’」』")
@@ -4182,7 +3997,7 @@ def build_page_render_plan(
     source_image_path: Path | None = None,
     force_reference: bool = False,
 ) -> PageRenderPlan:
-    plan = PageRenderPlan(page_num=page_num)
+    plan = PageRenderPlan(page_num=page_num, page_size=tuple(page_size))
     if not blocks and source_image_path:
         full_page_bbox = (0.0, 0.0, float(page_size[0]), float(page_size[1]))
         dark_pixels = source_image_dark_pixel_count(source_image_path, full_page_bbox, page_size)
@@ -4213,8 +4028,8 @@ def build_page_render_plan(
     classes = dict(ownership_result.classes)
     block_by_id = {block["id"]: block for block in blocks}
     visual_ids = {source_id for region in visual_regions for source_id in region["source_ids"]}
-    components_by_source_id = components_by_source_id_compat(plan.components)
-    component_by_source_id = component_by_source_id_compat(plan.components)
+    components_by_source_id = ownership.components_by_source_id(plan.components)
+    component_by_source_id = ownership.component_by_source_id(plan.components)
     visual_component_ids = visual_source_ids_from_components(plan.components)
     heading_pairs = standalone_heading_number_pairs(blocks, classes)
     for number_block, title_block, _number_text in heading_pairs:
@@ -4635,26 +4450,39 @@ def build_page_render_plan(
         plan.items.append(RenderItem("original_image_clip", [block["id"]], bbox, fallback_reason="unknown_classification"))
         plan.protected_boxes.append(bbox)
         plan.ledger.append(CoverageEntry(block["id"], classification, "original_image_clip", True, "unknown_classification"))
+    arrange_page_render_items(plan, blocks, page_size, bbox_lines or [])
+    annotate_plan_with_component_metadata(plan, components_by_source_id)
+    layer_validation = ownership.validate_render_layer_exclusivity(plan, plan.components)
+    if layer_validation.issues:
+        plan.ownership_validation = merge_ownership_validation_results(plan.ownership_validation, layer_validation)
+    return plan
+
+
+def arrange_page_render_items(plan: PageRenderPlan, blocks, page_size, bbox_lines) -> None:
+    """Resolve source fragments, place body flows, then protect explicit fallbacks.
+
+    This stage owns the repair order. Keep the second balance: its recomputed
+    lane bounds can move text after the first pass; one pass changes fixtures.
+    Final font fitting happens once at the drawing boundary, after ownership
+    metadata has been attached to every resulting item.
+    """
+    # Splitting a visual intersection can expose smaller contained fragments.
     merge_contained_text_fragments(plan)
     split_translated_text_around_protected(plan, page_size)
     merge_contained_text_fragments(plan)
     repair_numbered_enumeration_flow(plan)
     merge_adjacent_body_text_flows(plan)
-    drop_redundant_short_body_fragments(plan, blocks, bbox_lines or [])
+    drop_redundant_short_body_fragments(plan, blocks, bbox_lines)
+    # Geometry changes can make an enumeration/short-fragment neighbor eligible.
+    # Resolve those neighbors before the second balance; it is not a fixed-point loop.
     expand_text_boxes_to_fit(plan, page_size)
     rebalance_body_text_flows(plan, page_size)
     repair_numbered_enumeration_flow(plan)
-    drop_redundant_short_body_fragments(plan, blocks, bbox_lines or [])
+    drop_redundant_short_body_fragments(plan, blocks, bbox_lines)
     rebalance_body_text_flows(plan, page_size)
+    # A new nonprose image fallback becomes an obstacle for translated text.
     convert_unfit_nonprose_text_to_image_clips(plan, blocks)
     split_translated_text_around_protected(plan, page_size)
-    annotate_plan_with_component_metadata(plan, components_by_source_id)
-    validate_render_layer_exclusivity = getattr(ownership, "validate_render_layer_exclusivity", None)
-    if validate_render_layer_exclusivity is not None:
-        layer_validation = validate_render_layer_exclusivity(plan, plan.components)
-        if getattr(layer_validation, "issues", None):
-            plan.ownership_validation = merge_ownership_validation_results(plan.ownership_validation, layer_validation)
-    return plan
 
 
 def nontrivial_block(block) -> bool:
@@ -4899,8 +4727,8 @@ def validate_plan_image_clip_content(
 def validate_plan_quality(page_num: int, blocks, translations, plan: PageRenderPlan) -> list[str]:
     ownership_errors = [
         issue.message
-        for issue in getattr(plan.ownership_validation, "issues", [])
-        if getattr(issue, "severity", "error") == "error"
+        for issue in plan.ownership_validation.issues
+        if issue.severity == "error"
     ]
     return (
         validate_plan_translation_quality(page_num, blocks, translations, plan)
@@ -4995,19 +4823,6 @@ def dense_visual_body_row_can_use_compact_font(
     return required > (bottom_limit - top_limit) + TEXT_FIT_EPSILON_PT
 
 
-def compact_font_size_for_dense_body_row(item: RenderItem, fitz) -> float | None:
-    style = text_style("body")
-    width = max(1.0, item.bbox[2] - item.bbox[0])
-    height = item.bbox[3] - item.bbox[1]
-    size = min(item.font_size or style.font_size, style.font_size)
-    while size >= SHRINK_FIT_MIN_FONT_SIZE - TEXT_FIT_EPSILON_PT:
-        candidate = max(SHRINK_FIT_MIN_FONT_SIZE, round(size, 2))
-        if text_box_fit_plan(fitz, item.text, width, height, style, font_size=candidate) is not None:
-            return candidate
-        size -= DENSE_VISUAL_BODY_ROW_FONT_STEP_PT
-    return None
-
-
 def fit_dense_visual_body_rows(plan: PageRenderPlan, page_size, fitz=None) -> None:
     """Use explicit compact body text only for dense rows pinned between visual clips."""
     if fitz is None:
@@ -5015,7 +4830,7 @@ def fit_dense_visual_body_rows(plan: PageRenderPlan, page_size, fitz=None) -> No
     for item in plan.items:
         if not dense_visual_body_row_can_use_compact_font(item, plan, page_size, fitz):
             continue
-        compact_font_size = compact_font_size_for_dense_body_row(item, fitz)
+        compact_font_size = compact_font_size_for_text_item(item, fitz, max_font_size=BODY_FONT_SIZE)
         if compact_font_size is None:
             continue
         item.font_size = compact_font_size
@@ -5023,11 +4838,13 @@ def fit_dense_visual_body_rows(plan: PageRenderPlan, page_size, fitz=None) -> No
         update_ledger_render_kind(plan, item.source_ids, item.kind, DENSE_VISUAL_BODY_ROW_FALLBACK)
 
 
-def compact_font_size_for_text_item(item: RenderItem, fitz) -> float | None:
+def compact_font_size_for_text_item(item: RenderItem, fitz, *, max_font_size: float | None = None) -> float | None:
     style = text_style(item.style_name or "body")
     width = max(1.0, item.bbox[2] - item.bbox[0])
     height = item.bbox[3] - item.bbox[1]
     size = item.font_size or style.font_size
+    if max_font_size is not None:
+        size = min(size, max_font_size)
     while size >= SHRINK_FIT_MIN_FONT_SIZE - TEXT_FIT_EPSILON_PT:
         candidate = max(SHRINK_FIT_MIN_FONT_SIZE, round(size, 2))
         if text_box_fit_plan(fitz, item.text, width, height, style, font_size=candidate) is not None:
@@ -5057,39 +4874,43 @@ def fit_body_flow_text_items(plan: PageRenderPlan, fitz=None) -> None:
         update_ledger_render_kind(plan, item.source_ids, item.kind, BODY_FLOW_COMPACT_FALLBACK)
 
 
-def validate_document_quality(selected_pages, translations, page_size, job_paths=None) -> list[str]:
-    errors = []
+def diagnose_source_layout(selected_pages, translations, page_size, job_paths=None) -> list[str]:
+    """Plan source blocks for standalone/raster diagnostics, not a drawn-vector QA."""
     plans = []
     fitz = load_fitz()
-    translations = postprocess_cross_page_sentence_splits(
-        selected_pages,
-        translations,
-        job_paths=job_paths,
-    )
+    translations = postprocess_cross_page_sentence_splits(selected_pages, translations, job_paths=job_paths)
     lines_by_page = bbox_lines_by_page(job_paths)
     in_reference_section = False
     for page_num, blocks in selected_pages:
-        source_image_path = source_page_image_path(job_paths, page_num)
         plan = build_page_render_plan(
-            page_num,
-            blocks,
-            translations,
-            page_size,
+            page_num, blocks, translations, page_size,
             bbox_lines=lines_by_page.get(page_num),
-            source_image_path=source_image_path,
+            source_image_path=source_page_image_path(job_paths, page_num),
             force_reference=in_reference_section,
         )
         normalize_vector_text_layout(plan, page_size, fitz=fitz)
-        plan_has_reference = any(entry.classification == "reference" for entry in plan.ledger)
-        if plan_has_reference:
-            in_reference_section = True
-        elif in_reference_section:
-            in_reference_section = False
+        in_reference_section = any(entry.classification == "reference" for entry in plan.ledger)
         plans.append(plan)
+    return validate_document_quality(selected_pages, translations, plans, job_paths=job_paths)
+
+
+def validate_document_quality(selected_pages, translations, plans: list[PageRenderPlan], job_paths=None) -> list[str]:
+    """Inspect final plans without rebuilding, repairing text or changing geometry."""
+    blocks_by_page = dict(selected_pages)
+    if len(plans) != len(blocks_by_page) or {plan.page_num for plan in plans} != set(blocks_by_page):
+        raise ValueError("final plans do not match selected source pages")
+    errors = []
+    fitz = load_fitz()
+    for plan in plans:
+        if plan.page_size is None:
+            raise ValueError(f"final plan for page {plan.page_num} has no page size")
+        page_num = plan.page_num
+        blocks = blocks_by_page[page_num]
+        source_image = source_page_image_path(job_paths, page_num)
         errors.extend(validate_plan_coverage(page_num, blocks, plan))
-        errors.extend(validate_plan_layout(plan, page_size))
+        errors.extend(validate_plan_layout(plan, plan.page_size))
         errors.extend(validate_plan_quality(page_num, blocks, translations, plan))
-        errors.extend(validate_plan_image_clip_content(plan, source_image_path, page_size))
+        errors.extend(validate_plan_image_clip_content(plan, source_image, plan.page_size))
         errors.extend(validate_plan_text_fit(plan, fitz))
     errors.extend(validate_footer_consistency(plans))
     return errors
@@ -5436,7 +5257,7 @@ def convert_unfit_nonprose_text_to_image_clips(plan: PageRenderPlan, blocks, fit
     plan.items = new_items
 
 
-def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translations, pdf_size_pt, dpi: int, job_paths=None):
+def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translations, pdf_size_pt, dpi: int, job_paths=None) -> DocumentRenderResult:
     fitz = load_fitz()
     src_doc = fitz.open(pdf_path)
     out_doc = fitz.open()
@@ -5448,6 +5269,7 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
     lines_by_page = bbox_lines_by_page(job_paths)
     total_pages = len(selected_pages)
     in_reference_section = False
+    plans = []
     for output_idx, (page_num, blocks) in enumerate(selected_pages, start=1):
         if output_idx == 1 or output_idx % 50 == 0 or output_idx == total_pages:
             print(
@@ -5474,7 +5296,10 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
             source_image_path=source_image,
             force_reference=in_reference_section,
         )
-        normalize_vector_text_layout(plan, (page_rect.width, page_rect.height), fitz=fitz)
+        plan.page_size = (page_rect.width, page_rect.height)
+        plan.output_page_num = output_idx
+        normalize_vector_text_layout(plan, plan.page_size, fitz=fitz)
+        plans.append(plan)
         plan_has_reference = any(entry.classification == "reference" for entry in plan.ledger)
         if plan_has_reference:
             in_reference_section = True
@@ -5513,6 +5338,8 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
     out_doc.close()
     src_doc.close()
 
+    return DocumentRenderResult(plans, translations)
+
 
 def get_pdf_page_size(pdf_path: Path):
     proc = run(["pdfinfo", str(pdf_path)], check=True)
@@ -5520,109 +5347,6 @@ def get_pdf_page_size(pdf_path: Path):
     if not match:
         raise RuntimeError(f"unable to parse page size from pdfinfo for {pdf_path}")
     return float(match.group(1)), float(match.group(2))
-
-
-def write_raster_pdf(pdf_output: Path, page_numbers, pdf_size_pt, job_paths):
-    """Assemble translated raster pages without allowing TeX to add blank pages."""
-    tex_path = job_paths["tex_path"]
-    width_pt, height_pt = pdf_size_pt
-    lines = [
-        r"\documentclass{article}",
-        rf"\usepackage[paperwidth={width_pt}bp,paperheight={height_pt}bp,margin=0in]{{geometry}}",
-        r"\usepackage{graphicx}",
-        r"\pagestyle{empty}",
-        r"\setlength{\parindent}{0pt}",
-        r"\setlength{\topskip}{0pt}",
-        r"\newcommand{\fullpageimage}[1]{%",
-        r"\noindent\makebox[\paperwidth][l]{\raisebox{-\height}[0pt][0pt]{\includegraphics[width=\paperwidth,height=\paperheight]{#1}}}%",
-        r"}",
-        r"\begin{document}",
-    ]
-    for idx, page_num in enumerate(page_numbers, start=1):
-        image_path = translated_page_path(page_num, job_paths)
-        if not image_path.exists():
-            raise FileNotFoundError(f"missing translated raster page: {image_path}")
-        lines.append(r"\fullpageimage{" + str(image_path).replace("\\", "/") + r"}")
-        if idx != len(page_numbers):
-            lines.append(r"\newpage")
-    lines.append(r"\end{document}")
-    tex_path.write_text("\n".join(lines), encoding="utf-8")
-    pdf_output.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        run(
-            [
-                "xelatex",
-                "-interaction=nonstopmode",
-                "-output-directory",
-                str(job_paths["job_dir"]),
-                str(tex_path),
-            ],
-            check=True,
-        )
-    except FileNotFoundError as exc:
-        if exc.filename not in (None, "xelatex"):
-            raise
-        write_raster_pdf_with_pymupdf(pdf_output, page_numbers, pdf_size_pt, job_paths)
-        return
-    shutil.copy2(job_paths["pdf_path"], pdf_output)
-
-
-def write_raster_pdf_with_pymupdf(pdf_output: Path, page_numbers, pdf_size_pt, job_paths):
-    """Assemble translated raster pages directly when TeX is unavailable."""
-    fitz = load_fitz()
-    width_pt, height_pt = pdf_size_pt
-    doc = fitz.open()
-    try:
-        for page_num in page_numbers:
-            image_path = translated_page_path(page_num, job_paths)
-            if not image_path.exists():
-                raise FileNotFoundError(f"missing translated raster page: {image_path}")
-            page = doc.new_page(width=width_pt, height=height_pt)
-            page.insert_image(page.rect, filename=str(image_path))
-        pdf_output.parent.mkdir(parents=True, exist_ok=True)
-        tmp_output = pdf_output.with_name(f"{pdf_output.name}.tmp")
-        doc.save(tmp_output, garbage=4, deflate=True)
-        tmp_output.replace(pdf_output)
-    finally:
-        doc.close()
-
-
-def write_latex(pdf_output: Path, page_numbers, pdf_size_pt, job_paths):
-    write_raster_pdf(pdf_output, page_numbers, pdf_size_pt, job_paths)
-
-
-def write_latex_legacy(pdf_output: Path, page_numbers, pdf_size_pt, job_paths):
-    tex_path = job_paths["tex_path"]
-    width_pt, height_pt = pdf_size_pt
-    lines = [
-        r"\documentclass{article}",
-        rf"\usepackage[paperwidth={width_pt}bp,paperheight={height_pt}bp,margin=0in]{{geometry}}",
-        r"\usepackage{graphicx}",
-        r"\pagestyle{empty}",
-        r"\begin{document}",
-    ]
-    for idx, i in enumerate(page_numbers, start=1):
-        lines.append(
-            r"\noindent\includegraphics[width=\paperwidth,height=\paperheight]{"
-            + str(translated_page_path(i, job_paths)).replace("\\", "/")
-            + r"}"
-        )
-        if idx != len(page_numbers):
-            lines.append(r"\newpage")
-    lines.append(r"\end{document}")
-    tex_path.write_text("\n".join(lines), encoding="utf-8")
-    pdf_output.parent.mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            "xelatex",
-            "-interaction=nonstopmode",
-            "-output-directory",
-            str(job_paths["job_dir"]),
-            str(tex_path),
-        ],
-        check=True,
-    )
-    shutil.copy2(job_paths["pdf_path"], pdf_output)
 
 
 def main():
@@ -5682,11 +5406,10 @@ def main():
     )
     if args.render_mode == "raster":
         render_pages(selected_pages, translations, args.dpi, job_paths)
-        write_latex(
+        render_pdf.write_raster_pdf(
             Path(args.pdf_output),
-            [idx for idx, _ in selected_pages],
+            [translated_page_path(idx, job_paths) for idx, _ in selected_pages],
             pdf_size_pt,
-            job_paths,
         )
     else:
         write_vector_pdf(

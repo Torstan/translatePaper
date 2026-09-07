@@ -20,6 +20,8 @@ SUMMARY_MD = TMP_DIR / "parallel_translation_summary.md"
 sys.path.insert(0, str(TOOL_ROOT))
 import qa_semantic as qa  # noqa: E402
 import qa_visual  # noqa: E402
+import render_pdf  # noqa: E402
+import translation_batch  # noqa: E402
 import translate_pdf_via_codex as pipeline  # noqa: E402
 
 
@@ -167,9 +169,11 @@ def run_visual_qa_for_job(
     args,
     output_pdf_path: Path,
     plan_artifact_paths,
+    plans,
 ) -> dict:
     report = qa_visual.generate_visual_qa_report(
         plan_artifact_paths,
+        plans=plans,
         output_dir=job_paths["job_dir"] / "visual_qa",
         translated_pdf_path=output_pdf_path,
         source_png_paths=source_png_paths_for_pages(selected_pages, job_paths),
@@ -215,75 +219,6 @@ def write_deterministic_quality_report(
     (job_dir / "deterministic_quality_report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
-def validate_translation_payload(payload, expected_ids: set[str]):
-    items = payload["items"]
-    seen = {item["id"] for item in items}
-    if seen != expected_ids:
-        missing = sorted(expected_ids - seen)
-        extra = sorted(seen - expected_ids)
-        raise ValueError(f"mismatched ids, missing={missing[:5]}, extra={extra[:5]}")
-    empty_items = [item["id"] for item in items if not item["translation"].strip()]
-    if empty_items:
-        raise ValueError(f"empty translations: {empty_items[:10]}")
-    return {
-        item["id"]: pipeline.normalize_translation(item["translation"])
-        for item in items
-    }
-
-
-def run_translation_batch(batch: PageBatch, job_paths, args) -> dict[str, str]:
-    schema_path = job_paths["schema_path"]
-    prompt = pipeline.make_prompt(batch.items)
-    prefix = f"page-{batch.page_num:03d}-chunk-{batch.chunk_idx:02d}"
-    prompt_path = job_paths["job_dir"] / f"{prefix}.prompt.txt"
-    out_path = job_paths["job_dir"] / f"{prefix}.out.json"
-    log_path = job_paths["job_dir"] / f"{prefix}.log.txt"
-    prompt_path.write_text(prompt, encoding="utf-8")
-    expected_ids = {item["id"] for item in batch.items}
-
-    for attempt in range(1, args.retries + 1):
-        proc = pipeline.run(
-            [
-                "codex",
-                "exec",
-                "--skip-git-repo-check",
-                "-m",
-                args.model,
-                "-c",
-                f"model_reasoning_effort='{args.reasoning_effort}'",
-                "--disable",
-                "plugins",
-                "--disable",
-                "shell_snapshot",
-                "--sandbox",
-                "workspace-write",
-                "--ephemeral",
-                "--output-schema",
-                str(schema_path),
-                "-o",
-                str(out_path),
-                "-",
-            ],
-            input_text=prompt,
-            check=False,
-        )
-        log_path.write_text(proc.stdout + "\n\nSTDERR\n" + proc.stderr, encoding="utf-8")
-        if proc.returncode != 0 or not out_path.exists():
-            time.sleep(3 * attempt)
-            continue
-        try:
-            payload = json.loads(out_path.read_text(encoding="utf-8"))
-            return validate_translation_payload(payload, expected_ids)
-        except Exception as exc:  # noqa: BLE001
-            log_path.write_text(
-                log_path.read_text(encoding="utf-8") + f"\n\nVALIDATION ERROR\n{exc}\n",
-                encoding="utf-8",
-            )
-            time.sleep(3 * attempt)
-
-    raise RuntimeError(f"translation failed for {prefix}, see {log_path}")
-
-
 def run_parallel_translation(batches: list[PageBatch], translations: dict[str, str], job_paths, args):
     valid_ids = {item["id"] for batch in batches for item in batch.items}
     todo = []
@@ -295,10 +230,19 @@ def run_parallel_translation(batches: list[PageBatch], translations: dict[str, s
     if not todo:
         return translations
 
-    pipeline.write_schema(job_paths["schema_path"])
+    translation_batch.write_schema(job_paths["schema_path"])
     with ThreadPoolExecutor(max_workers=args.page_workers) as executor:
         futures = [
-            executor.submit(run_translation_batch, batch, job_paths, args)
+            executor.submit(
+                translation_batch.execute_translation_batch,
+                batch.items,
+                job_paths["job_dir"],
+                f"page-{batch.page_num:03d}-chunk-{batch.chunk_idx:02d}",
+                job_paths["schema_path"],
+                model=args.model,
+                reasoning_effort=args.reasoning_effort,
+                retries=args.retries,
+            )
             for batch in todo
         ]
         for future in as_completed(futures):
@@ -318,6 +262,8 @@ def run_qa_for_job(
     page_size,
     args,
     output_pdf_path: Path | None = None,
+    *,
+    render_result: pipeline.DocumentRenderResult | None = None,
 ) -> dict:
     pages = [page for _, page in selected_pages]
     original_map = {
@@ -325,12 +271,17 @@ def run_qa_for_job(
         for page in pages
         for block in page
     }
-    deterministic_issues = pipeline.validate_document_quality(
-        selected_pages,
-        translations,
-        page_size,
-        job_paths=job_paths,
-    )
+    if getattr(args, "render_mode", "vector") == "vector":
+        if render_result is None:
+            raise ValueError("vector QA requires the actual render result")
+        translations = render_result.translations
+        deterministic_issues = pipeline.validate_document_quality(
+            selected_pages, translations, render_result.plans, job_paths=job_paths,
+        )
+    else:
+        deterministic_issues = pipeline.diagnose_source_layout(
+            selected_pages, translations, page_size, job_paths=job_paths,
+        )
     plan_artifact_paths = render_plan_artifact_paths(selected_pages, job_paths)
     write_deterministic_quality_report(
         deterministic_issues,
@@ -373,6 +324,7 @@ def run_qa_for_job(
             args,
             output_pdf_path,
             plan_artifact_paths,
+            render_result.plans,
         )
         result.update(visual_result)
         ownership_error_count = int(visual_result.get("ownership_error_count", 0))
@@ -434,16 +386,16 @@ def translate_one_pdf(pdf_path: Path, output_dir: Path, args) -> dict:
     translations = run_parallel_translation(batches, translations, job_paths, args)
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    render_result = None
     if args.render_mode == "raster":
         pipeline.render_pages(selected_pages, translations, args.dpi, job_paths)
-        pipeline.write_latex(
+        render_pdf.write_raster_pdf(
             output_path,
-            [idx for idx, _ in selected_pages],
+            [pipeline.translated_page_path(idx, job_paths) for idx, _ in selected_pages],
             pdf_size_pt,
-            job_paths,
         )
     else:
-        pipeline.write_vector_pdf(
+        render_result = pipeline.write_vector_pdf(
             pdf_path,
             output_path,
             selected_pages,
@@ -470,6 +422,7 @@ def translate_one_pdf(pdf_path: Path, output_dir: Path, args) -> dict:
             pdf_size_pt,
             args,
             output_pdf_path=output_path,
+            render_result=render_result,
         )
     return result
 

@@ -468,15 +468,11 @@ def vertical_expansion_limits(item: RenderItem, items: list[RenderItem], page_si
 
 
 def _visual_component_source_boxes(plan: PageRenderPlan) -> dict[str, tuple[float, float, float, float]]:
-    boxes = {}
-    for component in getattr(plan, "components", []) or []:
-        if getattr(component, "component_kind", "") != "visual":
-            continue
-        component_id = getattr(component, "component_id", "")
-        source_bbox = getattr(component, "source_bbox", None)
-        if component_id and source_bbox is not None:
-            boxes[component_id] = tuple(float(value) for value in source_bbox)
-    return boxes
+    return {
+        component.component_id: component.source_bbox
+        for component in plan.components
+        if component.component_kind == "visual" and component.component_id
+    }
 
 
 def _replace_protected_box(plan: PageRenderPlan, old_box, new_box) -> None:

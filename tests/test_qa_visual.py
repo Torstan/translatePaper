@@ -2019,7 +2019,7 @@ class VisualQaRenderTests(unittest.TestCase):
                 paths = qa_visual.render_pdf_pages_to_png(
                     pdf_path,
                     output_dir,
-                    pages=[2, 1],
+                    page_numbers={2: 2, 1: 1},
                     dpi=72,
                 )
 

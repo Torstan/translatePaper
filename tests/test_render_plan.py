@@ -4372,7 +4372,7 @@ class QualityValidationTests(unittest.TestCase):
             ),
         ]
 
-        errors = pdf.validate_document_quality(
+        errors = pdf.diagnose_source_layout(
             [(10, page_10), (12, page_12)],
             {},
             page_size=(612, 792),
@@ -4809,6 +4809,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
                 bbox_lines=None,
                 source_image_path=None,
             )
+            expected_plan.output_page_num = 1
             expected_json = pdf.render_plan_json_dumps(
                 expected_plan,
                 validation_results={

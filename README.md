@@ -10,7 +10,10 @@ Translates English PDF papers to Chinese PDFs. It extracts text, uses Codex CLI,
 
 ## Requirements
 
-Python 3.10+, Codex CLI, Poppler, XeLaTeX, `Pillow` and a Chinese font. Default: `/usr/share/fonts/truetype/arphic/uming.ttc`.
+Python 3.10+, Codex CLI, Poppler, `PyMuPDF`, `Pillow` and a Chinese font. Default: `/usr/share/fonts/truetype/arphic/uming.ttc`.
+
+Both vector rendering and raster PDF assembly use PyMuPDF. Raster mode assembles
+the rendered page images directly; XeLaTeX and `.tex` files are no longer used.
 
 ## Usage
 
@@ -35,6 +38,12 @@ Vector rendering writes page render plans under:
 ```text
 work/jobs/<pdf-stem>/plans/page-NNN.render-plan.json
 ```
+
+Each plan records its source `page_num`, one-based `output_page_num`, and actual
+`page_size` in PDF points. Ownership components use the single `components` field.
+During vector rendering, drawing and QA share the final in-memory plans; saved
+JSON plans remain available for offline visual QA. Raster diagnostics check the
+source layout and do not represent the raster drawing's final layout.
 
 When QA is enabled, deterministic quality reports are written to:
 

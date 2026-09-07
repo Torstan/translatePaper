@@ -252,20 +252,7 @@ def components_by_source_id(components: list[PageComponent]) -> dict[str, list[P
     return dict(result)
 
 
-def _validation_args(args, kwargs):
-    if args and isinstance(args[0], int):
-        return args[0], args[1], args[2]
-    if "page_num" in kwargs:
-        return kwargs["page_num"], kwargs["blocks"], kwargs["components"]
-    if len(args) == 2:
-        blocks, components = args
-        page_num = int(next((block.get("page", 0) for block in blocks if "page" in block), 0))
-        return page_num, blocks, components
-    return kwargs.get("page_number", 0), kwargs["blocks"], kwargs["components"]
-
-
-def validate_ownership(*args, **kwargs) -> OwnershipValidationResult:
-    page_num, blocks, components = _validation_args(args, kwargs)
+def validate_ownership(page_num: int, blocks, components: list[PageComponent]) -> OwnershipValidationResult:
     issues: list[OwnershipIssue] = []
     block_by_id = {str(block["id"]): block for block in blocks if not is_trivial_block(block)}
     non_duplicate_owners: dict[str, list[PageComponent]] = defaultdict(list)
@@ -551,39 +538,20 @@ def merge_visual_regions(regions: list[dict]) -> list[dict]:
     return _merge_visual_regions(regions)
 
 
-def _build_page_components_positional(page_num, blocks, classes, visual_regions, duplicate_ids, skip_ids):
-    return build_page_components(
-        page_num=page_num,
-        blocks=blocks,
-        classes=classes,
-        visual_regions=visual_regions or [],
-        visual_covered_text_ids=set(),
-        duplicate_ids=set(duplicate_ids or set()),
-        skip_ids=set(skip_ids or set()),
-    )
-
-
-def build_page_components(*args, **kwargs) -> list[PageComponent]:
-    if args:
-        page_num = args[0]
-        blocks = args[1]
-        classes = args[2]
-        return _build_page_components_positional(
-            page_num,
-            blocks,
-            classes,
-            kwargs.get("visual_regions", []),
-            kwargs.get("duplicate_ids", set()),
-            kwargs.get("skip_ids", set()),
-        )
-
-    page_num = kwargs["page_num"]
-    blocks = kwargs["blocks"]
-    classes = kwargs["classes"]
-    visual_regions = _merge_visual_regions(list(kwargs.get("visual_regions") or []))
-    visual_covered_text_ids = {str(source_id) for source_id in (kwargs.get("visual_covered_text_ids") or set())}
-    duplicate_ids = {str(source_id) for source_id in (kwargs.get("duplicate_ids") or set())}
-    skip_ids = {str(source_id) for source_id in (kwargs.get("skip_ids") or set())}
+def build_page_components(
+    page_num: int,
+    blocks,
+    classes: dict[str, str],
+    *,
+    visual_regions: list[dict],
+    visual_covered_text_ids: set[str] | None = None,
+    duplicate_ids: set[str] | None = None,
+    skip_ids: set[str] | None = None,
+) -> list[PageComponent]:
+    visual_regions = _merge_visual_regions(visual_regions)
+    visual_covered_text_ids = set(visual_covered_text_ids or ())
+    duplicate_ids = set(duplicate_ids or ())
+    skip_ids = set(skip_ids or ())
 
     block_by_id = {str(block["id"]): block for block in blocks}
     assigned: set[str] = set()

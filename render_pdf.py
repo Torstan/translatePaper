@@ -35,7 +35,7 @@ def load_fitz():
         import fitz
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
-            "Vector PDF rendering requires PyMuPDF. "
+            "PDF rendering requires PyMuPDF. "
             "Install it with: python3 -m pip install --target vendor pymupdf"
         ) from exc
     return fitz
@@ -351,3 +351,19 @@ def render_plan_item(out_page, src_page, fitz, item: RenderItem, dpi: int, sourc
             return
         insert_source_clip(src_page, out_page, fitz, item.bbox, dpi)
         return
+
+
+def write_raster_pdf(pdf_output: Path, image_paths: list[Path], page_size) -> None:
+    """Assemble one PDF page per raster image; publish only after all pages succeed."""
+    fitz = load_fitz()
+    width, height = page_size
+    with fitz.open() as doc:
+        for image_path in image_paths:
+            if not image_path.exists():
+                raise FileNotFoundError(f"missing translated raster page: {image_path}")
+            page = doc.new_page(width=width, height=height)
+            page.insert_image(page.rect, filename=str(image_path))
+        pdf_output.parent.mkdir(parents=True, exist_ok=True)
+        tmp_output = pdf_output.with_name(f"{pdf_output.name}.tmp")
+        doc.save(tmp_output, garbage=4, deflate=True)
+        tmp_output.replace(pdf_output)

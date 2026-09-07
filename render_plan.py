@@ -47,6 +47,14 @@ class PageRenderPlan:
     components: list[ownership.PageComponent] = field(default_factory=list)
     ownership_ledger: list[ownership.OwnershipLedgerEntry] = field(default_factory=list)
     ownership_validation: ownership.OwnershipValidationResult = field(default_factory=ownership.OwnershipValidationResult)
+    page_size: tuple[float, float] | None = None
+    output_page_num: int | None = None
+
+
+@dataclass
+class DocumentRenderResult:
+    plans: list[PageRenderPlan]
+    translations: dict[str, str]
 
 
 def bbox_to_json(box) -> list[float]:
@@ -93,51 +101,19 @@ def _stable_json_value(value):
     return value
 
 
-def _ownership_issue_to_json(issue) -> dict:
-    serializer = getattr(ownership, "ownership_issue_to_json", None)
-    if serializer is not None:
-        return serializer(issue)
-    return {
-        "issue_code": getattr(issue, "issue_code", ""),
-        "severity": getattr(issue, "severity", "error"),
-        "page_num": int(getattr(issue, "page_num", 0)),
-        "message": getattr(issue, "message", ""),
-        "source_ids": sorted(str(source_id) for source_id in getattr(issue, "source_ids", [])),
-        "component_ids": sorted(str(component_id) for component_id in getattr(issue, "component_ids", [])),
-        "bboxes": [bbox_to_json(box) for box in getattr(issue, "bboxes", [])],
-    }
-
-
-def _ownership_validation_to_json(result) -> dict:
-    serializer = getattr(ownership, "ownership_validation_to_json", None)
-    if serializer is not None:
-        return serializer(result)
-    issues = list(getattr(result, "issues", []) or [])
-    return {"ok": not issues, "issues": [_ownership_issue_to_json(issue) for issue in issues]}
-
-
-def _ownership_components_to_json(components) -> list[dict]:
-    serializer = getattr(ownership, "components_to_json", None)
-    if serializer is not None:
-        return serializer(components)
-    return [
-        ownership.page_component_to_json(component)
-        for component in sorted(components, key=lambda item: item.component_id)
-    ]
-
-
 def render_plan_to_json(plan: PageRenderPlan, validation_results: dict | list | None = None) -> dict:
     return {
         "page_num": int(plan.page_num),
+        "page_size": None if plan.page_size is None else [float(value) for value in plan.page_size],
+        "output_page_num": plan.output_page_num,
         "render_items": [render_item_to_json(item) for item in plan.items],
         "coverage_ledger": [coverage_entry_to_json(entry) for entry in plan.ledger],
-        "components": _ownership_components_to_json(plan.components),
-        "ownership_components": _ownership_components_to_json(plan.components),
+        "components": ownership.components_to_json(plan.components),
         "ownership_ledger": [
             ownership.ownership_ledger_entry_to_json(entry)
             for entry in sorted(plan.ownership_ledger, key=lambda item: (item.source_id, item.component_id))
         ],
-        "ownership_validation": _ownership_validation_to_json(plan.ownership_validation),
+        "ownership_validation": ownership.ownership_validation_to_json(plan.ownership_validation),
         "protected_regions": [{"bbox": bbox_to_json(box)} for box in plan.protected_boxes],
         "validation_results": _stable_json_value(validation_results) if validation_results is not None else [],
     }
@@ -265,10 +241,8 @@ def validate_plan_layout(plan: PageRenderPlan, page_size) -> list[str]:
         for protected_item in protected:
             if item_significantly_overlaps_protected(item, protected_item):
                 errors.append(f"page {plan.page_num} text {item.source_ids} overlaps protected {protected_item.source_ids}")
-    validate_render_layer_exclusivity = getattr(ownership, "validate_render_layer_exclusivity", None)
-    if validate_render_layer_exclusivity is not None:
-        ownership_result = validate_render_layer_exclusivity(plan, plan.components)
-        errors.extend(issue.message for issue in getattr(ownership_result, "issues", []))
+    ownership_result = ownership.validate_render_layer_exclusivity(plan, plan.components)
+    errors.extend(issue.message for issue in ownership_result.issues)
     return errors
 
 

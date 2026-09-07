@@ -153,33 +153,31 @@ class RenderPdfExtractionModuleTests(unittest.TestCase):
 
         self.assertEqual([xy[1] for xy, _text in text_draw.calls], [2, 32, 62])
 
-    def test_write_raster_pdf_falls_back_to_pymupdf_when_xelatex_is_missing(self):
-        fitz = render_pdf.load_fitz()
+    def test_raster_assembly_preserves_page_order_size_without_external_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            translated_pages_dir = tmp_path / "translated_pages"
-            translated_pages_dir.mkdir()
-            for page_num, color in ((1, "white"), (2, "lightgray")):
-                Image.new("RGB", (20, 30), color).save(translated_pages_dir / f"page-{page_num:03d}.png")
-
-            job_paths = {
-                "job_dir": tmp_path,
-                "translated_pages_dir": translated_pages_dir,
-                "tex_path": tmp_path / "claudeCodeChinese.tex",
-                "pdf_path": tmp_path / "claudeCodeChinese.pdf",
-            }
-            output_pdf = tmp_path / "out.pdf"
-
-            with patch.object(pdf, "run", side_effect=FileNotFoundError("xelatex")):
-                pdf.write_raster_pdf(output_pdf, [1, 2], (50.0, 75.0), job_paths)
-
-            doc = fitz.open(output_pdf)
-            try:
+            root = Path(tmp)
+            paths = [root / "source-005.png", root / "source-009.png"]
+            for path, color in zip(paths, [(240, 0, 0), (0, 0, 240)]):
+                Image.new("RGB", (120, 160), color).save(path)
+            output = root / "out.pdf"
+            with patch("subprocess.run", side_effect=AssertionError("external command invoked")):
+                render_pdf.write_raster_pdf(output, paths, (120.0, 160.0))
+            with render_pdf.load_fitz().open(output) as doc:
                 self.assertEqual(doc.page_count, 2)
-                self.assertEqual(round(doc[0].rect.width, 1), 50.0)
-                self.assertEqual(round(doc[0].rect.height, 1), 75.0)
-            finally:
-                doc.close()
+                for page, expected in zip(doc, [(240, 0, 0), (0, 0, 240)]):
+                    self.assertEqual((page.rect.width, page.rect.height), (120, 160))
+                    self.assertEqual(page.get_pixmap().pixel(60, 80)[:3], expected)
+
+    def test_raster_assembly_missing_image_does_not_replace_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image = root / "page.png"
+            Image.new("RGB", (10, 10), "red").save(image)
+            output = root / "out.pdf"
+            output.write_bytes(b"previous accepted PDF")
+            with self.assertRaises(FileNotFoundError):
+                render_pdf.write_raster_pdf(output, [image, root / "missing.png"], (10, 10))
+            self.assertEqual(output.read_bytes(), b"previous accepted PDF")
 
 
 if __name__ == "__main__":
