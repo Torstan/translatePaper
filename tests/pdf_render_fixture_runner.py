@@ -4,8 +4,36 @@ from pathlib import Path
 
 import classify
 import render_plan
+import ownership
 from classify import mark_running_headers
 import pipeline as pdf
+
+
+def qa_plan_fixture(data: dict) -> render_plan.PageRenderPlan:
+    """Construct sparse QA test cases; malformed artifact tests use the real loader."""
+    validation = data.get("ownership_validation", {})
+    items = [render_plan.RenderItem(**{**item, "bbox": tuple(item["bbox"])})
+             for item in data.get("render_items", [])]
+    for region in data.get("protected_regions", []):
+        if not any(item.kind == "original_image_clip" and item.bbox == tuple(region["bbox"]) for item in items):
+            items.append(render_plan.RenderItem("original_image_clip", [], tuple(region["bbox"])))
+    return render_plan.PageRenderPlan(
+        page_num=data["page_num"],
+        items=items,
+        coverage=[render_plan.CoverageSource(entry["block_id"], entry["classification"],
+                                            entry.get("render_kind") == "skip_explicitly",
+                                            component_id=entry.get("component_id", ""),
+                                            component_kind=entry.get("component_kind", ""))
+                  for entry in data.get("coverage_ledger", [])],
+        page_size=data.get("page_size"), output_page_num=data.get("output_page_num"),
+        ownership_validation=ownership.OwnershipValidationResult([
+            ownership.OwnershipIssue(
+                issue.get("issue_code", ""), issue.get("severity", "error"), data["page_num"],
+                issue.get("message", ""), issue.get("source_ids", []), issue.get("component_ids", []),
+                [tuple(bbox) for bbox in issue.get("bboxes", [])],
+            ) for issue in validation.get("issues", validation.get("errors", []))
+        ]),
+    )
 
 
 @dataclass(frozen=True)

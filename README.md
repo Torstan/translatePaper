@@ -54,6 +54,12 @@ when `job_paths` requests artifacts, the failed plan is recorded as well.
 `write_vector_pdf` uses this entry before drawing;
 ordinary callers do not sequence layout repair functions or validation results.
 Draft builders and individual repairs remain implementation/testing helpers.
+`PageRenderPlan.coverage` records source obligations and explicit skips;
+`ledger` and `protected_boxes` are derived from the current render items and
+must not be updated separately. Layout resolves text-fragment relationships
+before moving boxes, so compaction cannot turn independent paragraphs into
+continuations. A new image fallback triggers another protection check only
+when it adds an obstacle.
 Layout planning and
 visual QA share the same protected-region overlap predicate (over 6pt vertically
 and over 5% of the smaller box's area) and text-overlap predicate. Shared source
@@ -109,11 +115,16 @@ Each plan records its source `page_num`, one-based `output_page_num`, and actual
 During vector rendering, drawing and QA share the final in-memory plans; saved
 JSON plans remain available for offline visual QA and are structurally checked
 when loaded; missing `render_items` is an error, while an explicit empty list is
-valid. Raster plans record the actual pixel layout, lines and page dimensions;
+valid. `load_render_plan_artifact` and `render_plan_from_json` convert artifacts
+to `PageRenderPlan`; QA detectors consume that type. Exported coverage and
+protected regions are report snapshots, recomputed from the loaded items and
+source obligations. Raster plans record the actual pixel layout, lines and page dimensions;
 vector-only checks do not validate raster drawing.
 
 Vector rendering validates the final layout before drawing each page, including
 source ownership, coverage, protected geometry, text overlap, style and fit.
+Visual components require image clips even when their OCR text is trivial; a
+text item with the same source and component IDs does not fulfill that obligation.
 These checks run even with optional QA disabled. Ownership diagnostics are
 recomputed after layout; warnings retain their severity in both plans and QA.
 Failed validation writes all check results, closes PDF resources, and leaves an

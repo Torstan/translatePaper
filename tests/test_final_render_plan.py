@@ -44,7 +44,7 @@ class FinalRenderPlanTests(unittest.TestCase):
                                       text=text, font_size=9.2, style_name="body")
         plan = render_plan.PageRenderPlan(
             1, items=[item, replace(item)], page_size=(200, 220),
-            ledger=[render_plan.CoverageEntry("body", "body", "translated_text", True)],
+            coverage=[render_plan.CoverageSource("body", "body")],
             components=ownership.build_page_components(1, [block], {"body": "body"}, visual_regions=[]),
         )
         checks, errors = pipeline.validate_final_page_plan(plan, [block], pipeline.load_fitz(), {"body": text})
@@ -60,8 +60,8 @@ class FinalRenderPlanTests(unittest.TestCase):
         translations = {"a": "首先读取文件。", "b": "然后处理数据。"}
         item = render_plan.RenderItem("translated_text", ["a", "b"], (20, 20, 180, 80),
                                       text="然后处理数据。首先读取文件。", layout_role="body_flow")
-        plan = render_plan.PageRenderPlan(1, items=[item], ledger=[
-            render_plan.CoverageEntry(key, "body", "translated_text", True) for key in translations])
+        plan = render_plan.PageRenderPlan(1, items=[item], coverage=[
+            render_plan.CoverageSource(key, "body") for key in translations])
         self.assertTrue(pipeline.validate_plan_text_content(1, blocks, translations, plan))
         plan.items = [replace(item, bbox=(20, 20, 180, 40), text="首先读取文件。"),
                       replace(item, bbox=(20, 50, 180, 70), text="然后处理数据。")]
@@ -116,7 +116,7 @@ class FinalRenderPlanTests(unittest.TestCase):
                                    text="随后校验输入。", style_name="body", font_size=9.2),
             render_plan.RenderItem("translated_text", ["b"], (20, 105, 180, 130),
                                    text="最后处理数据。", style_name="body", font_size=9.2),
-        ], ledger=[render_plan.CoverageEntry(key, "body", "translated_text", True) for key in translations])
+        ], coverage=[render_plan.CoverageSource(key, "body") for key in translations])
         blocks = [{"id": key} for key in translations]
         pipeline.merge_adjacent_body_text_flows(plan)
         self.assertEqual(plan.items[-1].source_ids, ["a", "b"])
@@ -159,7 +159,7 @@ class FinalRenderPlanTests(unittest.TestCase):
         block = {"id": "p001b0001", "text": "A complete source paragraph."}
         plan = render_plan.PageRenderPlan(
             page_num=1,
-            ledger=[render_plan.CoverageEntry("p001b0001", "body", "translated_text", True)],
+            coverage=[render_plan.CoverageSource("p001b0001", "body")],
         )
         self.assertIn("p001b0001", "\n".join(render_plan.validate_plan_coverage(1, [block], plan)))
 
@@ -169,10 +169,49 @@ class FinalRenderPlanTests(unittest.TestCase):
         plan = render_plan.PageRenderPlan(
             page_num=1,
             items=[render_plan.RenderItem("original_image_clip", ["p001b0001"], (0, 0, 100, 100))],
-            ledger=[render_plan.CoverageEntry(block["id"], "figure_region", "original_image_clip", True)
+            coverage=[render_plan.CoverageSource(block["id"], "figure_region")
                     for block in blocks],
         )
         self.assertIn("p001b0002", "\n".join(render_plan.validate_plan_coverage(1, blocks, plan)))
+
+    def test_visual_component_requires_clip_when_item_changes_to_text(self):
+        block = {"id": "figure", "text": "Figure 1. Measurements and results.",
+                 "xMin": 20, "yMin": 20, "xMax": 180, "yMax": 80}
+        component = ownership.PageComponent(
+            "visual", ownership.COMPONENT_KIND_VISUAL, ["figure"], (20, 20, 180, 80),
+            (20, 20, 180, 80), ownership.CONFIDENCE_CONSERVATIVE,
+        )
+        plan = render_plan.PageRenderPlan(
+            1, page_size=(200, 200), components=[component],
+            coverage=[render_plan.CoverageSource(
+                "figure", "figure_region", component_id="visual", component_kind=ownership.COMPONENT_KIND_VISUAL,
+            )],
+            items=[render_plan.RenderItem(
+                "original_image_clip", ["figure"], (20, 20, 180, 80),
+                component_id="visual", component_kind=ownership.COMPONENT_KIND_VISUAL,
+            )],
+        )
+        _, errors = pipeline.validate_final_page_plan(plan, [block], pipeline.load_fitz(), {})
+        self.assertEqual(errors, [])
+        plan.items[0] = replace(plan.items[0], kind="translated_text", text="图示结果",
+                                font_size=9.2, style_name="body")
+        checks, errors = pipeline.validate_final_page_plan(plan, [block], pipeline.load_fitz(), {})
+        self.assertTrue(checks["coverage_errors"], errors)
+        self.assertTrue(errors)
+
+    def test_visual_component_requires_clip_for_trivial_ocr_text(self):
+        plan = render_plan.PageRenderPlan(
+            1,
+            coverage=[render_plan.CoverageSource(
+                "figure", "figure_region", component_id="visual", component_kind=ownership.COMPONENT_KIND_VISUAL,
+            )],
+            items=[render_plan.RenderItem(
+                "translated_text", ["figure"], (20, 20, 180, 80), text="一",
+                component_id="visual", component_kind=ownership.COMPONENT_KIND_VISUAL,
+            )],
+        )
+        errors = render_plan.validate_plan_coverage(1, [{"id": "figure", "text": "1"}], plan)
+        self.assertTrue(errors)
 
     def test_coverage_rejects_clip_that_does_not_cover_its_source(self):
         block = {"id": "p001b0001", "text": "Figure content.",
@@ -186,8 +225,7 @@ class FinalRenderPlanTests(unittest.TestCase):
                     page_num=1, page_size=(200, 200), coordinate_space=coordinate_space,
                     raster_size=raster_size,
                     items=[render_plan.RenderItem("original_image_clip", [block["id"]], clip)],
-                    ledger=[render_plan.CoverageEntry(block["id"], "figure_region",
-                                                      "original_image_clip", True)],
+                    coverage=[render_plan.CoverageSource(block["id"], "figure_region")],
                 )
                 self.assertTrue(any("outside" in issue for issue in
                                     render_plan.validate_plan_coverage(1, [block], plan)))
@@ -197,7 +235,7 @@ class FinalRenderPlanTests(unittest.TestCase):
         full_text = "这是完整译文的前半部分以及必须保留的后半部分。"
         plan = render_plan.PageRenderPlan(
             page_num=1,
-            ledger=[render_plan.CoverageEntry(block["id"], "body", "translated_text", True)],
+            coverage=[render_plan.CoverageSource(block["id"], "body")],
         )
         for fragments in (
             [full_text[:12]],
@@ -347,7 +385,7 @@ class FinalRenderPlanTests(unittest.TestCase):
             self.assertEqual(result.plans[0].ownership_validation.issues, [])
             artifact = json.loads((root / "plans/page-001.render-plan.json").read_text())
             self.assertEqual(artifact["ownership_validation"], {"ok": True, "issues": []})
-            self.assertEqual(qa_visual.detect_ownership_issues(artifact), [])
+            self.assertEqual(qa_visual.detect_ownership_issues(render_plan.render_plan_from_json(artifact)), [])
             self.assertEqual(pipeline.validate_document_quality([(1, [block])], translations, result.plans), [])
 
     def test_final_text_overlap_is_rejected_before_drawing(self):
@@ -357,7 +395,7 @@ class FinalRenderPlanTests(unittest.TestCase):
             second = dict(block, id="p001b0002", text="Another complete source paragraph.")
             plan.components.append(replace(plan.components[0], component_id="second", source_ids=[second["id"]]))
             plan.items.append(replace(plan.items[0], source_ids=[second["id"]], text="另一段正文。"))
-            plan.ledger.append(replace(plan.ledger[0], block_id=second["id"]))
+            plan.coverage.append(replace(plan.coverage[0], block_id=second["id"]))
             with (
                 patch.object(pipeline, "build_page_render_plan", return_value=plan),
                 patch.object(pipeline, "normalize_vector_text_layout"),
@@ -386,7 +424,7 @@ class FinalRenderPlanTests(unittest.TestCase):
             expected = [("visual_clip_undercaptures_source", "warning")]
             self.assertEqual([(i.issue_code, i.severity) for i in result.plans[0].ownership_validation.issues], expected)
             artifact = json.loads((root / "plans/page-001.render-plan.json").read_text())
-            for representation in (result.plans[0], artifact):
+            for representation in (result.plans[0], render_plan.render_plan_from_json(artifact)):
                 issues = qa_visual.detect_ownership_issues(representation)
                 self.assertEqual([i.severity for i in issues], ["warning"])
 
@@ -559,8 +597,7 @@ class FinalRenderPlanTests(unittest.TestCase):
                                       raster_lines=["完整的"])
         plan = render_plan.PageRenderPlan(page_num=1, items=[item], raster_size=(200, 220),
                                           coordinate_space="pixels",
-                                          ledger=[render_plan.CoverageEntry(block["id"], "body",
-                                                                           "translated_text", True)])
+                                          coverage=[render_plan.CoverageSource(block["id"], "body")])
         _, errors = pipeline.validate_raster_page_plan(plan, [block])
         self.assertTrue(any("raster lines" in error for error in errors), errors)
         item.text = "完整的"
@@ -608,6 +645,38 @@ class FinalRenderPlanTests(unittest.TestCase):
                 body = next(i for i in plan.items if i.text == "证明：这是完整正文。")
                 self.assertGreaterEqual(body.raster_source_bbox[1], 100 * dpi // 72)
 
+    def test_merged_body_does_not_cover_missing_visual_component_of_same_source(self):
+        blocks, translations, analysis = self.raster_mixed_page()
+        blocks[1].update(yMin=154, yMax=194)
+        analysis.components[-1] = replace(analysis.components[-1], source_bbox=(20, 154, 180, 194))
+        plan = render_plan.PageRenderPlan(1, page_size=(200, 280), components=analysis.components)
+        for component in plan.components:
+            visual = component.component_kind == "visual"
+            plan.coverage.extend(render_plan.CoverageSource(
+                source_id, "code_region" if visual else "body", component_id=component.component_id,
+                component_kind=component.component_kind,
+            ) for source_id in component.source_ids)
+            plan.items.append(render_plan.RenderItem(
+                "original_image_clip" if visual else "translated_text", component.source_ids,
+                component.clip_bbox if visual else component.source_bbox,
+                text="" if visual else ("证明：这是完整正文。" if component.parent_component_id
+                                         else translations[component.source_ids[0]]),
+                font_size=None if visual else 9.2, style_name="" if visual else "body",
+                layout_role="mixed_visual_body" if component.parent_component_id else "normal",
+                component_id=component.component_id, component_kind=component.component_kind,
+            ))
+        pipeline.merge_adjacent_body_text_flows(plan)
+        pipeline.annotate_plan_with_component_metadata(plan, ownership.components_by_source_id(plan.components))
+        self.assertTrue(all(entry.rendered for entry in plan.ledger))
+        plan.items = [item for item in plan.items if item.kind != "original_image_clip"]
+        self.assertEqual(len(plan.items), 1)
+        self.assertEqual(plan.items[0].source_ids, [block["id"] for block in blocks])
+        for candidate in (plan, render_plan.render_plan_from_json(render_plan.render_plan_to_json(plan))):
+            checks, errors = pipeline.validate_final_page_plan(candidate, blocks, pipeline.load_fitz(), translations)
+            self.assertTrue(checks["coverage_errors"], errors)
+            self.assertTrue(all(entry.rendered for entry in candidate.ledger if entry.component_kind == "translated_text"))
+            self.assertFalse(next(entry.rendered for entry in candidate.ledger if entry.component_kind == "visual"))
+
     def test_raster_rejects_missing_mixed_component_even_if_source_id_is_covered(self):
         blocks, translations, analysis = self.raster_mixed_page()
         plan, _ = pipeline.build_raster_page_plan(
@@ -615,7 +684,7 @@ class FinalRenderPlanTests(unittest.TestCase):
         )
         body_id = analysis.components[1].component_id
         plan.items = [i for i in plan.items if i.component_id != body_id]
-        plan.ledger = [e for e in plan.ledger if e.component_id != body_id]
+        plan.coverage = [e for e in plan.coverage if e.component_id != body_id]
         _, errors = pipeline.validate_raster_page_plan(plan, blocks, translations=translations)
         self.assertTrue(any(body_id in error for error in errors), errors)
 

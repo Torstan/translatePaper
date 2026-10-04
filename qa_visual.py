@@ -9,8 +9,8 @@ from PIL import Image
 
 from classify import NORMAL_TRANSLATED_CLASSES, source_requires_chinese_translation
 from layout import document_style_hierarchy_errors, text_item_style_issues
-from render_plan import (RenderItem, bbox_significantly_overlaps_protected,
-                         load_render_plan_artifact, text_boxes_significantly_overlap)
+from render_plan import (PageRenderPlan, bbox_significantly_overlaps_protected,
+                         ledger_classifications, load_render_plan_artifact, text_boxes_significantly_overlap)
 from geometry import bbox_overlap_area as _bbox_overlap_area
 from geometry import subtract_bbox
 
@@ -182,36 +182,6 @@ def _dark_pixel_bbox(
     )
 
 
-def _plan_page_num(plan) -> int:
-    if isinstance(plan, Mapping):
-        return int(plan["page_num"])
-    return int(plan.page_num)
-
-
-def _plan_render_items(plan) -> list:
-    if isinstance(plan, Mapping):
-        return list(plan.get("render_items", []))
-    return list(plan.items)
-
-
-def _plan_protected_regions(plan) -> list:
-    if isinstance(plan, Mapping):
-        return list(plan.get("protected_regions", []))
-    return [{"bbox": bbox} for bbox in getattr(plan, "protected_boxes", [])]
-
-
-def _plan_ledger_entries(plan) -> list:
-    if isinstance(plan, Mapping):
-        return list(plan.get("coverage_ledger", []))
-    return list(getattr(plan, "ledger", []))
-
-
-def _item_value(item, name: str, default=None):
-    if isinstance(item, Mapping):
-        return item.get(name, default)
-    return getattr(item, name, default)
-
-
 def _bbox_tuple(bbox) -> tuple[float, float, float, float]:
     return tuple(float(value) for value in bbox)
 
@@ -229,30 +199,19 @@ def _bbox_overlap_width(left, right) -> float:
     return max(0.0, min(left[2], right[2]) - max(left[0], right[0]))
 
 
-def _source_ids_for_item(item) -> list[str]:
-    return [str(source_id) for source_id in _item_value(item, "source_ids", [])]
-
-
 def _ledger_by_block_id(plan) -> dict[str, object]:
-    return {str(_item_value(entry, "block_id")): entry for entry in _plan_ledger_entries(plan)}
+    return {str(entry.block_id): entry for entry in plan.ledger}
 
 
 def _has_component_ownership_metadata(plan) -> bool:
     return any(
-        str(_item_value(entry, "component_kind", "") or "")
-        for entry in _plan_ledger_entries(plan)
+        str(entry.component_kind or "")
+        for entry in plan.coverage
     )
 
 
-def _classifications_by_block_id(plan) -> dict[str, str]:
-    return {
-        block_id: str(_item_value(entry, "classification", ""))
-        for block_id, entry in _ledger_by_block_id(plan).items()
-    }
-
-
 def _classification_for_item(item, classifications_by_id: Mapping[str, str]) -> str:
-    for source_id in _source_ids_for_item(item):
+    for source_id in item.source_ids:
         classification = classifications_by_id.get(source_id)
         if classification:
             return classification
@@ -294,10 +253,10 @@ def _visual_source_block_undercaptured(block_bbox, clip_bbox) -> bool:
 def _clip_union_for_source_ids(items) -> dict[str, tuple[float, float, float, float]]:
     boxes_by_id: dict[str, list[tuple[float, float, float, float]]] = {}
     for item in items:
-        if _item_value(item, "kind") != "original_image_clip":
+        if item.kind != "original_image_clip":
             continue
-        bbox = _bbox_tuple(_item_value(item, "bbox"))
-        for source_id in _source_ids_for_item(item):
+        bbox = _bbox_tuple(item.bbox)
+        for source_id in item.source_ids:
             boxes_by_id.setdefault(source_id, []).append(bbox)
     return {
         source_id: (
@@ -331,7 +290,7 @@ def _translated_block_explains_dark_excess(dark_bbox, clip_bbox, blocks_by_id, l
             if block_id in source_ids:
                 continue
             entry = ledger_by_id.get(block_id)
-            if _item_value(entry, "classification") not in NORMAL_TRANSLATED_CLASSES:
+            if entry is None or entry.classification not in NORMAL_TRANSLATED_CLASSES:
                 continue
             if not source_requires_chinese_translation(str(block.get("text", ""))):
                 continue
@@ -369,27 +328,25 @@ def _dedupe_protected_regions(regions: list[dict]) -> list[dict]:
 
 
 def _ownership_issue_to_visual_issue(plan, issue) -> VisualQaIssue:
-    issue_code = str(_item_value(issue, "issue_code", ""))
+    issue_code = str(issue.issue_code)
     category = OWNERSHIP_ISSUE_CATEGORY_BY_CODE.get(issue_code, issue_code or "ownership_violation")
-    source_ids = [str(source_id) for source_id in _item_value(issue, "source_ids", [])]
-    bboxes = _item_value(issue, "bboxes", []) or []
+    source_ids = [str(source_id) for source_id in issue.source_ids]
+    bboxes = issue.bboxes or []
     bbox = None
     if bboxes:
         bbox = _bbox_tuple(bboxes[0])
-    elif _item_value(issue, "bbox") is not None:
-        bbox = _bbox_tuple(_item_value(issue, "bbox"))
-    component_ids = [str(component_id) for component_id in _item_value(issue, "component_ids", [])]
+    component_ids = [str(component_id) for component_id in issue.component_ids]
     artifact_paths = {}
     if component_ids:
         artifact_paths["component_ids"] = ",".join(sorted(component_ids))
-    severity = str(_item_value(issue, "severity", "error"))
-    message = str(_item_value(issue, "message", ""))
+    severity = str(issue.severity)
+    message = str(issue.message)
     if issue_code and issue_code not in message:
         message = f"{issue_code}: {message}"
     return VisualQaIssue(
         category=category,
         severity=severity,
-        page_num=_plan_page_num(plan),
+        page_num=plan.page_num,
         message=message,
         source_ids=source_ids,
         bbox=bbox,
@@ -398,32 +355,23 @@ def _ownership_issue_to_visual_issue(plan, issue) -> VisualQaIssue:
     )
 
 
-def detect_ownership_issues(plan) -> list[VisualQaIssue]:
-    validation = _item_value(plan, "ownership_validation", None)
-    if not validation:
-        return []
-    serialized_issues = _item_value(validation, "errors", None)
-    if serialized_issues is None:
-        serialized_issues = _item_value(validation, "issues", [])
-    return [
-        _ownership_issue_to_visual_issue(plan, issue)
-        for issue in serialized_issues
-    ]
+def detect_ownership_issues(plan: PageRenderPlan) -> list[VisualQaIssue]:
+    return [_ownership_issue_to_visual_issue(plan, issue) for issue in plan.ownership_validation.issues]
 
 
 def detect_blank_image_clips(
-    plan,
+    plan: PageRenderPlan,
     source_image_path: str | Path,
     page_size,
     *,
     darkness_threshold: int = 245,
 ) -> list[VisualQaIssue]:
-    page_num = _plan_page_num(plan)
+    page_num = plan.page_num
     issues = []
-    for item in _plan_render_items(plan):
-        if _item_value(item, "kind") != "original_image_clip":
+    for item in plan.items:
+        if item.kind != "original_image_clip":
             continue
-        bbox = tuple(float(value) for value in _item_value(item, "bbox"))
+        bbox = tuple(float(value) for value in item.bbox)
         analysis = analyze_dark_pixels(
             source_image_path,
             bbox,
@@ -432,7 +380,7 @@ def detect_blank_image_clips(
         )
         if not analysis.is_blank:
             continue
-        source_ids = [str(source_id) for source_id in _item_value(item, "source_ids", [])]
+        source_ids = [str(source_id) for source_id in item.source_ids]
         issues.append(
             VisualQaIssue(
                 category="blank_clip",
@@ -484,10 +432,10 @@ def _excess_box_max_outside_clip(excess_box, clip_bbox) -> float:
 
 def _excess_box_falls_between_sibling_gap(excess_box, clip_bbox, item, item_index: int, items) -> bool:
     siblings = [
-        _bbox_tuple(_item_value(candidate, "bbox"))
+        _bbox_tuple(candidate.bbox)
         for index, candidate in enumerate(items)
         if index != item_index
-        and _item_value(candidate, "kind") == "original_image_clip"
+        and candidate.kind == "original_image_clip"
         and _image_clip_items_are_siblings(item, candidate)
     ]
     for sibling in siblings:
@@ -520,23 +468,23 @@ def _split_regions_explain_dark_excess(
     ledger_by_id,
     source_ids,
 ) -> bool:
-    if not str(_item_value(item, "component_id", "") or ""):
+    if not str(item.component_id or ""):
         return False
     excess_boxes = _dark_excess_boxes(dark_bbox, clip_bbox)
     if not excess_boxes:
         return False
     explanation_boxes = [
-        _bbox_tuple(_item_value(candidate, "bbox"))
+        _bbox_tuple(candidate.bbox)
         for index, candidate in enumerate(items)
         if index != item_index
-        and _item_value(candidate, "kind") == "original_image_clip"
+        and candidate.kind == "original_image_clip"
         and _image_clip_items_are_siblings(item, candidate)
     ]
     for block_id, block in blocks_by_id.items():
         if block_id in source_ids:
             continue
         entry = ledger_by_id.get(block_id)
-        if _item_value(entry, "classification") not in NORMAL_TRANSLATED_CLASSES:
+        if entry is None or entry.classification not in NORMAL_TRANSLATED_CLASSES:
             continue
         if not source_requires_chinese_translation(str(block.get("text", ""))):
             continue
@@ -561,10 +509,10 @@ def _split_regions_explain_dark_excess(
 
 def _excess_box_is_adjacent_to_sibling(excess_box, clip_bbox, item, item_index: int, items) -> bool:
     siblings = [
-        _bbox_tuple(_item_value(candidate, "bbox"))
+        _bbox_tuple(candidate.bbox)
         for index, candidate in enumerate(items)
         if index != item_index
-        and _item_value(candidate, "kind") == "original_image_clip"
+        and candidate.kind == "original_image_clip"
         and _image_clip_items_are_siblings(item, candidate)
     ]
     for sibling in siblings:
@@ -582,7 +530,7 @@ def _excess_box_is_adjacent_to_sibling(excess_box, clip_bbox, item, item_index: 
 
 
 def _minor_component_edge_bleed_explains_dark_excess(dark_bbox, clip_bbox, item, item_index: int, items) -> bool:
-    if not str(_item_value(item, "component_id", "") or ""):
+    if not str(item.component_id or ""):
         return False
     excess_boxes = _dark_excess_boxes(dark_bbox, clip_bbox)
     if not excess_boxes:
@@ -598,13 +546,13 @@ def _minor_component_edge_bleed_explains_dark_excess(dark_bbox, clip_bbox, item,
 
 
 def _image_clip_items_are_siblings(left, right) -> bool:
-    left_component_id = str(_item_value(left, "component_id", "") or "")
-    right_component_id = str(_item_value(right, "component_id", "") or "")
+    left_component_id = str(left.component_id or "")
+    right_component_id = str(right.component_id or "")
     if left_component_id and left_component_id == right_component_id:
         return True
 
-    left_source_ids = set(_source_ids_for_item(left))
-    right_source_ids = set(_source_ids_for_item(right))
+    left_source_ids = set(left.source_ids)
+    right_source_ids = set(right.source_ids)
     if not left_source_ids or not right_source_ids:
         return False
     if left_source_ids == right_source_ids:
@@ -621,10 +569,10 @@ def _planned_image_clips_explain_dark_excess(
         return False
 
     other_clip_boxes = [
-        _bbox_tuple(_item_value(item, "bbox"))
+        _bbox_tuple(item.bbox)
         for index, item in enumerate(items)
         if index != item_index
-        and _item_value(item, "kind") == "original_image_clip"
+        and item.kind == "original_image_clip"
     ]
     if not other_clip_boxes:
         return False
@@ -638,7 +586,7 @@ def _planned_image_clips_explain_dark_excess(
 
 
 def detect_image_clip_boundary_issues(
-    plan,
+    plan: PageRenderPlan,
     source_image_path: str | Path,
     page_size,
     *,
@@ -647,9 +595,9 @@ def detect_image_clip_boundary_issues(
     edge_tolerance: float = 1.0,
     darkness_threshold: int = 245,
 ) -> list[VisualQaIssue]:
-    page_num = _plan_page_num(plan)
+    page_num = plan.page_num
     issues = []
-    items = _plan_render_items(plan)
+    items = plan.items
     ledger_by_id = _ledger_by_block_id(plan)
     blocks_by_id = {str(block["id"]): block for block in (source_blocks or [])}
     ownership_aware = _has_component_ownership_metadata(plan)
@@ -663,10 +611,10 @@ def detect_image_clip_boundary_issues(
     body_block_ids = {
         block_id
         for block_id, entry in ledger_by_id.items()
-        if _item_value(entry, "classification") == "body"
+        if entry.classification == "body"
         and body_source_requires_translation(block_id)
         and (
-            str(_item_value(entry, "component_kind", "") or "") == "translated_text"
+            str(entry.component_kind or "") == "translated_text"
             if ownership_aware
             else True
         )
@@ -674,14 +622,14 @@ def detect_image_clip_boundary_issues(
     visual_ledger_ids = {
         block_id
         for block_id, entry in ledger_by_id.items()
-        if str(_item_value(entry, "component_kind", "") or "") == "visual"
-        and str(_item_value(entry, "render_kind", "") or "") == "original_image_clip"
+        if str(entry.component_kind or "") == "visual"
+        and str(entry.render_kind or "") == "original_image_clip"
     }
     clip_union_by_source_id = _clip_union_for_source_ids(items)
     for item_index, item in enumerate(items):
-        if _item_value(item, "kind") != "original_image_clip":
+        if item.kind != "original_image_clip":
             continue
-        clip_bbox = _bbox_tuple(_item_value(item, "bbox"))
+        clip_bbox = _bbox_tuple(item.bbox)
         search_bbox = _expanded_bbox(clip_bbox, page_size, search_margin)
         dark_bbox = _dark_pixel_bbox(
             source_image_path,
@@ -689,7 +637,7 @@ def detect_image_clip_boundary_issues(
             page_size,
             darkness_threshold=darkness_threshold,
         )
-        source_ids = _source_ids_for_item(item)
+        source_ids = item.source_ids
         if dark_bbox is not None and _dark_bbox_exceeds_clip_edge(dark_bbox, clip_bbox, edge_tolerance):
             if not _planned_image_clips_explain_dark_excess(
                 dark_bbox,
@@ -781,41 +729,37 @@ def detect_image_clip_boundary_issues(
 
 
 def detect_geometry_issues(
-    plan,
+    plan: PageRenderPlan,
     page_size,
     *,
     page_tolerance: float = 6.0,
 ) -> list[VisualQaIssue]:
-    page_num = _plan_page_num(plan)
+    page_num = plan.page_num
     width, height = page_size
     issues = []
-    items = _plan_render_items(plan)
+    items = plan.items
     protected_items = [
         item
         for item in items
-        if _item_value(item, "kind") == "original_image_clip"
+        if item.kind == "original_image_clip"
     ]
     protected_regions = [
-        {"source_ids": [], "bbox": _bbox_tuple(_item_value(region, "bbox"))}
-        for region in _plan_protected_regions(plan)
-    ]
-    protected_regions.extend(
         {
-            "source_ids": _source_ids_for_item(item),
-            "bbox": _bbox_tuple(_item_value(item, "bbox")),
+            "source_ids": item.source_ids,
+            "bbox": _bbox_tuple(item.bbox),
         }
         for item in protected_items
-    )
+    ]
     protected_regions = _dedupe_protected_regions(protected_regions)
     text_items = [
         item
         for item in items
-        if _item_value(item, "kind") in {"translated_text", "original_selectable_text"}
-        and _bbox_area(_bbox_tuple(_item_value(item, "bbox"))) > 0
+        if item.kind in {"translated_text", "original_selectable_text"}
+        and _bbox_area(_bbox_tuple(item.bbox)) > 0
     ]
 
     for item in items:
-        bbox = _bbox_tuple(_item_value(item, "bbox"))
+        bbox = _bbox_tuple(item.bbox)
         if (
             bbox[0] < -page_tolerance
             or bbox[1] < -page_tolerance
@@ -828,14 +772,14 @@ def detect_geometry_issues(
                     severity="error",
                     page_num=page_num,
                     message="render item outside page bounds",
-                    source_ids=_source_ids_for_item(item),
+                    source_ids=item.source_ids,
                     bbox=bbox,
-                    render_kind=str(_item_value(item, "kind", "")),
+                    render_kind=str(item.kind),
                 )
             )
 
     for item in text_items:
-        item_bbox = _bbox_tuple(_item_value(item, "bbox"))
+        item_bbox = _bbox_tuple(item.bbox)
         for protected_region in protected_regions:
             protected_bbox = protected_region["bbox"]
             if not bbox_significantly_overlaps_protected(item_bbox, protected_bbox):
@@ -847,9 +791,9 @@ def detect_geometry_issues(
                     severity="error",
                     page_num=page_num,
                     message="text overlaps protected region",
-                    source_ids=_source_ids_for_item(item),
+                    source_ids=item.source_ids,
                     bbox=item_bbox,
-                    render_kind=str(_item_value(item, "kind", "")),
+                    render_kind=str(item.kind),
                     artifact_paths={
                         "protected_source_ids": ",".join(protected_source_ids)
                     },
@@ -857,11 +801,11 @@ def detect_geometry_issues(
             )
 
     for left_idx, left in enumerate(text_items):
-        left_bbox = _bbox_tuple(_item_value(left, "bbox"))
+        left_bbox = _bbox_tuple(left.bbox)
         for right in text_items[left_idx + 1 :]:
-            left_ids = _source_ids_for_item(left)
-            right_ids = _source_ids_for_item(right)
-            right_bbox = _bbox_tuple(_item_value(right, "bbox"))
+            left_ids = left.source_ids
+            right_ids = right.source_ids
+            right_bbox = _bbox_tuple(right.bbox)
             if not text_boxes_significantly_overlap(left_bbox, right_bbox):
                 continue
             issues.append(
@@ -883,25 +827,14 @@ def detect_geometry_issues(
     return issues
 
 
-def detect_style_issues(plan, *, font_tolerance: float = 0.01) -> list[VisualQaIssue]:
-    page_num = _plan_page_num(plan)
+def detect_style_issues(plan: PageRenderPlan, *, font_tolerance: float = 0.01) -> list[VisualQaIssue]:
+    page_num = plan.page_num
     issues = [
         VisualQaIssue(category="style_hierarchy", severity="error", page_num=page_num, message=message)
         for message in document_style_hierarchy_errors()
     ]
-    classifications_by_id = _classifications_by_block_id(plan)
-    for value in _plan_render_items(plan):
-        # Match the artifact's numeric representation before applying the shared style policy.
-        size = _item_value(value, "font_size")
-        item = RenderItem(
-            kind=_item_value(value, "kind"), source_ids=_source_ids_for_item(value),
-            bbox=_bbox_tuple(_item_value(value, "bbox")),
-            style_name=_item_value(value, "style_name", ""),
-            font_size=None if size is None else float(size),
-            fallback_reason=_item_value(value, "fallback_reason", ""),
-            layout_role=_item_value(value, "layout_role", "normal"),
-            font_policy=_item_value(value, "font_policy", "document"),
-        )
+    classifications_by_id = ledger_classifications(plan)
+    for item in plan.items:
         classifications = {
             classifications_by_id[source_id] for source_id in item.source_ids
             if source_id in classifications_by_id
@@ -916,9 +849,9 @@ def detect_style_issues(plan, *, font_tolerance: float = 0.01) -> list[VisualQaI
 
 def _is_body_flow_text_item(item, classifications_by_id: Mapping[str, str]) -> bool:
     return (
-        _item_value(item, "kind") in TEXT_RENDER_KINDS
+        item.kind in TEXT_RENDER_KINDS
         and _classification_for_item(item, classifications_by_id) == "body"
-        and str(_item_value(item, "style_name", "") or "") == "body"
+        and str(item.style_name or "") == "body"
     )
 
 
@@ -944,11 +877,11 @@ def _body_flow_lanes(body_items) -> list[list]:
     for item in sorted(
         body_items,
         key=lambda candidate: (
-            _bbox_tuple(_item_value(candidate, "bbox"))[0],
-            _bbox_tuple(_item_value(candidate, "bbox"))[1],
+            _bbox_tuple(candidate.bbox)[0],
+            _bbox_tuple(candidate.bbox)[1],
         ),
     ):
-        item_bbox = _bbox_tuple(_item_value(item, "bbox"))
+        item_bbox = _bbox_tuple(item.bbox)
         target_idx = None
         for lane_idx, lane_bbox in enumerate(lane_boxes):
             if _same_body_flow_column(lane_bbox, item_bbox):
@@ -961,7 +894,7 @@ def _body_flow_lanes(body_items) -> list[list]:
         lanes[target_idx].append(item)
         lane_boxes[target_idx] = _bbox_union([lane_boxes[target_idx], item_bbox])
     return [
-        sorted(lane, key=lambda candidate: _bbox_tuple(_item_value(candidate, "bbox"))[1])
+        sorted(lane, key=lambda candidate: _bbox_tuple(candidate.bbox)[1])
         for lane in lanes
     ]
 
@@ -987,14 +920,14 @@ def _bbox_blocks_body_flow_gap(candidate_bbox, gap_bbox) -> bool:
 def _item_blocks_body_flow_gap(item, left, right, gap_bbox, classifications_by_id) -> bool:
     if item is left or item is right:
         return False
-    candidate_bbox = _bbox_tuple(_item_value(item, "bbox"))
+    candidate_bbox = _bbox_tuple(item.bbox)
     if _bbox_area(candidate_bbox) <= 0 or not _bbox_blocks_body_flow_gap(candidate_bbox, gap_bbox):
         return False
-    kind = _item_value(item, "kind")
+    kind = item.kind
     if kind == "original_image_clip":
         return True
     if kind in TEXT_RENDER_KINDS:
-        style_name = str(_item_value(item, "style_name", "") or "")
+        style_name = str(item.style_name or "")
         classification = _classification_for_item(item, classifications_by_id)
         return (
             style_name in BODY_FLOW_TEXT_BARRIER_STYLES
@@ -1003,43 +936,32 @@ def _item_blocks_body_flow_gap(item, left, right, gap_bbox, classifications_by_i
     return False
 
 
-def _protected_region_blocks_body_flow_gap(region, gap_bbox) -> bool:
-    protected_bbox = _bbox_tuple(_item_value(region, "bbox"))
-    return _bbox_area(protected_bbox) > 0 and _bbox_blocks_body_flow_gap(
-        protected_bbox,
-        gap_bbox,
-    )
-
-
 def _body_flow_gap_has_barrier(plan, left, right, gap_bbox, classifications_by_id) -> bool:
     return any(
         _item_blocks_body_flow_gap(item, left, right, gap_bbox, classifications_by_id)
-        for item in _plan_render_items(plan)
-    ) or any(
-        _protected_region_blocks_body_flow_gap(region, gap_bbox)
-        for region in _plan_protected_regions(plan)
+        for item in plan.items
     )
 
 
 def detect_body_flow_whitespace_issues(
-    plan,
+    plan: PageRenderPlan,
     *,
     strict: bool = False,
     visible_gap_threshold: float = 32.0,
 ) -> list[VisualQaIssue]:
-    page_num = _plan_page_num(plan)
+    page_num = plan.page_num
     severity = "error" if strict else "warning"
     issues = []
-    classifications_by_id = _classifications_by_block_id(plan)
+    classifications_by_id = ledger_classifications(plan)
     body_items = [
         item
-        for item in _plan_render_items(plan)
+        for item in plan.items
         if _is_body_flow_text_item(item, classifications_by_id)
     ]
     for lane in _body_flow_lanes(body_items):
         for left, right in zip(lane, lane[1:]):
-            left_bbox = _bbox_tuple(_item_value(left, "bbox"))
-            right_bbox = _bbox_tuple(_item_value(right, "bbox"))
+            left_bbox = _bbox_tuple(left.bbox)
+            right_bbox = _bbox_tuple(right.bbox)
             visible_gap = right_bbox[1] - left_bbox[3]
             if visible_gap <= visible_gap_threshold:
                 continue
@@ -1057,7 +979,7 @@ def detect_body_flow_whitespace_issues(
                     severity=severity,
                     page_num=page_num,
                     message=f"body flow gap is {visible_gap:.1f}pt",
-                    source_ids=_source_ids_for_item(left) + _source_ids_for_item(right),
+                    source_ids=left.source_ids + right.source_ids,
                     bbox=gap_bbox,
                     render_kind="text",
                 )
@@ -1229,7 +1151,7 @@ def generate_visual_qa_report(
     plan_artifact_paths,
     *,
     output_dir: str | Path,
-    plans=None,
+    plans: list[PageRenderPlan] | None = None,
     translated_pdf_path: str | Path | None = None,
     source_png_paths: Mapping[int | str, str | Path] | None = None,
     source_blocks_by_page: Mapping[int | str, list[dict]] | None = None,
@@ -1244,15 +1166,15 @@ def generate_visual_qa_report(
         if plans is None else list(plans)
     )
     for plan in loaded_plans:
-        if _plan_render_items(plan) and _item_value(plan, "page_size") is None and page_size is None:
-            raise ValueError(f"visual QA page {_plan_page_num(plan)} requires page_size for render_items")
-    checked_pages = sorted({_plan_page_num(plan) for plan in loaded_plans})
+        if plan.items and plan.page_size is None and page_size is None:
+            raise ValueError(f"visual QA page {plan.page_num} requires page_size for render_items")
+    checked_pages = sorted({plan.page_num for plan in loaded_plans})
     png_paths = {}
     if translated_pdf_path is not None:
         rendered_paths = render_pdf_pages_to_png(
             translated_pdf_path,
             Path(output_dir) / "rendered_png",
-            {_plan_page_num(plan): int(_item_value(plan, "output_page_num") or _plan_page_num(plan))
+            {plan.page_num: int(plan.output_page_num or plan.page_num)
              for plan in loaded_plans},
             dpi=dpi,
         )
@@ -1270,13 +1192,13 @@ def generate_visual_qa_report(
         for page_num, blocks in (source_blocks_by_page or {}).items()
     }
     for plan in loaded_plans:
-        page_num = _plan_page_num(plan)
+        page_num = plan.page_num
         report_issues.extend(detect_ownership_issues(plan))
 
     for plan in loaded_plans:
-        plan_page_size = _item_value(plan, "page_size") or page_size
+        plan_page_size = plan.page_size or page_size
         if plan_page_size is not None:
-            page_num = _plan_page_num(plan)
+            page_num = plan.page_num
             report_issues.extend(detect_geometry_issues(plan, plan_page_size))
             report_issues.extend(detect_style_issues(plan))
             report_issues.extend(

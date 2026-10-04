@@ -81,9 +81,9 @@ class ReviewCleanupTests(unittest.TestCase):
                 items=[render_plan.RenderItem("translated_text", ["b"], (20, 50, 300, 90),
                                               text="正文", font_size=1, style_name="body",
                                               fallback_reason=reason)],
-                ledger=[render_plan.CoverageEntry("b", "body", "translated_text", True)],
+                coverage=[render_plan.CoverageSource("b", "body")],
             )
-            for value in (plan, render_plan.render_plan_to_json(plan)):
+            for value in (plan, render_plan.render_plan_from_json(render_plan.render_plan_to_json(plan))):
                 with self.subTest(reason=reason, representation=type(value).__name__):
                     self.assertEqual(bool(qa_visual.detect_style_issues(value)),
                                      bool(layout.validate_plan_style_policy(plan)))

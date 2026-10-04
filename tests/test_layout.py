@@ -194,7 +194,7 @@ class LayoutExtractionModuleTests(unittest.TestCase):
                 style_name="body",
             )
         )
-        plan.ledger.append(render_plan.CoverageEntry("body", "body", "translated_text", True, None))
+        plan.coverage.append(render_plan.CoverageSource("body", "body"))
 
         layout.split_translated_text_around_protected(plan, page_size=(300.0, 300.0), fitz=FakeFitz())
 
@@ -215,7 +215,7 @@ class LayoutExtractionModuleTests(unittest.TestCase):
             style_name="body",
         )
         plan.items.append(original)
-        plan.ledger.append(render_plan.CoverageEntry("body", "body", "translated_text", True, None))
+        plan.coverage.append(render_plan.CoverageSource("body", "body"))
 
         def empty_segments(_text, segments, _style=None, fitz=None):
             return ["" for _segment in segments]
@@ -225,7 +225,7 @@ class LayoutExtractionModuleTests(unittest.TestCase):
 
         self.assertIn(original, plan.items)
         self.assertEqual(plan.ledger[0].render_kind, "translated_text")
-        self.assertIsNone(plan.ledger[0].fallback_reason)
+        self.assertEqual(plan.ledger[0].fallback_reason, plan.items[0].fallback_reason)
 
     def test_text_fit_validation_rejects_unrecorded_font_shrinking(self):
         plan = render_plan.PageRenderPlan(page_num=8)
@@ -301,7 +301,6 @@ class LayoutExtractionModuleTests(unittest.TestCase):
                 component_kind=ownership.COMPONENT_KIND_VISUAL,
             )
         )
-        plan.protected_boxes.append(plan.items[0].bbox)
         plan.items.append(
             render_plan.RenderItem(
                 "translated_text",
@@ -379,7 +378,6 @@ class LayoutExtractionModuleTests(unittest.TestCase):
                 component_kind=ownership.COMPONENT_KIND_VISUAL,
             )
         )
-        plan.protected_boxes.append(visual_bbox)
 
         before = {
             tuple(item.source_ids): item.bbox

@@ -56,7 +56,11 @@ vector 已在最终布局后统一刷新归属诊断，结构检查通过后才�
 
 源图片现通过出现位置 ID、绘制项和覆盖记录进入布局及最终校验。重复覆盖复用已有视觉裁剪；透明、分组和叠放图片在规划时选择源页裁剪。保留现有背景图及边缘图标过滤政策。[E9]
 
-仍需调整的事实包括：任意分片缺少精确来源跨度、对象/JSON 双表示适配散布在 QA 中，以及正式输出写入早于可选 QA。当前顺序检查仅覆盖带完整有序 source IDs 的正文合流，不证明全局阅读顺序。[E5][E7][E11]
+JSON 计划在 `render_plan.py` 的加载边界转成 `PageRenderPlan`，QA 与归属校验只消费对象。`coverage` 保存源覆盖义务与显式跳过决策；覆盖结果和保护区域从实际绘制项推导，不再同步写入多份状态。视觉组件的覆盖仍必须由图片裁剪满足，即使 OCR 文字属于平凡内容；同源同组件的文字绘制项不能替代视觉内容。[E5]
+
+布局先依据移动前的位置整理包含片段、编号连续关系及短片段，再拆分避障与压缩几何；压缩后不再重新推断文本关联。新增图片 fallback 时才再次避障，最终字体适配保留内容及顺序。[E3][E11]
+
+仍需调整的事实包括：任意分片缺少精确来源跨度，以及正式输出写入早于可选 QA。当前顺序检查仅覆盖带完整有序 source IDs 的正文合流，不证明全局阅读顺序。[E7][E11]
 
 已实现的变更由实施记录追踪；未完成的边界与验收条件见下文。两个入口默认按页组批并共用缓存校验，可选 QA 默认值仍由各入口决定。
 
@@ -72,7 +76,7 @@ vector 已在最终布局后统一刷新归属诊断，结构检查通过后才�
 | E2 | [pipeline.py](../../../pipeline.py)：`analyze_selected_pages`、`build_translation_page_components`、`build_translation_batches`、`build_page_render_plan` | 文档入口复用源分析；直接调用 helper 时允许按相同源输入重建；译文状态不决定源归属 |
 | E3 | [layout.py](../../../layout.py)：`text_item_style_issues`、`text_item_font_size_bounds`、`split_translated_text_around_protected`；[pipeline.py](../../../pipeline.py)：`fit_body_flow_text_items`、`merge_adjacent_body_text_flows`、`normalize_vector_text_layout` | 布局与字体政策独立于诊断原因；最终布局修改几何/字号并保存权限；拆分保留元数据 |
 | E4 | [pipeline.py](../../../pipeline.py)：`validate_final_page_plan`、`write_vector_pdf`、`validate_plan_quality`；[render_plan.py](../../../render_plan.py)：`validate_plan_ownership`、`validate_plan_layout` | 最终布局后刷新归属并统一检查覆盖、几何、文本重叠、样式和 fit；结构错误在绘制前阻断 |
-| E5 | [qa_visual.py](../../../qa_visual.py)：`_plan_render_items`、`_item_value`、`detect_ownership_issues`、`generate_visual_qa_report`；[render_plan.py](../../../render_plan.py)：`PageRenderPlan`、`render_plan_to_json` | 检测逻辑兼容字典/对象；清理后归属 ledger 在导出时由组件生成 |
+| E5 | [qa_visual.py](../../../qa_visual.py)：`detect_ownership_issues`、`generate_visual_qa_report`；[render_plan.py](../../../render_plan.py)：`render_plan_from_json`、`PageRenderPlan`、`CoverageSource`、`render_plan_to_json` | JSON 在加载边界转换；QA 使用统一对象；覆盖结果及保护区域由最终 items 推导，归属 ledger 在导出时由组件生成 |
 | E6 | [tests/test_final_render_plan.py](../../../tests/test_final_render_plan.py)：`FinalRenderPlanTests`；[README.md](../../../README.md)：QA Artifacts | 已有最终计划交接、实际页尺寸、输出页映射、最终译文出口及跨页修复只应用一次的测试 |
 | E7 | [translate_pdf_parallel.py](../../../translate_pdf_parallel.py)：`main`；[pipeline.py](../../../pipeline.py)：`translate_document`；[translation_batch.py](../../../translation_batch.py)：`run_batches`；[tests/test_translation_batch.py](../../../tests/test_translation_batch.py)：组批与缓存测试 | 两入口默认按页组批，共用按实际请求校验的缓存；正式输出写入发生在可选 QA 之前 |
 | E9 | [render_pdf.py](../../../render_pdf.py)：`source_image_items`、`render_plan_item`；[pipeline.py](../../../pipeline.py)：`add_source_images_to_plan`、`write_vector_pdf`、`render_pages` | vector 源图片进入布局前的计划和覆盖记录；按原始图片边界检查最终覆盖；raster 有独立绘制路径 |

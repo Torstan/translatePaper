@@ -105,7 +105,7 @@ from layout import (
     style_name_for_heading_text,
 )
 from render_plan import (
-    CoverageEntry,
+    CoverageSource,
     DocumentRenderResult,
     PageRenderPlan,
     RenderItem,
@@ -115,7 +115,6 @@ from render_plan import (
     bbox_significantly_overlaps_protected,
     ledger_classifications,
     try_write_render_plan_artifact,
-    update_ledger_render_kind,
     validate_plan_coverage,
     validate_plan_layout,
     validate_plan_text_overlaps,
@@ -1089,10 +1088,13 @@ def annotate_plan_with_component_metadata(
             return candidates[0]
         return None
 
-    for entry in plan.ledger:
+    for entry in plan.coverage:
         if entry.component_id and entry.component_kind:
             continue
-        component = matching_component(entry.block_id, entry.render_kind)
+        kinds = {item.kind for item in plan.items if entry.block_id in item.source_ids}
+        if not kinds and not entry.skipped:
+            continue
+        component = matching_component(entry.block_id, next(iter(kinds)) if len(kinds) == 1 else "")
         if component is None:
             continue
         entry.component_id = component.component_id
@@ -2050,10 +2052,7 @@ def build_raster_page_plan(page_num, blocks, translations, dpi, raster_size, pag
         if kind in {ownership.COMPONENT_KIND_PAGE_NUMBER, ownership.COMPONENT_KIND_DUPLICATE}:
             classification = "page_number" if kind == ownership.COMPONENT_KIND_PAGE_NUMBER else "nested_duplicate"
             for source_id in component.source_ids:
-                plan.ledger.append(CoverageEntry(
-                    source_id, classification, "skip_explicitly", True,
-                    component_id=component.component_id, component_kind=kind,
-                ))
+                plan.coverage.append(CoverageSource(source_id, classification, skipped=True, component_id=component.component_id, component_kind=kind))
             continue
 
         if kind == ownership.COMPONENT_KIND_TRANSLATED_TEXT and mixed:
@@ -2084,7 +2083,6 @@ def build_raster_page_plan(page_num, blocks, translations, dpi, raster_size, pag
         if item.kind == "original_image_clip":
             # Source analysis has already selected the clip extent; do not expand it into nearby prose.
             item.bbox = bbox_to_px_box(item.bbox, dpi, width, height, pad=0)
-            plan.protected_boxes.append(item.bbox)
         else:
             x0, y0, x1, y1 = component.source_bbox
             # Component IDs distinguish two fragments that share the same extracted source block.
@@ -2100,11 +2098,8 @@ def build_raster_page_plan(page_num, blocks, translations, dpi, raster_size, pag
             text_by_component[component.component_id] = item.text
         plan.items.append(item)
         for source_id in component.source_ids:
-            plan.ledger.append(CoverageEntry(
-                source_id, "body" if mixed and kind == ownership.COMPONENT_KIND_TRANSLATED_TEXT
-                else classes.get(source_id, "unknown"), item.kind, True, item.fallback_reason,
-                component_id=component.component_id, component_kind=kind,
-            ))
+            plan.coverage.append(CoverageSource(source_id, "body" if mixed and kind == ownership.COMPONENT_KIND_TRANSLATED_TEXT
+                else classes.get(source_id, "unknown"), component_id=component.component_id, component_kind=kind))
 
     render_boxes = build_render_boxes(text_blocks, text_by_component, dpi, width, height, plan.protected_boxes)
     errors = []
@@ -2562,15 +2557,8 @@ def reference_line_render_items(blocks, bbox_lines, page_size, classes: dict[str
     return items
 
 
-def reference_coverage_entry(block, render_kind: str, fallback_reason: str) -> CoverageEntry:
-    return CoverageEntry(
-        block["id"],
-        "reference",
-        render_kind,
-        True,
-        fallback_reason,
-        reference_signature=reference_signature(block.get("text", "")),
-    )
+def reference_coverage_entry(block) -> CoverageSource:
+    return CoverageSource(block["id"], "reference", reference_signature=reference_signature(block.get("text", "")))
 
 
 def adjusted_render_bbox(block, classification: str, page_size) -> tuple[float, float, float, float]:
@@ -2738,14 +2726,8 @@ def add_standalone_heading_pair_render_items(
                         fallback_reason=fallback_reason,
                     )
                 )
-                plan.ledger.append(
-                    CoverageEntry(
-                        block["id"],
-                        "heading",
-                        "original_selectable_text",
-                        True,
-                        fallback_reason,
-                    )
+                plan.coverage.append(
+                    CoverageSource(block["id"], "heading")
                 )
                 rendered_ids.add(block["id"])
             continue
@@ -2765,14 +2747,8 @@ def add_standalone_heading_pair_render_items(
             )
         )
         for block in (number_block, title_block):
-            plan.ledger.append(
-                CoverageEntry(
-                    block["id"],
-                    "heading",
-                    "translated_text",
-                    True,
-                    "standalone_heading_pair",
-                )
+            plan.coverage.append(
+                CoverageSource(block["id"], "heading")
             )
             rendered_ids.add(block["id"])
     return rendered_ids
@@ -3523,7 +3499,6 @@ def drop_redundant_short_body_fragments(plan: PageRenderPlan, blocks, bbox_lines
         for source_id in item.source_ids:
             if source_id not in target.source_ids:
                 target.source_ids.append(source_id)
-        update_ledger_render_kind(plan, item.source_ids, "translated_text", "merged_redundant_short_fragment")
         remove_indices.add(idx)
     if remove_indices:
         plan.items = [item for idx, item in enumerate(plan.items) if idx not in remove_indices]
@@ -3825,17 +3800,8 @@ def add_missing_visual_component_clips(plan: PageRenderPlan, blocks, classes: di
                     component_kind=component.component_kind,
                 )
             )
-            plan.protected_boxes.append(clip_bbox)
-            plan.ledger.append(
-                CoverageEntry(
-                    source_id,
-                    classes.get(source_id, "figure_region"),
-                    "original_image_clip",
-                    True,
-                    "visual_component_fallback_clip",
-                    component_id=component.component_id,
-                    component_kind=component.component_kind,
-                )
+            plan.coverage.append(
+                CoverageSource(source_id, classes.get(source_id, "figure_region"), component_id=component.component_id, component_kind=component.component_kind)
             )
             covered_ids.add(source_id)
 
@@ -3907,10 +3873,8 @@ def add_source_images_to_plan(plan: PageRenderPlan, source_images: list[RenderIt
             item = replace(source, source_ids=list(source.source_ids), bbox=box,
                            source_image_xref=source.source_image_xref if box == source.bbox else 0)
             plan.items.append(item)
-            plan.protected_boxes.append(box)
         for source_id in source.source_ids:
-            plan.ledger.append(CoverageEntry(source_id, "unknown", "original_image_clip", True,
-                                             source.fallback_reason))
+            plan.coverage.append(CoverageSource(source_id, "unknown"))
     # Source images are the background layer; selectable text and planned clips
     # must remain visible above them in the final PDF.
     plan.items = plan.items[first_native_index:] + plan.items[:first_native_index]
@@ -3941,7 +3905,6 @@ def build_page_render_plan(
                     fallback_reason="image_only_page",
                 )
             )
-            plan.protected_boxes.append(full_page_bbox)
             add_source_images_to_plan(plan, source_images or [])
             return plan
     ownership_result = source_analysis
@@ -4065,7 +4028,6 @@ def build_page_render_plan(
                     component_kind="" if matching_component is None else matching_component.component_kind,
                 )
             )
-            plan.protected_boxes.append(clip_bbox)
         if not rendered_clip_ids and image_source_ids:
             plan.items.append(
                 RenderItem(
@@ -4077,18 +4039,9 @@ def build_page_render_plan(
                     component_kind="" if matching_component is None else matching_component.component_kind,
                 )
             )
-            plan.protected_boxes.append(region_bbox)
         for source_id in image_source_ids:
-            plan.ledger.append(
-                CoverageEntry(
-                    source_id,
-                    classes.get(source_id, "figure_region"),
-                    "original_image_clip",
-                    True,
-                    "visual_region",
-                    component_id="" if matching_component is None else matching_component.component_id,
-                    component_kind="" if matching_component is None else matching_component.component_kind,
-                )
+            plan.coverage.append(
+                CoverageSource(source_id, classes.get(source_id, "figure_region"), component_id="" if matching_component is None else matching_component.component_id, component_kind="" if matching_component is None else matching_component.component_kind)
             )
     for component in mixed_visual_body_components(plan.components):
         body_item = mixed_visual_body_component_render_item(component, translations, page_size, bbox_lines)
@@ -4096,16 +4049,8 @@ def build_page_render_plan(
             continue
         plan.items.append(body_item)
         for source_id in component.source_ids:
-            plan.ledger.append(
-                CoverageEntry(
-                    source_id,
-                    "body",
-                    body_item.kind,
-                    True,
-                    body_item.fallback_reason,
-                    component_id=component.component_id,
-                    component_kind=component.component_kind,
-                )
+            plan.coverage.append(
+                CoverageSource(source_id, "body", component_id=component.component_id, component_kind=component.component_kind)
             )
 
     add_missing_visual_component_clips(plan, blocks, classes, page_size)
@@ -4131,14 +4076,8 @@ def build_page_render_plan(
         classification = classes.get(block["id"], "unknown")
         if block["id"] in visual_covered_text_ids:
             if not any(entry.block_id == block["id"] for entry in plan.ledger):
-                plan.ledger.append(
-                    CoverageEntry(
-                        block["id"],
-                        classification,
-                        "original_image_clip",
-                        True,
-                        "covered_by_visual_region",
-                    )
+                plan.coverage.append(
+                    CoverageSource(block["id"], classification)
                 )
             continue
         bbox = adjusted_render_bbox(block, classification, page_size)
@@ -4146,18 +4085,12 @@ def build_page_render_plan(
             bbox = refined_text_bbox_from_lines(block, bbox, bbox_lines or [], page_size)
         component = component_by_source_id.get(block["id"])
         if component is not None and component.component_kind == ownership.COMPONENT_KIND_DUPLICATE:
-            plan.ledger.append(CoverageEntry(block["id"], "nested_duplicate", "skip_explicitly", True))
+            plan.coverage.append(CoverageSource(block["id"], "nested_duplicate", skipped=True))
             continue
         if classification == "journal_footer":
             if footer_items:
-                plan.ledger.append(
-                    CoverageEntry(
-                        block["id"],
-                        classification,
-                        "original_selectable_text",
-                        True,
-                        "journal_footer_lines",
-                    )
+                plan.coverage.append(
+                    CoverageSource(block["id"], classification)
                 )
                 continue
             plan.items.append(
@@ -4172,18 +4105,12 @@ def build_page_render_plan(
                     layout_role="journal_footer",
                 )
             )
-            plan.ledger.append(
-                CoverageEntry(
-                    block["id"],
-                    classification,
-                    "original_selectable_text",
-                    True,
-                    "journal_footer",
-                )
+            plan.coverage.append(
+                CoverageSource(block["id"], classification)
             )
             continue
         if classification in {"page_number", "header_footer"}:
-            plan.ledger.append(CoverageEntry(block["id"], classification, "skip_explicitly", True))
+            plan.coverage.append(CoverageSource(block["id"], classification, skipped=True))
             continue
         if should_preserve_first_page_metadata_as_image(block):
             metadata_bbox = clamped_expanded_bbox(block_bbox(block), page_size, pad_x=1.0, pad_y=1.0)
@@ -4195,20 +4122,13 @@ def build_page_render_plan(
                     fallback_reason="first_page_metadata_original",
                 )
             )
-            plan.protected_boxes.append(metadata_bbox)
-            plan.ledger.append(
-                CoverageEntry(
-                    block["id"],
-                    classification,
-                    "original_image_clip",
-                    True,
-                    "first_page_metadata_original",
-                )
+            plan.coverage.append(
+                CoverageSource(block["id"], classification)
             )
             continue
         if classification == "reference":
             if block["id"] in reference_line_source_ids:
-                plan.ledger.append(reference_coverage_entry(block, "original_selectable_text", "reference_original_lines"))
+                plan.coverage.append(reference_coverage_entry(block))
                 continue
             plan.items.append(
                 RenderItem(
@@ -4221,7 +4141,7 @@ def build_page_render_plan(
                     fallback_reason="reference_original",
                 )
             )
-            plan.ledger.append(reference_coverage_entry(block, "original_selectable_text", "reference_original"))
+            plan.coverage.append(reference_coverage_entry(block))
             continue
         if classification in {"body", "heading", "subheading", "title"}:
             translated = translation_for_block(block, translations)
@@ -4242,14 +4162,8 @@ def build_page_render_plan(
                 title_metadata_items = first_page_title_metadata_render_items(block, translated, bbox, page_size)
                 if title_metadata_items:
                     plan.items.extend(title_metadata_items)
-                    plan.ledger.append(
-                        CoverageEntry(
-                            block["id"],
-                            classification,
-                            "translated_text",
-                            True,
-                            "first_page_title_metadata_split",
-                        )
+                    plan.coverage.append(
+                        CoverageSource(block["id"], classification)
                     )
                     continue
                 embedded_heading_items = embedded_heading_render_items(
@@ -4261,14 +4175,8 @@ def build_page_render_plan(
                 )
                 if embedded_heading_items:
                     plan.items.extend(embedded_heading_items)
-                    plan.ledger.append(
-                        CoverageEntry(
-                            block["id"],
-                            classification,
-                            "translated_text",
-                            True,
-                            "embedded_heading_split",
-                        )
+                    plan.coverage.append(
+                        CoverageSource(block["id"], classification)
                     )
                     continue
                 paragraph_items = []
@@ -4283,14 +4191,8 @@ def build_page_render_plan(
                     )
                 if paragraph_items:
                     plan.items.extend(paragraph_items)
-                    plan.ledger.append(
-                        CoverageEntry(
-                            block["id"],
-                            classification,
-                            "translated_text",
-                            True,
-                            "source_paragraph_split",
-                        )
+                    plan.coverage.append(
+                        CoverageSource(block["id"], classification)
                     )
                     continue
                 plan.items.append(
@@ -4306,7 +4208,7 @@ def build_page_render_plan(
                         font_policy=font_policy,
                     )
                 )
-                plan.ledger.append(CoverageEntry(block["id"], classification, "translated_text", True, font_reason))
+                plan.coverage.append(CoverageSource(block["id"], classification))
             elif translated and block["id"] in translations:
                 plan.items.append(
                     RenderItem(
@@ -4319,14 +4221,8 @@ def build_page_render_plan(
                         fallback_reason="untranslated_fallback_original",
                     )
                 )
-                plan.ledger.append(
-                    CoverageEntry(
-                        block["id"],
-                        classification,
-                        "original_selectable_text",
-                        True,
-                        "untranslated_fallback_original",
-                    )
+                plan.coverage.append(
+                    CoverageSource(block["id"], classification)
                 )
             elif classification == "body" and (heuristic_translated := heuristic_translation_for_missing_block(text)):
                 plan.items.append(
@@ -4340,14 +4236,8 @@ def build_page_render_plan(
                         fallback_reason="heuristic_translation",
                     )
                 )
-                plan.ledger.append(
-                    CoverageEntry(
-                        block["id"],
-                        classification,
-                        "translated_text",
-                        True,
-                        "heuristic_translation",
-                    )
+                plan.coverage.append(
+                    CoverageSource(block["id"], classification)
                 )
             elif block.get("preserve_image") and not is_body_enumeration_line(text):
                 plan.items.append(
@@ -4358,15 +4248,8 @@ def build_page_render_plan(
                         fallback_reason="missing_translation_preserve_image",
                     )
                 )
-                plan.protected_boxes.append(bbox)
-                plan.ledger.append(
-                    CoverageEntry(
-                        block["id"],
-                        classification,
-                        "original_image_clip",
-                        True,
-                        "missing_translation_preserve_image",
-                    )
+                plan.coverage.append(
+                    CoverageSource(block["id"], classification)
                 )
             else:
                 plan.items.append(
@@ -4380,19 +4263,12 @@ def build_page_render_plan(
                         fallback_reason="missing_translation",
                     )
                 )
-                plan.ledger.append(
-                    CoverageEntry(
-                        block["id"],
-                        classification,
-                        "original_selectable_text",
-                        True,
-                        "missing_translation",
-                    )
+                plan.coverage.append(
+                    CoverageSource(block["id"], classification)
                 )
             continue
         plan.items.append(RenderItem("original_image_clip", [block["id"]], bbox, fallback_reason="unknown_classification"))
-        plan.protected_boxes.append(bbox)
-        plan.ledger.append(CoverageEntry(block["id"], classification, "original_image_clip", True, "unknown_classification"))
+        plan.coverage.append(CoverageSource(block["id"], classification))
     add_source_images_to_plan(plan, source_images or [])
     arrange_page_render_items(plan, blocks, page_size, bbox_lines or [])
     annotate_plan_with_component_metadata(plan, components_by_source_id)
@@ -4401,30 +4277,22 @@ def build_page_render_plan(
 
 
 def arrange_page_render_items(plan: PageRenderPlan, blocks, page_size, bbox_lines) -> None:
-    """Resolve source fragments, place body flows, then protect explicit fallbacks.
+    """Resolve text relationships on source placement, then adapt geometry.
 
-    This stage owns the repair order. The second balance follows enumeration
-    and fragment repairs, which can change lane contents and positions.
-    Final font fitting happens once at the drawing boundary, after ownership
-    metadata has been attached to every resulting item.
+    Compaction must not make unrelated source fragments into continuations.
+    Finish containment, enumeration and short-fragment associations before
+    splitting or moving boxes; later stages preserve that content and order.
+    A newly selected image fallback is the only reason to protect text again.
     """
-    # Splitting a visual intersection can expose smaller contained fragments.
-    merge_contained_text_fragments(plan)
-    split_translated_text_around_protected(plan, page_size)
     merge_contained_text_fragments(plan)
     repair_numbered_enumeration_flow(plan)
     merge_adjacent_body_text_flows(plan)
     drop_redundant_short_body_fragments(plan, blocks, bbox_lines)
-    # Geometry changes can make an enumeration/short-fragment neighbor eligible.
-    # Resolve those neighbors before the second balance; it is not a fixed-point loop.
+    split_translated_text_around_protected(plan, page_size)
     expand_text_boxes_to_fit(plan, page_size)
     rebalance_body_text_flows(plan, page_size)
-    repair_numbered_enumeration_flow(plan)
-    drop_redundant_short_body_fragments(plan, blocks, bbox_lines)
-    rebalance_body_text_flows(plan, page_size)
-    # A new nonprose image fallback becomes an obstacle for translated text.
-    convert_unfit_nonprose_text_to_image_clips(plan, blocks)
-    split_translated_text_around_protected(plan, page_size)
+    if convert_unfit_nonprose_text_to_image_clips(plan, blocks):
+        split_translated_text_around_protected(plan, page_size)
 
 
 def validate_plan_translation_quality(page_num: int, blocks, translations, plan: PageRenderPlan) -> list[str]:
@@ -4806,7 +4674,6 @@ def fit_dense_visual_body_rows(plan: PageRenderPlan, page_size, fitz=None) -> No
         item.font_size = compact_font_size
         item.font_policy = "dense_visual_row"
         item.fallback_reason = DENSE_VISUAL_BODY_ROW_FALLBACK
-        update_ledger_render_kind(plan, item.source_ids, item.kind, DENSE_VISUAL_BODY_ROW_FALLBACK)
 
 
 def compact_font_size_for_text_item(item: RenderItem, fitz, *, max_font_size: float | None = None) -> float | None:
@@ -4844,7 +4711,6 @@ def fit_body_flow_text_items(plan: PageRenderPlan, fitz=None) -> None:
         item.font_size = compact_font_size
         item.font_policy = "compact_body_flow"
         item.fallback_reason = BODY_FLOW_COMPACT_FALLBACK
-        update_ledger_render_kind(plan, item.source_ids, item.kind, BODY_FLOW_COMPACT_FALLBACK)
 
 
 def validate_document_quality(selected_pages, translations, plans: list[PageRenderPlan], job_paths=None) -> list[str]:
@@ -4969,12 +4835,6 @@ def merge_contained_text_fragments(plan: PageRenderPlan) -> None:
             for source_id in small.source_ids:
                 if source_id not in large.source_ids:
                     large.source_ids.append(source_id)
-        update_ledger_render_kind(
-            plan,
-            [source_id for _relative_y, _idx, small in fragments for source_id in small.source_ids],
-            "translated_text",
-            "merged_into_large_text",
-        )
 
     plan.items = [item for idx, item in enumerate(plan.items) if idx not in remove_indices]
 
@@ -5182,7 +5042,7 @@ def unfit_text_item_should_be_image(
     return any(block_is_dense_nonprose_image_fallback(block) for block in source_blocks)
 
 
-def convert_unfit_nonprose_text_to_image_clips(plan: PageRenderPlan, blocks, fitz=None) -> None:
+def convert_unfit_nonprose_text_to_image_clips(plan: PageRenderPlan, blocks, fitz=None) -> bool:
     if fitz is None:
         fitz = load_fitz()
     blocks_by_id = {block["id"]: block for block in blocks}
@@ -5192,6 +5052,7 @@ def convert_unfit_nonprose_text_to_image_clips(plan: PageRenderPlan, blocks, fit
         if entry.classification == "reference" or entry.component_kind == ownership.COMPONENT_KIND_REFERENCE
     }
     new_items = []
+    changed = False
     for item in plan.items:
         if not unfit_text_item_should_be_image(item, blocks_by_id, fitz, reference_source_ids):
             new_items.append(item)
@@ -5204,8 +5065,9 @@ def convert_unfit_nonprose_text_to_image_clips(plan: PageRenderPlan, blocks, fit
                 fallback_reason="unfit_nonprose_image",
             )
         )
-        update_ledger_render_kind(plan, item.source_ids, "original_image_clip", "unfit_nonprose_image")
+        changed = True
     plan.items = new_items
+    return changed
 
 
 def validate_final_page_plan(plan: PageRenderPlan, blocks, fitz, translations=None, *, source_images=()) -> tuple[dict, list[str]]:

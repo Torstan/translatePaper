@@ -11,9 +11,69 @@ import qa_visual
 import layout
 import ownership
 import render_plan
+from tests.pdf_render_fixture_runner import qa_plan_fixture
 
 
 class VisualQaImageTests(unittest.TestCase):
+    def test_loaded_plan_retains_drawing_contract_and_warning_severity(self):
+        plan = render_plan.PageRenderPlan(
+            7, page_size=(100, 200), output_page_num=1, coordinate_space="pixels",
+            raster_size=(200, 400), items=[render_plan.RenderItem(
+                "translated_text", ["b"], (10, 20, 80, 60), text="正文",
+                font_size=12, style_name="body", color=(1, 1, 1),
+                raster_lines=["正文"], raster_source_bbox=(8, 18, 82, 62),
+                layout_role="callout", font_policy="source_adapted")],
+            ownership_validation=ownership.OwnershipValidationResult([
+                ownership.OwnershipIssue("missing_owner", "warning", 7, "missing source", ["b"])]),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plan.json"
+            path.write_text(render_plan.render_plan_json_dumps(plan))
+            loaded = render_plan.load_render_plan_artifact(path)
+        self.assertIsInstance(loaded, render_plan.PageRenderPlan)
+        self.assertEqual(loaded, plan)
+        self.assertEqual(qa_visual.detect_ownership_issues(loaded)[0].severity, "warning")
+
+    def test_loaded_plan_rejects_invalid_coordinate_space_and_raster_lines(self):
+        valid = {"page_num": 1, "render_items": [{"kind": "translated_text", "source_ids": ["b"],
+                  "bbox": [10, 20, 80, 60], "text": "正文"}]}
+        invalid = [{**valid, "coordinate_space": "unknown"},
+                   {**valid, "render_items": [{**valid["render_items"][0], "raster_lines": "正文"}]}]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plan.json"
+            for payload in invalid:
+                with self.subTest(payload=payload):
+                    path.write_text(json.dumps(payload))
+                    with self.assertRaisesRegex(ValueError, "plan.json"):
+                        render_plan.load_render_plan_artifact(path)
+
+    def test_loaded_plan_rejects_malformed_optional_fields_at_boundary(self):
+        minimal = {"page_num": 1, "render_items": []}
+        coverage = {"block_id": "b", "classification": "body", "render_kind": "unrendered",
+                    "rendered": False, "component_id": ["bad"]}
+        component = {"component_id": "c", "component_kind": "visual", "source_ids": ["b"],
+                     "source_bbox": [0, 0, 10, 10], "reason_codes": None}
+        invalid = [
+            ({**minimal, "coordinate_space": []}, "coordinate_space"),
+            ({**minimal, "coverage_ledger": [coverage]}, "coverage_ledger.component_id"),
+            ({**minimal, "components": [component]}, "components.reason_codes"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plan.json"
+            for payload, field in invalid:
+                with self.subTest(field=field):
+                    path.write_text(json.dumps(payload))
+                    with self.assertRaisesRegex(ValueError, field):
+                        render_plan.load_render_plan_artifact(path)
+
+    def test_missing_font_size_is_reported_as_style_issue(self):
+        plan = render_plan.render_plan_from_json({
+            "page_num": 1, "render_items": [{"kind": "translated_text", "source_ids": ["b"],
+            "bbox": [0, 0, 100, 50], "text": "正文", "style_name": "body"}],
+        })
+        issues = qa_visual.detect_style_issues(plan)
+        self.assertEqual([issue.category for issue in issues], ["body_font_consistency"])
+
     def test_load_fitz_uses_repo_vendor_path(self):
         vendor_path = str(Path(qa_visual.__file__).resolve().parent / "vendor")
         original_path = list(sys.path)
@@ -86,7 +146,7 @@ class VisualQaImageTests(unittest.TestCase):
             Image.new("RGB", (100, 100), "white").save(source_png)
 
             issues = qa_visual.detect_blank_image_clips(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
             )
@@ -121,7 +181,7 @@ class VisualQaImageTests(unittest.TestCase):
             image.save(source_png)
 
             issues = qa_visual.detect_blank_image_clips(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
             )
@@ -147,7 +207,7 @@ class VisualQaImageTests(unittest.TestCase):
             "protected_regions": [{"bbox": [20, 18, 90, 55]}],
         }
 
-        issues = qa_visual.detect_geometry_issues(plan, page_size=(100, 100))
+        issues = qa_visual.detect_geometry_issues(qa_plan_fixture(plan), page_size=(100, 100))
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].category, "text_protected_overlap")
@@ -170,7 +230,7 @@ class VisualQaImageTests(unittest.TestCase):
             "protected_regions": [{"bbox": [20, 18, 90, 55]}],
         }
 
-        issues = qa_visual.detect_geometry_issues(plan, page_size=(100, 100))
+        issues = qa_visual.detect_geometry_issues(qa_plan_fixture(plan), page_size=(100, 100))
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].category, "text_protected_overlap")
@@ -194,7 +254,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_geometry_issues(plan, page_size=(100, 100))
+        issues = qa_visual.detect_geometry_issues(qa_plan_fixture(plan), page_size=(100, 100))
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].category, "text_overlap")
@@ -220,7 +280,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_geometry_issues(plan, page_size=(100, 100))
+        issues = qa_visual.detect_geometry_issues(qa_plan_fixture(plan), page_size=(100, 100))
 
         self.assertEqual([issue.category for issue in issues], ["text_overlap"])
 
@@ -302,7 +362,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_geometry_issues(plan, page_size=(100, 100))
+        issues = qa_visual.detect_geometry_issues(qa_plan_fixture(plan), page_size=(100, 100))
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].category, "page_bounds")
@@ -328,7 +388,7 @@ class VisualQaImageTests(unittest.TestCase):
             image.save(source_png)
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
             )
@@ -364,7 +424,7 @@ class VisualQaImageTests(unittest.TestCase):
             image.save(source_png)
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
             )
@@ -396,7 +456,7 @@ class VisualQaImageTests(unittest.TestCase):
             image.save(source_png)
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
             )
@@ -452,7 +512,7 @@ class VisualQaImageTests(unittest.TestCase):
             image.save(source_png)
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
                 source_blocks=source_blocks,
@@ -486,7 +546,7 @@ class VisualQaImageTests(unittest.TestCase):
             image.save(source_png)
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
             )
@@ -518,7 +578,7 @@ class VisualQaImageTests(unittest.TestCase):
             image.save(source_png)
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
             )
@@ -544,7 +604,7 @@ class VisualQaImageTests(unittest.TestCase):
             image.save(source_png)
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
             )
@@ -591,7 +651,7 @@ class VisualQaImageTests(unittest.TestCase):
             Image.new("RGB", (100, 100), "white").save(source_png)
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
                 source_blocks=blocks,
@@ -648,7 +708,7 @@ class VisualQaImageTests(unittest.TestCase):
             Image.new("RGB", (100, 100), "white").save(source_png)
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
                 source_blocks=blocks,
@@ -706,7 +766,7 @@ class VisualQaImageTests(unittest.TestCase):
             image.save(source_png)
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
                 source_blocks=blocks,
@@ -756,7 +816,7 @@ class VisualQaImageTests(unittest.TestCase):
             Image.new("RGB", (100, 100), "white").save(source_png)
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
                 source_blocks=blocks,
@@ -787,7 +847,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_style_issues(plan)
+        issues = qa_visual.detect_style_issues(qa_plan_fixture(plan))
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].category, "style_hierarchy")
@@ -817,7 +877,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_style_issues(plan)
+        issues = qa_visual.detect_style_issues(qa_plan_fixture(plan))
 
         self.assertEqual(issues, [])
 
@@ -858,7 +918,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_style_issues(plan)
+        issues = qa_visual.detect_style_issues(qa_plan_fixture(plan))
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].category, "body_font_consistency")
@@ -905,7 +965,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_style_issues(plan)
+        issues = qa_visual.detect_style_issues(qa_plan_fixture(plan))
 
         self.assertEqual(issues, [])
 
@@ -963,7 +1023,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_style_issues(plan)
+        issues = qa_visual.detect_style_issues(qa_plan_fixture(plan))
 
         self.assertEqual(issues, [])
 
@@ -1004,7 +1064,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_body_flow_whitespace_issues(plan)
+        issues = qa_visual.detect_body_flow_whitespace_issues(qa_plan_fixture(plan))
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].category, "body_flow_whitespace")
@@ -1048,7 +1108,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_body_flow_whitespace_issues(plan, strict=True)
+        issues = qa_visual.detect_body_flow_whitespace_issues(qa_plan_fixture(plan), strict=True)
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].severity, "error")
@@ -1090,7 +1150,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_body_flow_whitespace_issues(plan)
+        issues = qa_visual.detect_body_flow_whitespace_issues(qa_plan_fixture(plan))
 
         self.assertEqual(issues, [])
 
@@ -1142,7 +1202,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_body_flow_whitespace_issues(plan, strict=True)
+        issues = qa_visual.detect_body_flow_whitespace_issues(qa_plan_fixture(plan), strict=True)
 
         self.assertEqual(issues, [])
 
@@ -1197,7 +1257,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_body_flow_whitespace_issues(plan)
+        issues = qa_visual.detect_body_flow_whitespace_issues(qa_plan_fixture(plan))
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].source_ids, ["p018b0001", "p018b0003"])
@@ -1250,7 +1310,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_body_flow_whitespace_issues(plan)
+        issues = qa_visual.detect_body_flow_whitespace_issues(qa_plan_fixture(plan))
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].category, "body_flow_whitespace")
@@ -1306,7 +1366,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_body_flow_whitespace_issues(plan)
+        issues = qa_visual.detect_body_flow_whitespace_issues(qa_plan_fixture(plan))
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].category, "body_flow_whitespace")
@@ -1362,7 +1422,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_body_flow_whitespace_issues(plan)
+        issues = qa_visual.detect_body_flow_whitespace_issues(qa_plan_fixture(plan))
 
         self.assertEqual(issues, [])
 
@@ -1404,7 +1464,7 @@ class VisualQaImageTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_body_flow_whitespace_issues(plan)
+        issues = qa_visual.detect_body_flow_whitespace_issues(qa_plan_fixture(plan))
 
         self.assertEqual(issues, [])
 
@@ -1435,9 +1495,9 @@ class VisualQaRulePairTests(unittest.TestCase):
             ImageDraw.Draw(corrected).rectangle((12, 12, 20, 20), fill="black")
             corrected.save(corrected_png)
 
-            bad_issues = qa_visual.detect_blank_image_clips(plan, bad_png, page_size=(100, 100))
+            bad_issues = qa_visual.detect_blank_image_clips(qa_plan_fixture(plan), bad_png, page_size=(100, 100))
             corrected_issues = qa_visual.detect_blank_image_clips(
-                plan,
+                qa_plan_fixture(plan),
                 corrected_png,
                 page_size=(100, 100),
             )
@@ -1479,8 +1539,8 @@ class VisualQaRulePairTests(unittest.TestCase):
             ],
         }
 
-        bad_issues = qa_visual.detect_geometry_issues(bad_plan, page_size=(100, 100))
-        corrected_issues = qa_visual.detect_geometry_issues(corrected_plan, page_size=(100, 100))
+        bad_issues = qa_visual.detect_geometry_issues(qa_plan_fixture(bad_plan), page_size=(100, 100))
+        corrected_issues = qa_visual.detect_geometry_issues(qa_plan_fixture(corrected_plan), page_size=(100, 100))
 
         self.assertCategoryReported(bad_issues, "text_protected_overlap")
         self.assertCategoryAbsent(corrected_issues, "text_protected_overlap")
@@ -1521,8 +1581,8 @@ class VisualQaRulePairTests(unittest.TestCase):
             ],
         }
 
-        bad_issues = qa_visual.detect_geometry_issues(bad_plan, page_size=(100, 100))
-        corrected_issues = qa_visual.detect_geometry_issues(corrected_plan, page_size=(100, 100))
+        bad_issues = qa_visual.detect_geometry_issues(qa_plan_fixture(bad_plan), page_size=(100, 100))
+        corrected_issues = qa_visual.detect_geometry_issues(qa_plan_fixture(corrected_plan), page_size=(100, 100))
 
         self.assertCategoryReported(bad_issues, "text_overlap")
         self.assertCategoryAbsent(corrected_issues, "text_overlap")
@@ -1551,8 +1611,8 @@ class VisualQaRulePairTests(unittest.TestCase):
             ],
         }
 
-        bad_issues = qa_visual.detect_geometry_issues(bad_plan, page_size=(100, 100))
-        corrected_issues = qa_visual.detect_geometry_issues(corrected_plan, page_size=(100, 100))
+        bad_issues = qa_visual.detect_geometry_issues(qa_plan_fixture(bad_plan), page_size=(100, 100))
+        corrected_issues = qa_visual.detect_geometry_issues(qa_plan_fixture(corrected_plan), page_size=(100, 100))
 
         self.assertCategoryReported(bad_issues, "page_bounds")
         self.assertCategoryAbsent(corrected_issues, "page_bounds")
@@ -1575,7 +1635,7 @@ class VisualQaRulePairTests(unittest.TestCase):
             }
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
             )
@@ -1607,7 +1667,7 @@ class VisualQaRulePairTests(unittest.TestCase):
             }
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
             )
@@ -1643,12 +1703,12 @@ class VisualQaRulePairTests(unittest.TestCase):
             }
 
             bad_issues = qa_visual.detect_image_clip_boundary_issues(
-                bad_plan,
+                qa_plan_fixture(bad_plan),
                 source_png,
                 page_size=(100, 100),
             )
             corrected_issues = qa_visual.detect_image_clip_boundary_issues(
-                corrected_plan,
+                qa_plan_fixture(corrected_plan),
                 source_png,
                 page_size=(100, 100),
             )
@@ -1674,7 +1734,7 @@ class VisualQaRulePairTests(unittest.TestCase):
             }
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
             )
@@ -1736,13 +1796,13 @@ class VisualQaRulePairTests(unittest.TestCase):
             ]
 
             bad_issues = qa_visual.detect_image_clip_boundary_issues(
-                bad_plan,
+                qa_plan_fixture(bad_plan),
                 source_png,
                 page_size=(100, 100),
                 source_blocks=bad_blocks,
             )
             corrected_issues = qa_visual.detect_image_clip_boundary_issues(
-                corrected_plan,
+                qa_plan_fixture(corrected_plan),
                 source_png,
                 page_size=(100, 100),
                 source_blocks=corrected_blocks,
@@ -1801,7 +1861,7 @@ class VisualQaRulePairTests(unittest.TestCase):
             Image.new("RGB", (100, 100), "white").save(source_png)
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
                 source_blocks=blocks,
@@ -1848,7 +1908,7 @@ class VisualQaRulePairTests(unittest.TestCase):
             ]
 
             issues = qa_visual.detect_image_clip_boundary_issues(
-                plan,
+                qa_plan_fixture(plan),
                 source_png,
                 page_size=(100, 100),
                 source_blocks=blocks,
@@ -1889,8 +1949,8 @@ class VisualQaRulePairTests(unittest.TestCase):
             ],
         }
 
-        bad_issues = qa_visual.detect_style_issues(bad_plan)
-        corrected_issues = qa_visual.detect_style_issues(corrected_plan)
+        bad_issues = qa_visual.detect_style_issues(qa_plan_fixture(bad_plan))
+        corrected_issues = qa_visual.detect_style_issues(qa_plan_fixture(corrected_plan))
 
         self.assertCategoryReported(bad_issues, "style_hierarchy")
         self.assertCategoryAbsent(corrected_issues, "style_hierarchy")
@@ -1922,7 +1982,7 @@ class VisualQaRulePairTests(unittest.TestCase):
             ],
         }
 
-        issues = qa_visual.detect_style_issues(plan)
+        issues = qa_visual.detect_style_issues(qa_plan_fixture(plan))
 
         self.assertCategoryAbsent(issues, "style_hierarchy")
 
@@ -1973,8 +2033,8 @@ class VisualQaRulePairTests(unittest.TestCase):
             ],
         }
 
-        bad_issues = qa_visual.detect_style_issues(bad_plan)
-        corrected_issues = qa_visual.detect_style_issues(corrected_plan)
+        bad_issues = qa_visual.detect_style_issues(qa_plan_fixture(bad_plan))
+        corrected_issues = qa_visual.detect_style_issues(qa_plan_fixture(corrected_plan))
 
         self.assertCategoryReported(bad_issues, "body_font_consistency")
         self.assertCategoryAbsent(corrected_issues, "body_font_consistency")
@@ -2026,8 +2086,8 @@ class VisualQaRulePairTests(unittest.TestCase):
             ],
         }
 
-        bad_issues = qa_visual.detect_body_flow_whitespace_issues(bad_plan)
-        corrected_issues = qa_visual.detect_body_flow_whitespace_issues(corrected_plan)
+        bad_issues = qa_visual.detect_body_flow_whitespace_issues(qa_plan_fixture(bad_plan))
+        corrected_issues = qa_visual.detect_body_flow_whitespace_issues(qa_plan_fixture(corrected_plan))
 
         self.assertCategoryReported(bad_issues, "body_flow_whitespace")
         self.assertCategoryAbsent(corrected_issues, "body_flow_whitespace")
@@ -2098,9 +2158,9 @@ class VisualQaReportTests(unittest.TestCase):
                                        text="正文内容。", font_size=1, style_name="body"),
                 render_plan.RenderItem("original_image_clip", ["visual"], (50, 20, 90, 60)),
             ],
-            ledger=[
-                render_plan.CoverageEntry("body", "body", "translated_text", True),
-                render_plan.CoverageEntry("visual", "figure_region", "original_image_clip", True),
+            coverage=[
+                render_plan.CoverageSource("body", "body"),
+                render_plan.CoverageSource("visual", "figure_region"),
             ],
             ownership_validation=ownership.OwnershipValidationResult([
                 ownership.OwnershipIssue("missing_owner", "warning", 31,
@@ -2172,7 +2232,7 @@ class VisualQaReportTests(unittest.TestCase):
             },
         }
 
-        issues = qa_visual.detect_ownership_issues(plan)
+        issues = qa_visual.detect_ownership_issues(qa_plan_fixture(plan))
 
         self.assertEqual(
             [issue.category for issue in issues],

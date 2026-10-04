@@ -19,7 +19,7 @@ class LayoutPolicyTests(unittest.TestCase):
 
     def plan(self, item, classification="body"):
         return render_plan.PageRenderPlan(1, items=[item], page_size=(300, 300),
-                                         ledger=[render_plan.CoverageEntry("body", classification, item.kind, True)])
+                                         coverage=[render_plan.CoverageSource("body", classification)])
 
     def test_whitelisted_diagnostic_reasons_cannot_exempt_font_or_role_checks(self):
         for reason in ("embedded_heading", "embedded_heading_body", "first_page_abstract",
@@ -101,7 +101,7 @@ class LayoutPolicyTests(unittest.TestCase):
                 second.bbox = (20, 92, 280, 152)
                 plan = self.plan(first)
                 plan.items.append(second)
-                plan.ledger.append(render_plan.CoverageEntry("second", "body", "translated_text", True))
+                plan.coverage.append(render_plan.CoverageSource("second", "body"))
                 pipeline.merge_adjacent_body_text_flows(plan)
                 self.assertEqual(len(plan.items), 2)
 
@@ -128,7 +128,7 @@ class LayoutPolicyTests(unittest.TestCase):
                 payload = render_plan.render_plan_to_json(plan)
                 self.assertEqual(payload["render_items"][0].get("layout_role"), "body_flow")
                 self.assertEqual(payload["render_items"][0].get("font_policy"), "compact_body_flow")
-                for representation in (plan, payload):
+                for representation in (plan, render_plan.render_plan_from_json(payload)):
                     with self.subTest(size=size, reason=reason, representation=type(representation).__name__):
                         self.assertEqual(not qa_visual.detect_style_issues(representation), valid)
 
@@ -158,7 +158,7 @@ class LayoutPolicyTests(unittest.TestCase):
         second.bbox = (20, 92, 280, 152)
         plan = self.plan(first)
         plan.items.append(second)
-        plan.ledger.append(render_plan.CoverageEntry("second", "body", "translated_text", True))
+        plan.coverage.append(render_plan.CoverageSource("second", "body"))
         pipeline.merge_adjacent_body_text_flows(plan)
         self.assertEqual(len(plan.items), 2)
         self.assertTrue(layout.validate_plan_style_policy(plan))
@@ -172,7 +172,7 @@ class LayoutPolicyTests(unittest.TestCase):
                 second.bbox = (20, 92, 280, 152)
                 plan = self.plan(first, classification)
                 plan.items.append(second)
-                plan.ledger.append(render_plan.CoverageEntry("second", "body", "translated_text", True))
+                plan.coverage.append(render_plan.CoverageSource("second", "body"))
                 self.assertTrue(layout.validate_plan_style_policy(plan))
                 pipeline.merge_adjacent_body_text_flows(plan)
                 self.assertEqual(len(plan.items), 2)
@@ -182,7 +182,7 @@ class LayoutPolicyTests(unittest.TestCase):
         item = self.item(role="body_flow")
         item.source_ids.append("reference")
         plan = self.plan(item)
-        plan.ledger.append(render_plan.CoverageEntry("reference", "reference", "translated_text", True))
+        plan.coverage.append(render_plan.CoverageSource("reference", "reference"))
         self.assertTrue(layout.validate_plan_style_policy(plan))
 
     def test_contained_merge_preserves_callouts_and_source_paragraphs(self):
@@ -201,7 +201,7 @@ class LayoutPolicyTests(unittest.TestCase):
                         protected.font_size = layout.HEADING_FONT_SIZE
                     plan = self.plan(large)
                     plan.items.append(small)
-                    plan.ledger.append(render_plan.CoverageEntry("small", "body", "translated_text", True))
+                    plan.coverage.append(render_plan.CoverageSource("small", "body"))
                     self.assertEqual(layout.validate_plan_style_policy(plan), [])
                     pipeline.merge_contained_text_fragments(plan)
                     self.assertEqual(len(plan.items), 2)
@@ -219,7 +219,7 @@ class LayoutPolicyTests(unittest.TestCase):
                 anchored.bbox = (20, 90, 280, 130)
                 plan = self.plan(first)
                 plan.items.append(anchored)
-                plan.ledger.append(render_plan.CoverageEntry("anchored", "body", "translated_text", True))
+                plan.coverage.append(render_plan.CoverageSource("anchored", "body"))
                 before = [i.bbox for i in plan.items]
                 pipeline.repair_numbered_enumeration_flow(plan)
                 self.assertEqual([i.bbox for i in plan.items], before)
@@ -237,7 +237,7 @@ class LayoutPolicyTests(unittest.TestCase):
                     second.bbox = (20, 90, 280, 130)
                     plan = self.plan(first)
                     plan.items.append(second)
-                    plan.ledger.append(render_plan.CoverageEntry("second", "body", "translated_text", True))
+                    plan.coverage.append(render_plan.CoverageSource("second", "body"))
                     before = [i.text for i in plan.items]
                     pipeline.repair_numbered_enumeration_flow(plan)
                     self.assertEqual([i.text for i in plan.items], before)
@@ -255,7 +255,7 @@ class LayoutPolicyTests(unittest.TestCase):
                 fragment.bbox = (20, 80, 280, 90)
                 plan = self.plan(first)
                 plan.items.append(fragment)
-                plan.ledger.append(render_plan.CoverageEntry("fragment", classification, "translated_text", True))
+                plan.coverage.append(render_plan.CoverageSource("fragment", classification))
                 blocks = [{"id": "body", "text": "A complete source paragraph."},
                           {"id": "fragment", "text": "list"}]
                 before = layout.validate_plan_style_policy(plan)
@@ -271,7 +271,7 @@ class LayoutPolicyTests(unittest.TestCase):
             item.source_ids = [str(index)]
             item.bbox = (20, 30 + index*60, 280, 70 + index*60)
         plan = render_plan.PageRenderPlan(1, items=items,
-                                         ledger=[render_plan.CoverageEntry(str(i), "body", "original_selectable_text", True)
+                                         coverage=[render_plan.CoverageSource(str(i), "body")
                                                  for i in range(2)])
         pipeline.repair_numbered_enumeration_flow(plan)
         self.assertLess(items[1].bbox[1], items[0].bbox[1])
@@ -285,8 +285,6 @@ class LayoutPolicyTests(unittest.TestCase):
                     edited = copy.deepcopy(original)
                     for item in edited.items:
                         item.fallback_reason = "edited explanation"
-                    for entry in edited.ledger:
-                        entry.fallback_reason = "edited explanation"
                     for plan in (original, edited):
                         pipeline.normalize_vector_text_layout(plan, plan.page_size)
                     self.assertEqual([(i.bbox, i.text, i.font_size, i.style_name, i.layout_role, i.font_policy)

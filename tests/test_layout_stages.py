@@ -15,13 +15,31 @@ def visible_text(plan):
 
 
 class LayoutStageTests(unittest.TestCase):
+    def test_compaction_does_not_create_new_continuation_relationships(self):
+        items = [
+            render_plan.RenderItem("translated_text", ["a"], (20, 20, 180, 40),
+                                   text="(1) 首先读取文件。", style_name="body", font_size=layout.BODY_FONT_SIZE),
+            render_plan.RenderItem("translated_text", ["b"], (20, 150, 180, 210),
+                                   text="独立的说明。\n(2) 然后处理数据。", style_name="body", font_size=layout.BODY_FONT_SIZE),
+        ]
+        plan = render_plan.PageRenderPlan(2, items=items, page_size=(220, 300), coverage=[
+            render_plan.CoverageSource(key, "body") for key in ("a", "b")])
+        blocks = [{"id": item.source_ids[0], "page": 2,
+                   "text": "This is a complete independent paragraph explaining the algorithm.",
+                   **dict(zip(("xMin", "yMin", "xMax", "yMax"), item.bbox))} for item in items]
+        pipeline.arrange_page_render_items(plan, blocks, plan.page_size, [])
+        self.assertEqual([(i.source_ids, i.text) for i in plan.items], [
+            (["a"], "(1) 首先读取文件。"), (["b"], "独立的说明。\n(2) 然后处理数据。")])
+        self.assertEqual(render_plan.validate_plan_text_overlaps(plan), [])
+        self.assertEqual(layout.validate_plan_text_fit(plan), [])
+
     def test_numbered_continuation_move_keeps_both_source_attributions(self):
         first = render_plan.RenderItem("translated_text", ["a"], (20, 20, 180, 60),
                                        text="(1) 首先读取", style_name="body", font_size=9.2)
         second = render_plan.RenderItem("translated_text", ["b"], (20, 65, 180, 115),
                                         text="全部文件。\n(2) 然后处理数据。", style_name="body", font_size=9.2)
-        plan = render_plan.PageRenderPlan(1, items=[first, second], ledger=[
-            render_plan.CoverageEntry(key, "body", "translated_text", True) for key in ("a", "b")])
+        plan = render_plan.PageRenderPlan(1, items=[first, second], coverage=[
+            render_plan.CoverageSource(key, "body") for key in ("a", "b")])
         pipeline.move_leading_enum_continuations_to_previous_items(plan)
         self.assertEqual(first.text, "(1) 首先读取全部文件。")
         self.assertEqual(second.text, "(2) 然后处理数据。")
@@ -43,10 +61,9 @@ class LayoutStageTests(unittest.TestCase):
                            "xMin": box[0], "yMin": box[1], "xMax": box[2], "yMax": box[3]})
             plan.items.append(render_plan.RenderItem("translated_text", [block_id], box, text=text,
                                                   font_size=layout.BODY_FONT_SIZE, style_name="body"))
-            plan.ledger.append(render_plan.CoverageEntry(block_id, "body", "translated_text", True))
+            plan.coverage.append(render_plan.CoverageSource(block_id, "body"))
         protected = (10, 95, 400, 120)
         plan.items.append(render_plan.RenderItem("original_image_clip", [], protected))
-        plan.protected_boxes.append(protected)
         before = visible_text(plan)
         pipeline.arrange_page_render_items(plan, blocks, plan.page_size, [])
         pipeline.normalize_vector_text_layout(plan, plan.page_size)

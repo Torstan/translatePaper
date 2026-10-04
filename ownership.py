@@ -1,6 +1,5 @@
 import re
 from collections import defaultdict
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from geometry import bbox_overlap_area
@@ -391,14 +390,14 @@ def _split_render_items_match_components(source_id: str, image_items, text_items
     for item in source_image_items:
         if _item_component_id(item) != visual_component.component_id:
             return False
-        if str(_item_attr(item, "component_kind", "") or "") != COMPONENT_KIND_VISUAL:
+        if str(item.component_kind or "") != COMPONENT_KIND_VISUAL:
             return False
         if not _bbox_contained(_item_bbox(item), visual_box):
             return False
     for item in source_text_items:
         if _item_component_id(item) != text_component.component_id:
             return False
-        if str(_item_attr(item, "component_kind", "") or "") != COMPONENT_KIND_TRANSLATED_TEXT:
+        if str(item.component_kind or "") != COMPONENT_KIND_TRANSLATED_TEXT:
             return False
         if not _bbox_contained(_item_bbox(item), text_component.source_bbox, tolerance=MIXED_SPLIT_TEXT_LAYOUT_TOLERANCE):
             return False
@@ -623,22 +622,16 @@ def build_page_components(
     return components
 
 
-def _item_attr(item, name, default=None):
-    if isinstance(item, Mapping):
-        return item.get(name, default)
-    return getattr(item, name, default)
-
-
 def _item_bbox(item):
-    return tuple(float(value) for value in _item_attr(item, "bbox", (0, 0, 0, 0)))
+    return tuple(float(value) for value in item.bbox)
 
 
 def _item_source_ids(item) -> list[str]:
-    return [str(source_id) for source_id in (_item_attr(item, "source_ids", []) or [])]
+    return [str(source_id) for source_id in (item.source_ids or [])]
 
 
 def _item_component_id(item) -> str:
-    return str(_item_attr(item, "component_id", "") or "")
+    return str(item.component_id or "")
 
 
 def _significant_overlap(left, right, *, min_overlap_ratio: float, min_overlap_height: float) -> bool:
@@ -658,11 +651,11 @@ def validate_render_layer_exclusivity(
     min_overlap_height: float = 4.0,
     max_visual_overcapture_ratio: float = 0.02,
 ) -> OwnershipValidationResult:
-    page_num = int(getattr(plan, "page_num", 0))
+    page_num = plan.page_num
     issues: list[OwnershipIssue] = []
-    items = list(getattr(plan, "items", []))
-    image_items = [item for item in items if _item_attr(item, "kind") in IMAGE_RENDER_KINDS]
-    text_items = [item for item in items if _item_attr(item, "kind") in TEXT_RENDER_KINDS]
+    items = plan.items
+    image_items = [item for item in items if item.kind in IMAGE_RENDER_KINDS]
+    text_items = [item for item in items if item.kind in TEXT_RENDER_KINDS]
     image_ids = {source_id for item in image_items for source_id in _item_source_ids(item)}
     text_ids = {source_id for item in text_items for source_id in _item_source_ids(item)}
     components_by_source_id: dict[str, list[PageComponent]] = defaultdict(list)

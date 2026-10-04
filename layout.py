@@ -13,7 +13,6 @@ from render_plan import (
     bbox_area,
     bbox_significantly_overlaps_protected,
     ledger_classifications,
-    update_ledger_render_kind,
 )
 from regions import (
     TEXT_PROTECTED_GAP_PT,
@@ -465,13 +464,6 @@ def _visual_component_source_boxes(plan: PageRenderPlan) -> dict[str, tuple[floa
     }
 
 
-def _replace_protected_box(plan: PageRenderPlan, old_box, new_box) -> None:
-    old_key = tuple(round(float(value), 6) for value in old_box)
-    for idx, box in enumerate(plan.protected_boxes):
-        if tuple(round(float(value), 6) for value in box) == old_key:
-            plan.protected_boxes[idx] = new_box
-
-
 def release_visual_clip_overcapture_for_text_fit(plan: PageRenderPlan, page_size, fitz=None) -> None:
     """Trim visual padding only where it blocks a translated text box from fitting."""
     source_by_component = _visual_component_source_boxes(plan)
@@ -514,9 +506,7 @@ def release_visual_clip_overcapture_for_text_fit(plan: PageRenderPlan, page_size
                 next_y1 = max(source_bbox[3], y0)
             if next_y0 == y0 and next_y1 == y1:
                 continue
-            old_box = visual.bbox
             visual.bbox = clamp_bbox((x0, next_y0, x1, next_y1), page_size)
-            _replace_protected_box(plan, old_box, visual.bbox)
 
 
 def expand_text_boxes_to_fit(plan: PageRenderPlan, page_size, fitz=None) -> None:
@@ -1215,7 +1205,6 @@ def split_translated_text_around_protected(plan: PageRenderPlan, page_size=None,
             new_items.append(item)
             continue
         new_items.extend(replacement_items)
-        update_ledger_render_kind(plan, item.source_ids, "translated_text", "split_around_visual")
     plan.items = new_items
 
 
@@ -1291,7 +1280,8 @@ def text_item_style_issues(
         issues.append((category, f"has invalid font policy {item.font_policy} for {item.layout_role}/{actual_name}"))
     elif item.font_size is None or not bounds[0] - font_tolerance <= item.font_size <= bounds[1] + font_tolerance:
         expected = str(bounds[0]) if bounds[0] == bounds[1] else f"{bounds[0]}..{bounds[1]} for {item.font_policy}"
-        issues.append((category, f"has font size {item.font_size}, expected {expected}"))
+        actual_size = None if item.font_size is None else float(item.font_size)
+        issues.append((category, f"has font size {actual_size}, expected {expected}"))
     return issues
 
 

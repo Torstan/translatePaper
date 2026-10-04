@@ -31,6 +31,53 @@ def block(block_id, page, text, x0=100, y0=100, x1=400, y1=120, preserve_image=F
     return data
 
 
+class DerivedPlanStateTests(unittest.TestCase):
+    def test_coverage_follows_final_item_and_keeps_missing_source_obligation(self):
+        source = block("p002b0001", 2, "This paragraph explains the algorithm.")
+        plan = pdf.build_page_render_plan(2, [source], {source["id"]: "这段正文解释算法。"}, (623, 801))
+        item = plan.items[0]
+        item.kind = "original_image_clip"
+        item.fallback_reason = "explicit_preservation"
+        self.assertEqual(plan.ledger[0].render_kind, "original_image_clip")
+        self.assertEqual(plan.ledger[0].fallback_reason, "explicit_preservation")
+        self.assertEqual(render_plan.validate_plan_coverage(2, [source], plan), [])
+        plan.items.clear()
+        self.assertEqual(plan.ledger[0].block_id, source["id"])
+        self.assertFalse(plan.ledger[0].rendered)
+        self.assertTrue(render_plan.validate_plan_coverage(2, [source], plan))
+
+    def test_protection_follows_image_geometry_and_removal(self):
+        image = render_plan.RenderItem("original_image_clip", ["image"], (20, 20, 100, 100))
+        plan = render_plan.PageRenderPlan(2, items=[image])
+        self.assertEqual(plan.protected_boxes, [(20, 20, 100, 100)])
+        image.bbox = (20, 30, 100, 80)
+        self.assertEqual(plan.protected_boxes, [(20, 30, 100, 80)])
+        plan.items.clear()
+        self.assertEqual(plan.protected_boxes, [])
+
+    def test_roundtrip_keeps_one_obligation_with_multiple_drawing_outcomes(self):
+        plan = render_plan.PageRenderPlan(2, coverage=[render_plan.CoverageSource("b", "body")], items=[
+            render_plan.RenderItem("translated_text", ["b"], (20, 20, 100, 40), text="标题"),
+            render_plan.RenderItem("original_selectable_text", ["b"], (20, 45, 100, 60), text="Author"),
+        ])
+        payload = render_plan.render_plan_to_json(plan)
+        loaded = render_plan.render_plan_from_json(payload)
+        self.assertEqual(len(loaded.coverage), 1)
+        self.assertEqual(render_plan.render_plan_to_json(loaded), payload)
+
+    def test_merged_item_cannot_claim_ambiguous_same_kind_components(self):
+        plan = render_plan.PageRenderPlan(2, coverage=[
+            render_plan.CoverageSource("b", "body", component_id=key, component_kind="translated_text")
+            for key in ("first", "second")
+        ], items=[render_plan.RenderItem(
+            "translated_text", ["b", "neighbor"], (20, 20, 100, 60),
+            text="剩余正文。", component_kind="translated_text",
+        )])
+        self.assertEqual([entry.rendered for entry in plan.ledger], [False, False])
+        plan.items[0].component_id = "second"
+        self.assertEqual([entry.rendered for entry in plan.ledger], [False, True])
+
+
 class RenderPlanClassificationTests(unittest.TestCase):
     def test_classify_module_direct_api_matches_pipeline_classification(self):
         blocks = [
@@ -460,7 +507,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertIn("p012b0002", reference_items_by_source)
         self.assertIn("First reference title", reference_items_by_source["p012b0001"].text)
         self.assertIn("Second reference title", reference_items_by_source["p012b0002"].text)
-        self.assertEqual(ledger_reasons["p012b0001"], "reference_original_lines")
+        self.assertEqual(ledger_reasons["p012b0001"], "reference_original")
         self.assertEqual(ledger_reasons["p012b0002"], "reference_original")
 
     def test_visual_region_does_not_group_reference_with_adjacent_appendix_heading(self):
@@ -955,7 +1002,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 source_image_path=source_png,
             )
             issues = qa_visual.detect_image_clip_boundary_issues(
-                render_plan.render_plan_to_json(plan),
+                plan,
                 source_png,
                 page_size=(612.0, 792.0),
                 source_blocks=blocks,
@@ -1251,14 +1298,8 @@ class RenderPlanClassificationTests(unittest.TestCase):
 
     def test_image_fallback_ledger_does_not_inherit_translated_component_kind(self):
         plan = render_plan.PageRenderPlan(page_num=6)
-        plan.ledger.append(
-            render_plan.CoverageEntry(
-                "p006b0012",
-                "body",
-                "original_image_clip",
-                True,
-                "covered_by_visual_region",
-            )
+        plan.coverage.append(
+            render_plan.CoverageSource("p006b0012", "body")
         )
         component = pdf.ownership.PageComponent(
             "p006c0002",
@@ -1399,8 +1440,8 @@ class RenderPlanClassificationTests(unittest.TestCase):
             )
         )
         plan.items.append(render_plan.RenderItem("original_image_clip", ["formula-below"], (249.3, 600.3, 443.2, 652.4)))
-        plan.ledger.append(render_plan.CoverageEntry("p011b0024", "body", "translated_text", True, "body_flow"))
-        plan.ledger.append(render_plan.CoverageEntry("p011b0025", "body", "translated_text", True, "body_flow"))
+        plan.coverage.append(render_plan.CoverageSource("p011b0024", "body"))
+        plan.coverage.append(render_plan.CoverageSource("p011b0025", "body"))
 
         self.assertNotEqual(layout.validate_plan_text_fit(plan, fitz), [])
 
@@ -2021,8 +2062,8 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 fallback_reason="untranslated_fallback_original",
             )
         )
-        plan.ledger.append(
-            render_plan.CoverageEntry("p002b0007", "heading", "original_selectable_text", True, "untranslated_fallback_original")
+        plan.coverage.append(
+            render_plan.CoverageSource("p002b0007", "heading")
         )
 
         self.assertEqual(pdf.validate_plan_translation_quality(2, blocks, {"p002b0007": blocks[0]["text"]}, plan), [])
@@ -2920,7 +2961,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 fallback_reason="untranslated_fallback_original",
             )
         )
-        plan.ledger.append(render_plan.CoverageEntry("p001b0002", "body", "original_selectable_text", True, "untranslated_fallback_original"))
+        plan.coverage.append(render_plan.CoverageSource("p001b0002", "body"))
 
         self.assertEqual(pdf.validate_plan_translation_quality(1, blocks, {}, plan), [])
 
@@ -2952,7 +2993,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 fallback_reason="untranslated_fallback_original",
             )
         )
-        plan.ledger.append(render_plan.CoverageEntry("p001b0002", "body", "original_selectable_text", True, "untranslated_fallback_original"))
+        plan.coverage.append(render_plan.CoverageSource("p001b0002", "body"))
 
         self.assertFalse(classify.source_requires_chinese_translation(block_text))
         self.assertEqual(pdf.validate_plan_translation_quality(1, blocks, {"p001b0002": block_text}, plan), [])
@@ -2981,7 +3022,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 fallback_reason="untranslated_fallback_original",
             )
         )
-        plan.ledger.append(render_plan.CoverageEntry("p001b0004", "body", "original_selectable_text", True, "untranslated_fallback_original"))
+        plan.coverage.append(render_plan.CoverageSource("p001b0004", "body"))
 
         self.assertEqual(pdf.validate_plan_translation_quality(1, blocks, {}, plan), [])
 
@@ -3014,7 +3055,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 fallback_reason="untranslated_fallback_original",
             )
         )
-        plan.ledger.append(render_plan.CoverageEntry("p001b0004", "body", "original_selectable_text", True, "untranslated_fallback_original"))
+        plan.coverage.append(render_plan.CoverageSource("p001b0004", "body"))
 
         self.assertEqual(pdf.validate_plan_translation_quality(1, blocks, {}, plan), [])
         self.assertFalse(classify.source_requires_chinese_translation(block_text))
@@ -3317,7 +3358,7 @@ class GlobalStyleTests(unittest.TestCase):
                 style_name="body",
             )
         )
-        plan.ledger.append(render_plan.CoverageEntry("p001b0001", "heading", "translated_text", True, ""))
+        plan.coverage.append(render_plan.CoverageSource("p001b0001", "heading"))
 
         errors = layout.validate_plan_style_policy(plan)
 
@@ -3335,7 +3376,7 @@ class GlobalStyleTests(unittest.TestCase):
                 style_name="subheading",
             )
         )
-        plan.ledger.append(render_plan.CoverageEntry("p001b0001", "heading", "translated_text", True, ""))
+        plan.coverage.append(render_plan.CoverageSource("p001b0001", "heading"))
 
         self.assertEqual(layout.validate_plan_style_policy(plan), [])
 
@@ -3361,8 +3402,8 @@ class GlobalStyleTests(unittest.TestCase):
                         style_name=wrong_style,
                     )
                 )
-                plan.ledger.append(
-                    render_plan.CoverageEntry(f"{classification}-block", classification, "translated_text", True, "")
+                plan.coverage.append(
+                    render_plan.CoverageSource(f"{classification}-block", classification)
                 )
 
                 errors = layout.validate_plan_style_policy(plan)
@@ -3382,8 +3423,8 @@ class GlobalStyleTests(unittest.TestCase):
                 fallback_reason="untranslated_fallback_original",
             )
         )
-        plan.ledger.append(
-            render_plan.CoverageEntry("p001b0001", "heading", "original_selectable_text", True, "untranslated_fallback_original")
+        plan.coverage.append(
+            render_plan.CoverageSource("p001b0001", "heading")
         )
 
         errors = layout.validate_plan_style_policy(plan)
@@ -3404,7 +3445,7 @@ class GlobalStyleTests(unittest.TestCase):
                 layout_role="embedded_heading",
             )
         )
-        plan.ledger.append(render_plan.CoverageEntry("p001b0001", "body", "translated_text", True, "embedded_heading_split"))
+        plan.coverage.append(render_plan.CoverageSource("p001b0001", "body"))
 
         self.assertEqual(layout.validate_plan_style_policy(plan), [])
 
@@ -3420,7 +3461,7 @@ class GlobalStyleTests(unittest.TestCase):
                 style_name="body",
             )
         )
-        plan.ledger.append(render_plan.CoverageEntry("p001b0001", "page_number", "original_selectable_text", True, ""))
+        plan.coverage.append(render_plan.CoverageSource("p001b0001", "page_number"))
 
         errors = layout.validate_plan_style_policy(plan)
 
@@ -4186,7 +4227,7 @@ class CoverageValidationTests(unittest.TestCase):
             block("p002b0002", 2, "Another source paragraph.", y0=130, y1=150),
         ]
         plan = render_plan.PageRenderPlan(page_num=2)
-        plan.ledger.append(render_plan.CoverageEntry("p002b0001", "body", "translated_text", True))
+        plan.coverage.append(render_plan.CoverageSource("p002b0001", "body"))
 
         errors = render_plan.validate_plan_coverage(2, blocks, plan)
 
@@ -4207,7 +4248,7 @@ class CoverageValidationTests(unittest.TestCase):
             block("p002b0001", 2, "Unclassified but meaningful source content.", y0=100, y1=120),
         ]
         plan = render_plan.PageRenderPlan(page_num=2)
-        plan.ledger.append(render_plan.CoverageEntry("p002b0001", "unknown", "skip_explicitly", True))
+        plan.coverage.append(render_plan.CoverageSource("p002b0001", "unknown", skipped=True))
 
         errors = render_plan.validate_plan_coverage(2, blocks, plan)
 
@@ -4326,8 +4367,8 @@ class QualityValidationTests(unittest.TestCase):
                 fallback_reason="heading_overlap",
             )
         )
-        plan.ledger.append(
-            render_plan.CoverageEntry("p018b0002", "body", "original_image_clip", True, "heading_overlap")
+        plan.coverage.append(
+            render_plan.CoverageSource("p018b0002", "body")
         )
 
         errors = pdf.validate_plan_translation_quality(
@@ -4531,15 +4572,8 @@ class QualityValidationTests(unittest.TestCase):
                 component_kind=pdf.ownership.COMPONENT_KIND_REFERENCE,
             )
         )
-        plan.ledger.append(
-            render_plan.CoverageEntry(
-                block_id,
-                "reference",
-                "original_selectable_text",
-                True,
-                "reference_original",
-                component_kind=pdf.ownership.COMPONENT_KIND_REFERENCE,
-            )
+        plan.coverage.append(
+            render_plan.CoverageSource(block_id, "reference", component_kind=pdf.ownership.COMPONENT_KIND_REFERENCE)
         )
 
         pdf.convert_unfit_nonprose_text_to_image_clips(plan, blocks)
@@ -4576,7 +4610,7 @@ class QualityValidationTests(unittest.TestCase):
             style_name="body",
         )
         plan.items.append(item)
-        plan.ledger.append(render_plan.CoverageEntry(block_id, "body", "translated_text", True))
+        plan.coverage.append(render_plan.CoverageSource(block_id, "body"))
 
         self.assertIsNone(layout.text_item_fit_metrics(item, render_pdf.load_fitz())[0])
         pdf.convert_unfit_nonprose_text_to_image_clips(plan, blocks)
@@ -4634,11 +4668,10 @@ class RenderPlanSerializationTests(unittest.TestCase):
                     fallback_reason="visual_region",
                 ),
             ],
-            ledger=[
-                render_plan.CoverageEntry("p007b0002", "body", "translated_text", True),
-                render_plan.CoverageEntry("p007b0003", "figure_region", "original_image_clip", True, "visual_region"),
+            coverage=[
+                render_plan.CoverageSource("p007b0002", "body"),
+                render_plan.CoverageSource("p007b0003", "figure_region"),
             ],
-            protected_boxes=[(90, 190, 380, 260)],
         )
 
     def test_serialized_ledger_covers_non_trivial_translated_and_protected_blocks(self):
@@ -4905,8 +4938,9 @@ class RenderPlanSerializationTests(unittest.TestCase):
             blocks = [block("p001b0001", 1, "A complete source paragraph.", x0=10, y0=10, x1=90, y1=80)]
             translations = {"p001b0001": "完整的中文正文。"}
             plan = pdf.build_page_render_plan(1, blocks, translations, (100, 100))
-            plan.ledger[0].rendered = False
-            plan.ledger[0].classification = "heading"
+            plan.coverage.append(render_plan.CoverageSource("missing", "body"))
+            blocks.append(block("missing", 1, "Another source paragraph."))
+            plan.coverage[0].classification = "heading"
             plan.items[0].bbox = (110, 10, 130, 12)
             plan.items[0].style_name = "body"
             with (
@@ -4950,7 +4984,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
                     style_name="body",
                 )
             )
-            bad_plan.ledger.append(render_plan.CoverageEntry("p001b0001", "heading", "translated_text", True, ""))
+            bad_plan.coverage.append(render_plan.CoverageSource("p001b0001", "heading"))
             original_build = pdf.build_page_render_plan
             pdf.build_page_render_plan = lambda *args, **kwargs: bad_plan
             try:

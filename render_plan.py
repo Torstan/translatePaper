@@ -39,7 +39,7 @@ class RenderItem:
     source_image_xref: int | None = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class CoverageEntry:
     block_id: str
     classification: str
@@ -52,17 +52,69 @@ class CoverageEntry:
 
 
 @dataclass
+class CoverageSource:
+    """Source obligation; drawing outcomes belong exclusively to RenderItem."""
+    block_id: str
+    classification: str
+    skipped: bool = False
+    reference_signature: dict | None = None
+    component_id: str = ""
+    component_kind: str = ""
+
+
+@dataclass
 class PageRenderPlan:
     page_num: int
     items: list[RenderItem] = field(default_factory=list)
-    ledger: list[CoverageEntry] = field(default_factory=list)
-    protected_boxes: list[tuple[float, float, float, float]] = field(default_factory=list)
+    coverage: list[CoverageSource] = field(default_factory=list)
     components: list[ownership.PageComponent] = field(default_factory=list)
     ownership_validation: ownership.OwnershipValidationResult = field(default_factory=ownership.OwnershipValidationResult)
     page_size: tuple[float, float] | None = None
     output_page_num: int | None = None
     coordinate_space: Literal["points", "pixels"] = "points"
     raster_size: tuple[int, int] | None = None
+
+    @property
+    def protected_boxes(self) -> list[tuple[float, float, float, float]]:
+        return [item.bbox for item in self.items if item.kind == "original_image_clip"]
+
+    @property
+    def ledger(self) -> list[CoverageEntry]:
+        """Report current drawing outcomes without losing absent source obligations.
+
+        A component ID distinguishes fragments of one source block. A merged item
+        without a single ID covers only the unique component of its kind; it must
+        not hide a missing image or an ambiguous same-kind source fragment.
+        """
+        items_by_source = {}
+        for item in self.items:
+            for source_id in item.source_ids:
+                items_by_source.setdefault(source_id, []).append(item)
+        components_by_source = {}
+        for source in self.coverage:
+            if source.component_id:
+                components_by_source.setdefault(source.block_id, {})[source.component_id] = source.component_kind
+        result = []
+        for source in self.coverage:
+            outcomes = {}
+            for item in items_by_source.get(source.block_id, []):
+                if source.component_id and item.component_id and source.component_id != item.component_id:
+                    continue
+                components = components_by_source.get(source.block_id, {})
+                if source.component_id and not item.component_id and len(components) > 1:
+                    matching_ids = [key for key, kind in components.items() if kind and kind == item.component_kind]
+                    if matching_ids != [source.component_id]:
+                        continue
+                outcomes.setdefault(item.kind, []).append(item.fallback_reason)
+            if source.skipped:
+                outcomes = {"skip_explicitly": [""]}
+            for kind, reasons in (outcomes or {"unrendered": [""]}).items():
+                result.append(CoverageEntry(
+                    source.block_id, source.classification, kind, kind != "unrendered",
+                    "; ".join(dict.fromkeys(reason for reason in reasons if reason)),
+                    source.reference_signature, source.component_id, source.component_kind,
+                ))
+        return result
 
 
 @dataclass
@@ -151,17 +203,24 @@ def render_plan_json_dumps(plan: PageRenderPlan, validation_results: dict | list
     )
 
 
-def load_render_plan_artifact(path: str | Path) -> dict:
+def load_render_plan_artifact(path: str | Path) -> PageRenderPlan:
+    path = Path(path)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ValueError(f"invalid render plan {path}: {exc}") from exc
+    return render_plan_from_json(data, source=str(path))
+
+
+def render_plan_from_json(plan: dict, *, source: str = "<memory>") -> PageRenderPlan:
     """Validate drawing data at the JSON boundary, preserving diagnostic severity.
 
     Missing drawing data is a broken artifact, not an empty page. Optional report
     fields retain their defaults, but malformed supplied fields never disappear.
     """
-    path = Path(path)
-
     def require(condition, field):
         if not condition:
-            raise ValueError(f"invalid render plan {path}: {field}")
+            raise ValueError(f"invalid render plan {source}: {field}")
 
     def numbers(value, length):
         return (isinstance(value, list) and len(value) == length
@@ -171,10 +230,6 @@ def load_render_plan_artifact(path: str | Path) -> dict:
         require(numbers(value, 4), field)
         require(value[0] <= value[2] and value[1] <= value[3], field)
 
-    try:
-        plan = json.loads(path.read_text(encoding="utf-8"))
-    except ValueError as exc:
-        raise ValueError(f"invalid render plan {path}: {exc}") from exc
     require(isinstance(plan, dict), "expected object")
     require(type(plan.get("page_num")) is int and plan["page_num"] > 0, "page_num")
     require(isinstance(plan.get("render_items"), list), "render_items")
@@ -194,6 +249,12 @@ def load_render_plan_artifact(path: str | Path) -> dict:
         xref = item.get("source_image_xref")
         require(xref is None or (type(xref) is int and xref >= 0
                                 and item["kind"] == "original_image_clip"), field + ".source_image_xref")
+        require(numbers(item.get("color", [0, 0, 0]), 3), field + ".color")
+        require(isinstance(item.get("raster_lines", []), list)
+                and all(isinstance(line, str) for line in item.get("raster_lines", [])), field + ".raster_lines")
+        require(type(item.get("raster_vertical", False)) is bool, field + ".raster_vertical")
+        if item.get("raster_source_bbox") is not None:
+            box(item["raster_source_bbox"], field + ".raster_source_bbox")
     for name in ("coverage_ledger", "protected_regions", "components"):
         records = plan.get(name, [])
         require(isinstance(records, list) and all(isinstance(v, dict) for v in records), name)
@@ -203,6 +264,8 @@ def load_render_plan_artifact(path: str | Path) -> dict:
         for name in ("block_id", "classification", "render_kind"):
             require(isinstance(entry.get(name), str) and bool(entry[name]), "coverage_ledger." + name)
         require(type(entry.get("rendered")) is bool, "coverage_ledger.rendered")
+        for name in ("component_id", "component_kind"):
+            require(isinstance(entry.get(name, ""), str), "coverage_ledger." + name)
         if entry["rendered"] and entry["render_kind"] != "skip_explicitly":
             require(any(item["kind"] == entry["render_kind"]
                         and entry["block_id"] in item["source_ids"]
@@ -216,10 +279,17 @@ def load_render_plan_artifact(path: str | Path) -> dict:
         box(component.get("source_bbox"), "components.source_bbox")
         if component.get("clip_bbox") is not None:
             box(component["clip_bbox"], "components.clip_bbox")
+        require(isinstance(component.get("reason_codes", []), list)
+                and all(isinstance(code, str) for code in component.get("reason_codes", [])),
+                "components.reason_codes")
     if plan.get("page_size") is not None:
         require(numbers(plan["page_size"], 2) and min(plan["page_size"]) > 0, "page_size")
     if plan.get("output_page_num") is not None:
         require(type(plan["output_page_num"]) is int and plan["output_page_num"] > 0, "output_page_num")
+    coordinate_space = plan.get("coordinate_space", "points")
+    require(isinstance(coordinate_space, str) and coordinate_space in {"points", "pixels"}, "coordinate_space")
+    if plan.get("raster_size") is not None:
+        require(numbers(plan["raster_size"], 2) and min(plan["raster_size"]) > 0, "raster_size")
     validation = plan.get("ownership_validation", {})
     require(isinstance(validation, dict), "ownership_validation")
     issues = validation.get("issues", validation.get("errors", []))
@@ -231,7 +301,41 @@ def load_render_plan_artifact(path: str | Path) -> dict:
         require(isinstance(issue.get("bboxes", []), list), "ownership issue bboxes")
         for value in issue.get("bboxes", []):
             box(value, "ownership issue bbox")
-    return plan
+    items = []
+    for value in plan["render_items"]:
+        fields = {key: value[key] for key in RenderItem.__dataclass_fields__ if key in value}
+        for name in ("bbox", "color", "raster_source_bbox"):
+            if fields.get(name) is not None:
+                fields[name] = tuple(fields[name])
+        items.append(RenderItem(**fields))
+    coverage = []
+    for entry in plan.get("coverage_ledger", []):
+        obligation = CoverageSource(
+            entry["block_id"], entry["classification"], entry["render_kind"] == "skip_explicitly",
+            entry.get("reference_signature"), entry.get("component_id", ""), entry.get("component_kind", ""),
+        )
+        # One source obligation may produce multiple render kinds (title + metadata).
+        if obligation not in coverage:
+            coverage.append(obligation)
+    return PageRenderPlan(
+        page_num=plan["page_num"], items=items,
+        coverage=coverage,
+        components=[ownership.PageComponent(
+            component_id=c["component_id"], component_kind=c["component_kind"], source_ids=list(c["source_ids"]),
+            source_bbox=tuple(c["source_bbox"]), clip_bbox=tuple(c["clip_bbox"]) if c.get("clip_bbox") else None,
+            confidence=c.get("confidence", ownership.CONFIDENCE_CONSERVATIVE),
+            reason_codes=list(c.get("reason_codes", [])), parent_component_id=c.get("parent_component_id", ""),
+        ) for c in plan.get("components", [])],
+        ownership_validation=ownership.OwnershipValidationResult([
+            ownership.OwnershipIssue(
+                issue["issue_code"], issue["severity"], issue.get("page_num", plan["page_num"]), issue["message"],
+                list(issue.get("source_ids", [])), list(issue.get("component_ids", [])),
+                [tuple(bbox) for bbox in issue.get("bboxes", [])],
+            ) for issue in issues]),
+        page_size=tuple(plan["page_size"]) if plan.get("page_size") else None,
+        output_page_num=plan.get("output_page_num"), coordinate_space=plan.get("coordinate_space", "points"),
+        raster_size=tuple(plan["raster_size"]) if plan.get("raster_size") else None,
+    )
 
 
 def render_plan_artifact_path(job_paths, page_num: int) -> Path | None:
@@ -279,6 +383,8 @@ def validate_plan_coverage(
             items_by_id.setdefault(source_id, []).append(item)
     for entry in plan.ledger:
         ledger_by_id.setdefault(entry.block_id, []).append(entry)
+        if entry.component_kind == ownership.COMPONENT_KIND_VISUAL and entry.render_kind != "original_image_clip":
+            errors.append(f"page {page_num} block {entry.block_id} visual component is not an image clip")
     for block in blocks:
         if is_trivial_keep(normalize_text(block.get("text", ""))):
             continue
@@ -295,6 +401,8 @@ def validate_plan_coverage(
             errors.append(f"page {page_num} block {block['id']} has no coverage entry")
             continue
         for entry in entries:
+            if entry.component_kind == ownership.COMPONENT_KIND_VISUAL and entry.render_kind != "original_image_clip":
+                continue
             if not entry.rendered:
                 errors.append(f"page {page_num} block {block['id']} is marked unrendered")
                 continue
@@ -394,14 +502,5 @@ def text_boxes_significantly_overlap(left, right) -> bool:
             and bbox_overlap_area(left, right) > min(bbox_area(left), bbox_area(right)) * 0.12)
 
 
-def update_ledger_render_kind(plan: PageRenderPlan, source_ids: list[str], render_kind: str, fallback_reason: str):
-    source_id_set = set(source_ids)
-    for entry in plan.ledger:
-        if entry.block_id not in source_id_set:
-            continue
-        entry.render_kind = render_kind
-        entry.fallback_reason = fallback_reason
-
-
 def ledger_classifications(plan: PageRenderPlan) -> dict[str, str]:
-    return {entry.block_id: entry.classification for entry in plan.ledger}
+    return {entry.block_id: entry.classification for entry in plan.coverage}
