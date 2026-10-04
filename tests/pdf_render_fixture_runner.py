@@ -49,7 +49,9 @@ def iter_render_plan_fixtures(
                 raise AssertionError(f"{companion_name} fixture does not match {source_path.name}")
 
         blocks = marked_pages[page_num]
-        cached_translations = translations["translations"]
+        cached_translations = pdf.finalize_translations(
+            [(page_num, blocks)], translations["translations"]
+        )
         plan = pdf.build_page_render_plan(
             page_num,
             blocks,

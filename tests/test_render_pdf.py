@@ -1,3 +1,5 @@
+import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,10 +10,165 @@ from PIL import Image
 import render_pdf
 import layout
 import render_plan
+import qa_visual
 import pipeline as pdf
 
 
 class RenderPdfExtractionModuleTests(unittest.TestCase):
+
+    def test_native_images_are_planned_per_occurrence_and_keep_mask_appearance(self):
+        fitz = render_pdf.load_fitz()
+        for mode, color in (("RGB", (180, 20, 40)), ("RGBA", (180, 20, 40, 128))):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source, output = root / "source.pdf", root / "output.pdf"
+                stream = io.BytesIO()
+                Image.new(mode, (20, 20), color).save(stream, format="PNG")
+                with fitz.open() as doc:
+                    page = doc.new_page(width=240, height=300)
+                    xref = page.insert_image((20, 40, 80, 100), stream=stream.getvalue())
+                    page.insert_image((140, 180, 200, 240), xref=xref)
+                    doc.save(source)
+                with fitz.open(source) as doc:
+                    expected = doc[0].get_pixmap().samples
+                result = pdf.write_vector_pdf(source, output, [(1, [])], {}, 72,
+                                              {"plans_dir": root / "plans"})
+                plan = result.plans[0]
+                self.assertEqual(len(plan.items), 2)
+                self.assertEqual([item.source_ids for item in plan.items], [["p001i0000"], ["p001i0001"]])
+                self.assertEqual({entry.block_id for entry in plan.ledger}, {"p001i0000", "p001i0001"})
+                self.assertTrue(all(item.source_image_xref == (xref if mode == "RGB" else 0)
+                                    for item in plan.items))
+                artifact = json.loads((root / "plans/page-001.render-plan.json").read_text())
+                self.assertEqual(len(artifact["render_items"]), 2)
+                self.assertEqual(artifact["validation_results"]["coverage_errors"], [])
+                with fitz.open(output) as doc:
+                    self.assertEqual(doc[0].get_pixmap().samples, expected)
+
+    def test_overlapping_native_images_preserve_source_compositing(self):
+        fitz = render_pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, output = root / "source.pdf", root / "output.pdf"
+            with fitz.open() as doc:
+                page = doc.new_page(width=200, height=240)
+                for bbox, color in (((20, 20, 100, 100), "red"), ((50, 50, 120, 120), "blue")):
+                    stream = io.BytesIO()
+                    Image.new("RGB", (20, 20), color).save(stream, format="PNG")
+                    page.insert_image(bbox, stream=stream.getvalue())
+                doc.save(source)
+            with fitz.open(source) as doc:
+                expected = doc[0].get_pixmap().samples
+                doc[0].get_pixmap().save(root / "source.png")
+            result = pdf.write_vector_pdf(source, output, [(1, [])], {}, 72)
+            with fitz.open(output) as doc:
+                self.assertEqual(doc[0].get_pixmap().samples, expected)
+            plan = result.plans[0]
+            self.assertEqual(qa_visual.detect_image_clip_boundary_issues(plan, root / "source.png", (200, 240)), [])
+            plan.items.pop()
+            issues = qa_visual.detect_image_clip_boundary_issues(plan, root / "source.png", (200, 240))
+            self.assertIn("clipped_content", [issue.category for issue in issues])
+
+    def test_missing_native_image_coverage_blocks_publication(self):
+        fitz = render_pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, output = root / "source.pdf", root / "output.pdf"
+            stream = io.BytesIO()
+            Image.new("RGB", (20, 20), "red").save(stream, format="PNG")
+            with fitz.open() as doc:
+                page = doc.new_page(width=200, height=240)
+                page.insert_image((20, 20, 100, 100), stream=stream.getvalue())
+                doc.save(source)
+            output.write_bytes(b"previous output")
+            def lose_image(plan, *args, **kwargs):
+                plan.items.clear()
+            with (patch.object(pdf, "normalize_vector_text_layout", side_effect=lose_image),
+                  patch.object(pdf, "render_plan_item") as draw):
+                with self.assertRaisesRegex(RuntimeError, "source image.*not fully covered"):
+                    pdf.write_vector_pdf(source, output, [(1, [])], {}, 72)
+                draw.assert_not_called()
+            self.assertEqual(output.read_bytes(), b"previous output")
+
+    def test_grouped_image_row_plans_a_page_crop_with_each_source_id(self):
+        fitz = render_pdf.load_fitz()
+        with fitz.open() as doc:
+            page = doc.new_page(width=300, height=240)
+            stream = io.BytesIO()
+            Image.new("RGB", (20, 20), "red").save(stream, format="PNG")
+            for x in (20, 120, 220):
+                page.insert_image((x, 50, x + 20, 70), stream=stream.getvalue())
+            items = render_pdf.source_image_items(page, 4)
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0].source_ids, ["p004i0000", "p004i0001", "p004i0002"])
+            self.assertEqual(items[0].source_image_xref, 0)
+            with fitz.open() as out:
+                output = out.new_page(width=300, height=240)
+                render_pdf.render_plan_item(output, page, fitz, items[0], 72)
+                self.assertEqual(output.get_pixmap().samples, page.get_pixmap().samples)
+
+    def test_images_outside_page_preserve_only_visible_pixels_without_stretching(self):
+        fitz = render_pdf.load_fitz()
+        for bbox in ((-20, 50, 80, 150), (140, 50, 220, 130),
+                     (50, -20, 150, 80), (50, 160, 150, 220), (220, 10, 270, 60)):
+            with self.subTest(bbox=bbox), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source, output = root / "source.pdf", root / "output.pdf"
+                stream = io.BytesIO()
+                image = Image.new("RGB", (20, 20), "red")
+                image.paste("blue", (10, 0, 20, 10))
+                image.save(stream, format="PNG")
+                with fitz.open() as doc:
+                    page = doc.new_page(width=200, height=200)
+                    page.insert_image(bbox, stream=stream.getvalue(), keep_proportion=False)
+                    doc.save(source)
+                with fitz.open(source) as doc:
+                    expected = doc[0].get_pixmap().samples
+                result = pdf.write_vector_pdf(source, output, [(1, [])], {}, 72)
+                for item in result.plans[0].items:
+                    self.assertEqual(item.source_image_xref, 0)
+                    self.assertGreaterEqual(min(item.bbox), 0)
+                    self.assertLessEqual(max(item.bbox), 200)
+                with fitz.open(output) as doc:
+                    self.assertEqual(doc[0].get_pixmap().samples, expected)
+
+    def test_native_image_covered_by_visual_clips_is_not_drawn_twice(self):
+        # A partial intersection requires clipping only the uncovered remainder.
+        for visual_box in ((10, 10, 100, 110), (10, 10, 55, 110)):
+            with self.subTest(visual_box=visual_box):
+                plan = render_plan.PageRenderPlan(1, items=[
+                    render_plan.RenderItem("original_image_clip", ["figure"], visual_box)])
+                source = render_plan.RenderItem("original_image_clip", ["p001i0000"], (20, 20, 80, 100))
+                pdf.add_source_images_to_plan(plan, [source])
+                self.assertEqual(render_plan.validate_source_image_coverage(plan, [source]), [])
+                for index, left in enumerate(plan.items):
+                    for right in plan.items[index + 1:]:
+                        self.assertEqual(render_plan.bbox_overlap_area(left.bbox, right.bbox), 0)
+                self.assertEqual(len(plan.items), 1 if visual_box[2] == 100 else 2)
+                # The original source obligation cannot be changed by deduplication.
+                self.assertEqual(source.source_ids, ["p001i0000"])
+                plan.items.clear()
+                self.assertTrue(render_plan.validate_source_image_coverage(plan, [source]))
+
+    def test_native_image_is_an_obstacle_before_text_layout(self):
+        fitz = render_pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, output = root / "source.pdf", root / "output.pdf"
+            stream = io.BytesIO()
+            Image.new("RGB", (20, 20), "red").save(stream, format="PNG")
+            with fitz.open() as doc:
+                page = doc.new_page(width=240, height=300)
+                page.insert_image((20, 120, 220, 160), stream=stream.getvalue(), keep_proportion=False)
+                doc.save(source)
+            block = {"id": "p001b0001", "page": 1, "text": "This is an explanation of the complete method.",
+                     "xMin": 20, "yMin": 40, "xMax": 220, "yMax": 220}
+            result = pdf.write_vector_pdf(source, output, [(1, [block])], {block["id"]: "完整的方法说明。"}, 72)
+            plan = result.plans[0]
+            self.assertTrue(any(item.source_ids == ["p001i0000"] for item in plan.items))
+            self.assertEqual(render_plan.validate_plan_layout(plan, (240, 300)), [])
+            self.assertEqual("".join(item.text for item in plan.items if item.kind == "translated_text"),
+                             "完整的方法说明。")
 
     def test_insert_vector_textbox_direct_api_rejects_fixed_style_overflow(self):
         fitz = render_pdf.load_fitz()

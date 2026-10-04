@@ -30,3 +30,15 @@ def bbox_overlap_area(left: Sequence[float], right: Sequence[float]) -> float:
         return 0.0
     x0, y0, x1, y1 = intersection
     return (x1 - x0) * (y1 - y0)
+
+
+def subtract_bbox(rect, exclusion) -> list[tuple[float, float, float, float]]:
+    """Partition the uncovered area without dropping narrow source-image strips."""
+    overlap = bbox_intersection(rect, exclusion)
+    if overlap is None:
+        return [tuple(rect)]
+    x0, y0, x1, y1 = rect
+    ix0, iy0, ix1, iy1 = overlap
+    return [box for box in ((x0, y0, x1, iy0), (x0, iy1, x1, y1),
+                           (x0, iy0, ix0, iy1), (ix1, iy0, x1, iy1))
+            if box[2] > box[0] and box[3] > box[1]]

@@ -4584,7 +4584,7 @@ class QualityValidationTests(unittest.TestCase):
         self.assertEqual(plan.items[0].kind, "translated_text")
         self.assertEqual(plan.ledger[0].render_kind, "translated_text")
 
-    def test_moving_leading_enum_continuation_does_not_duplicate_source_ids(self):
+    def test_merged_continuation_stays_intact_when_fragment_source_is_ambiguous(self):
         plan = render_plan.PageRenderPlan(page_num=4)
         previous = render_plan.RenderItem(
             "translated_text",
@@ -4608,6 +4608,8 @@ class QualityValidationTests(unittest.TestCase):
 
         self.assertNotIn("p004b0004", previous.source_ids)
         self.assertEqual(current.source_ids, ["p004b0004", "p004b0005"])
+        self.assertEqual(previous.text, "(1) States(A) 是状态集合。")
+        self.assertEqual(current.text, "初始状态集合。\n(2) In(A) 是输入事件集合。")
 
 
 class RenderPlanSerializationTests(unittest.TestCase):

@@ -15,6 +15,19 @@ def visible_text(plan):
 
 
 class LayoutStageTests(unittest.TestCase):
+    def test_numbered_continuation_move_keeps_both_source_attributions(self):
+        first = render_plan.RenderItem("translated_text", ["a"], (20, 20, 180, 60),
+                                       text="(1) 首先读取", style_name="body", font_size=9.2)
+        second = render_plan.RenderItem("translated_text", ["b"], (20, 65, 180, 115),
+                                        text="全部文件。\n(2) 然后处理数据。", style_name="body", font_size=9.2)
+        plan = render_plan.PageRenderPlan(1, items=[first, second], ledger=[
+            render_plan.CoverageEntry(key, "body", "translated_text", True) for key in ("a", "b")])
+        pipeline.move_leading_enum_continuations_to_previous_items(plan)
+        self.assertEqual(first.text, "(1) 首先读取全部文件。")
+        self.assertEqual(second.text, "(2) 然后处理数据。")
+        self.assertEqual(first.source_ids, ["a", "b"])
+        self.assertEqual(second.source_ids, ["b"])
+
     def test_arrangement_preserves_text_and_coverage_across_columns_and_visual_barrier(self):
         plan = render_plan.PageRenderPlan(page_num=2, page_size=(420, 300))
         blocks = []

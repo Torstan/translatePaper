@@ -9,8 +9,10 @@ from PIL import Image
 
 from classify import NORMAL_TRANSLATED_CLASSES, source_requires_chinese_translation
 from layout import document_style_hierarchy_errors, text_item_style_issues
-from render_plan import RenderItem, bbox_significantly_overlaps_protected
+from render_plan import (RenderItem, bbox_significantly_overlaps_protected,
+                         load_render_plan_artifact, text_boxes_significantly_overlap)
 from geometry import bbox_overlap_area as _bbox_overlap_area
+from geometry import subtract_bbox
 
 
 TOOL_ROOT = Path(__file__).resolve().parent
@@ -225,13 +227,6 @@ def _bbox_overlap_height(left, right) -> float:
 
 def _bbox_overlap_width(left, right) -> float:
     return max(0.0, min(left[2], right[2]) - max(left[0], right[0]))
-
-
-def _significant_text_overlap(left_bbox, right_bbox) -> bool:
-    if _bbox_overlap_height(left_bbox, right_bbox) <= 3.0:
-        return False
-    overlap = _bbox_overlap_area(left_bbox, right_bbox)
-    return overlap > min(_bbox_area(left_bbox), _bbox_area(right_bbox)) * 0.12
 
 
 def _source_ids_for_item(item) -> list[str]:
@@ -618,7 +613,9 @@ def _image_clip_items_are_siblings(left, right) -> bool:
     return overlap > 0 and overlap / min(len(left_source_ids), len(right_source_ids)) >= 0.5
 
 
-def _sibling_image_clips_explain_dark_excess(dark_bbox, clip_bbox, current_item, item_index: int, items) -> bool:
+def _sibling_image_clips_explain_dark_excess(
+    dark_bbox, clip_bbox, current_item, item_index: int, items, *, source_image_path, page_size, darkness_threshold,
+) -> bool:
     excess_boxes = _dark_excess_boxes(dark_bbox, clip_bbox)
     if not excess_boxes:
         return False
@@ -632,11 +629,13 @@ def _sibling_image_clips_explain_dark_excess(dark_bbox, clip_bbox, current_item,
     ]
     if not sibling_boxes:
         return False
-    # Check real sibling boxes, not their union, so dark content in split gaps still fails.
-    return all(
-        any(_bbox_contains(excess_box, sibling_box, tolerance=0.0) for sibling_box in sibling_boxes)
-        for excess_box in excess_boxes
-    )
+    # Subtract real sibling coverage, not its enclosing rectangle. A bounding
+    # dark box can contain white corners; only actual dark pixels in gaps fail.
+    remaining = excess_boxes
+    for sibling in sibling_boxes:
+        remaining = [piece for box in remaining for piece in subtract_bbox(box, sibling)]
+    return all(_dark_pixel_bbox(source_image_path, box, page_size,
+                               darkness_threshold=darkness_threshold) is None for box in remaining)
 
 
 def detect_image_clip_boundary_issues(
@@ -699,6 +698,9 @@ def detect_image_clip_boundary_issues(
                 item,
                 item_index,
                 items,
+                source_image_path=source_image_path,
+                page_size=page_size,
+                darkness_threshold=darkness_threshold,
             ) and not _minor_component_edge_bleed_explains_dark_excess(
                 dark_bbox,
                 clip_bbox,
@@ -861,10 +863,8 @@ def detect_geometry_issues(
         for right in text_items[left_idx + 1 :]:
             left_ids = _source_ids_for_item(left)
             right_ids = _source_ids_for_item(right)
-            if left_ids and right_ids and set(left_ids) == set(right_ids):
-                continue
             right_bbox = _bbox_tuple(_item_value(right, "bbox"))
-            if not _significant_text_overlap(left_bbox, right_bbox):
+            if not text_boxes_significantly_overlap(left_bbox, right_bbox):
                 continue
             issues.append(
                 VisualQaIssue(
@@ -1227,10 +1227,6 @@ def write_visual_qa_report(
     )
 
 
-def _load_plan_artifact(plan_artifact_path: str | Path) -> dict:
-    return json.loads(Path(plan_artifact_path).read_text(encoding="utf-8"))
-
-
 def generate_visual_qa_report(
     plan_artifact_paths,
     *,
@@ -1246,7 +1242,7 @@ def generate_visual_qa_report(
 ) -> VisualQaReport:
     normalized_plan_paths = sorted(Path(path) for path in plan_artifact_paths)
     loaded_plans = (
-        [_load_plan_artifact(path) for path in normalized_plan_paths]
+        [load_render_plan_artifact(path) for path in normalized_plan_paths]
         if plans is None else list(plans)
     )
     checked_pages = sorted({_plan_page_num(plan) for plan in loaded_plans})

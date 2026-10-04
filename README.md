@@ -24,28 +24,29 @@ invalid fields, and missing, extra, or duplicate IDs/keys cannot enter the cache
 An empty repair prefix is valid; an empty repaired sentence is not.
 
 Both CLIs call `pipeline.translate_document()` with explicit `DocumentOptions`.
-Their defaults remain distinct: the single-PDF CLI batches across pages with
-10,000 characters and does not run optional QA; the batch CLI groups within each
-page with 7,000 characters and runs QA unless `--no-qa` is given. Worker count
+Both group within each page. The single-PDF CLI defaults to 10,000 characters
+and does not run optional QA; the batch CLI defaults to 7,000 characters and
+runs QA unless `--no-qa` is given. Worker count
 controls execution concurrency without changing the prepared batch boundaries.
 
-Cache acceptance retains the existing policies: the single-PDF CLI requires
-`max(1, int(selected_ids * 0.6))` matching IDs; the batch CLI accepts any matching
-IDs. Both atomically save each successfully collected batch result. Stale cache backups now share
-the `translations.stale-<timestamp>.json` naming convention. These ID checks do
-not establish cache freshness when source text or model configuration changes.
+Both CLIs reuse only validated responses whose actual request matches the cache
+key, including source text, context, prompt/schema, model and reasoning effort.
+They atomically save each successfully collected batch result. ID overlap alone
+does not establish freshness; legacy responses without request keys are rerun.
 An empty page selection fails before model execution or PDF drawing.
 
 Python consumers import the implementation from `pipeline`, not the CLI scripts.
 The existing command names and flags remain available.
 
-`translate_pages` owns grouping, cache recovery, response validation and boundary
-repairs, returning final translations and the requested source-block count.
-The response cache stays unrepaired so resuming cannot strip a sentence prefix twice.
+`translate_pages` owns grouping, cache recovery, response validation, boundary
+repairs and deterministic text cleanup, returning final translations and the
+requested source-block count. The response cache stays unmodified by repairs
+and cleanup so resuming cannot strip a sentence prefix twice.
 `render_translated_pdf` consumes those final translations; it no longer accepts
 `model`, `reasoning_effort` or `retries`. Python callers that previously relied on
 rendering to repair raw translations must call `translate_pages` first, or use
-the complete `translate_document` workflow.
+the complete `translate_document` workflow. Offline fixtures containing raw
+responses use `finalize_translations` before planning.
 
 `build_final_page_plan` combines planning, layout adaptation, mandatory validation
 and diagnostic saving. It returns the existing `PageRenderPlan` or raises;
@@ -55,7 +56,22 @@ ordinary callers do not sequence layout repair functions or validation results.
 Draft builders and individual repairs remain implementation/testing helpers.
 Layout planning and
 visual QA share the same protected-region overlap predicate (over 6pt vertically
-and over 5% of the smaller box's area).
+and over 5% of the smaller box's area) and text-overlap predicate. Shared source
+IDs do not exempt overlapping text; disjoint fragments remain valid. Complete
+body flows also check text against the ordered source IDs after merging/splitting.
+This is a local flow check, not proof of arbitrary document reading order.
+Flows sharing partial sources with other items retain aggregate per-source
+conservation checks; they cannot require a full translation in every fragment.
+
+Native source images are planned before text layout, using occurrence IDs such
+as `p001i0000` in render items and coverage entries. `source_image_xref` selects
+a native resource (positive) or PDF page crop (zero); absent means the existing
+visual-region crop behavior. Masks, grouped rows and overlapping images use
+page crops. Off-page images preserve their visible intersection using a crop.
+Existing visual clips share image coverage rather than drawing the
+same area twice. Final validation checks each original image obligation after
+layout; drawing no longer copies images outside the plan. The existing full-page
+background and small edge-icon filters remain unchanged.
 
 Rendering no longer completes sentences from hardcoded source phrases: complete
 translations remain intact, and incomplete translations must be checked through
@@ -91,8 +107,10 @@ work/jobs/<pdf-stem>/plans/page-NNN.render-plan.json
 Each plan records its source `page_num`, one-based `output_page_num`, and actual
 `page_size` in PDF points. Ownership components use the single `components` field.
 During vector rendering, drawing and QA share the final in-memory plans; saved
-JSON plans remain available for offline visual QA. Raster diagnostics check the
-source layout and do not represent the raster drawing's final layout.
+JSON plans remain available for offline visual QA and are structurally checked
+when loaded; missing `render_items` is an error, while an explicit empty list is
+valid. Raster plans record the actual pixel layout, lines and page dimensions;
+vector-only checks do not validate raster drawing.
 
 Vector rendering validates the final layout before drawing each page, including
 source ownership, coverage, protected geometry, text overlap, style and fit.

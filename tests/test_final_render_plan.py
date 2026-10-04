@@ -17,6 +17,61 @@ from PIL import Image
 
 
 class FinalRenderPlanTests(unittest.TestCase):
+    def test_translation_exit_finalizes_text_and_rendering_consumes_it_without_cleanup(self):
+        block = {"id": "b", "page": 2, "block_index": 1,
+                 "text": "Concurrent Data Structures\nThe algorithm protects every operation.",
+                 "running_header": "Concurrent Data Structures",
+                 "xMin": 20, "yMin": 50, "xMax": 180, "yMax": 110}
+        raw = {"b": "Concurrent Data Structures\n算法保护每一个操作，\n并保证所有线程都能够继续运行。"}
+        expected = {"b": "算法保护每一个操作，并保证所有线程都能够继续运行。"}
+        with tempfile.TemporaryDirectory() as tmp:
+            job = {"job_dir": Path(tmp)}
+            with patch.object(translation_batch, "run_batches", return_value=raw):
+                final, _ = pipeline.translate_pages([(2, [block])], (200, 220), job,
+                                                     pipeline.DocumentOptions())
+            self.assertEqual(final, expected)
+            self.assertIn("Concurrent Data Structures", raw["b"])
+            with (patch.object(pipeline, "clean_render_text", side_effect=AssertionError("render cleaned translation")),
+                  patch.object(pipeline, "prepare_render_translation", side_effect=AssertionError("render normalized translation"))):
+                plan = pipeline.build_final_page_plan(2, [block], final, (200, 220))
+            self.assertEqual([item.text for item in plan.items if item.kind == "translated_text"], list(expected.values()))
+
+    def test_final_validation_rejects_same_source_duplicate_but_allows_disjoint_fragments(self):
+        block = {"id": "body", "text": "A complete source paragraph about the design.",
+                 "xMin": 20, "yMin": 20, "xMax": 180, "yMax": 80}
+        text = "首先读取文件。然后处理数据。"
+        item = render_plan.RenderItem("translated_text", ["body"], (20, 20, 180, 60),
+                                      text=text, font_size=9.2, style_name="body")
+        plan = render_plan.PageRenderPlan(
+            1, items=[item, replace(item)], page_size=(200, 220),
+            ledger=[render_plan.CoverageEntry("body", "body", "translated_text", True)],
+            components=ownership.build_page_components(1, [block], {"body": "body"}, visual_regions=[]),
+        )
+        checks, errors = pipeline.validate_final_page_plan(plan, [block], pipeline.load_fitz(), {"body": text})
+        self.assertTrue(checks["text_overlap_errors"], errors)
+        plan.items = [replace(item, bbox=(20, 20, 180, 40), text="首先读取文件。"),
+                      replace(item, bbox=(20, 45, 180, 65), text="然后处理数据。")]
+        _, errors = pipeline.validate_final_page_plan(plan, [block], pipeline.load_fitz(), {"body": text})
+        self.assertEqual(errors, [])
+        self.assertEqual(qa_visual.detect_geometry_issues(plan, plan.page_size), [])
+
+    def test_body_flow_checks_source_order_after_merge_and_split(self):
+        blocks = [{"id": key, "text": "A complete source paragraph."} for key in ("a", "b")]
+        translations = {"a": "首先读取文件。", "b": "然后处理数据。"}
+        item = render_plan.RenderItem("translated_text", ["a", "b"], (20, 20, 180, 80),
+                                      text="然后处理数据。首先读取文件。", layout_role="body_flow")
+        plan = render_plan.PageRenderPlan(1, items=[item], ledger=[
+            render_plan.CoverageEntry(key, "body", "translated_text", True) for key in translations])
+        self.assertTrue(pipeline.validate_plan_text_content(1, blocks, translations, plan))
+        plan.items = [replace(item, bbox=(20, 20, 180, 40), text="首先读取文件。"),
+                      replace(item, bbox=(20, 50, 180, 70), text="然后处理数据。")]
+        self.assertEqual(pipeline.validate_plan_text_content(1, blocks, translations, plan), [])
+        translations["b"] = translations["a"]
+        plan.items[1].text = translations["b"]
+        self.assertEqual(pipeline.validate_plan_text_content(1, blocks, translations, plan), [])
+        plan.items.pop()
+        self.assertTrue(pipeline.validate_plan_text_content(1, blocks, translations, plan))
+
     def test_source_ownership_is_independent_of_translation_state(self):
         blocks = [
             {"id": "p001b0001", "page": 1, "block_index": 1, "text": "Table 1: Results",
@@ -37,6 +92,37 @@ class FinalRenderPlanTests(unittest.TestCase):
             )
         self.assertEqual(ownership.components_to_json(missing.components),
                          ownership.components_to_json(translated.components))
+
+    def test_continuation_then_merge_keeps_each_source_once_in_final_flow(self):
+        blocks = [
+            dict(id="a", page=2, text="(1) First read the", xMin=20, yMin=20, xMax=180, yMax=60),
+            dict(id="b", page=2, text="complete files.\n(2) Then process the data.",
+                 xMin=20, yMin=65, xMax=180, yMax=115),
+        ]
+        translations = {"a": "(1) 首先读取", "b": "全部文件。\n(2) 然后处理数据。"}
+        plan = pipeline.build_final_page_plan(2, blocks, translations, (200, 240))
+        flows = [item for item in plan.items if item.kind == "translated_text"]
+        self.assertEqual(len(flows), 1)
+        self.assertEqual(flows[0].source_ids, ["a", "b"])
+        self.assertEqual("".join(flows[0].text.split()), "(1)首先读取全部文件。(2)然后处理数据。")
+
+    def test_partial_source_remerged_below_visual_barrier_does_not_require_prefix_twice(self):
+        translations = {"a": "首先读取文件。随后校验输入。", "b": "最后处理数据。"}
+        plan = render_plan.PageRenderPlan(2, items=[
+            render_plan.RenderItem("translated_text", ["a"], (20, 20, 180, 40),
+                                   text="首先读取文件。", style_name="body", font_size=9.2),
+            render_plan.RenderItem("original_image_clip", [], (20, 45, 180, 75)),
+            render_plan.RenderItem("translated_text", ["a"], (20, 80, 180, 100),
+                                   text="随后校验输入。", style_name="body", font_size=9.2),
+            render_plan.RenderItem("translated_text", ["b"], (20, 105, 180, 130),
+                                   text="最后处理数据。", style_name="body", font_size=9.2),
+        ], ledger=[render_plan.CoverageEntry(key, "body", "translated_text", True) for key in translations])
+        blocks = [{"id": key} for key in translations]
+        pipeline.merge_adjacent_body_text_flows(plan)
+        self.assertEqual(plan.items[-1].source_ids, ["a", "b"])
+        self.assertEqual(pipeline.validate_plan_text_content(2, blocks, translations, plan), [])
+        plan.items[0].text = "读取文件。"
+        self.assertTrue(pipeline.validate_plan_text_content(2, blocks, translations, plan))
 
     def test_batching_and_rendering_consume_the_same_source_analysis(self):
         blocks = [{"id": "p001b0001", "page": 1, "block_index": 1,
@@ -222,14 +308,12 @@ class FinalRenderPlanTests(unittest.TestCase):
 
                 with (
                     patch.object(pipeline, "build_page_render_plan", return_value=plan),
-                    patch.object(pipeline, "preserve_images_on_page") as images,
                     patch.object(pipeline, "render_plan_item") as draw,
                     patch.object(fitz, "open", side_effect=track_open),
                 ):
                     with self.assertRaisesRegex(RuntimeError, "owner"):
                         pipeline.write_vector_pdf(source, output, [(1, [block])], translations, 72,
                                                   {"plans_dir": root / "plans"})
-                images.assert_not_called()
                 draw.assert_not_called()
                 self.assertTrue(opened and all(doc.is_closed for doc in opened))
                 self.assertEqual(output.read_bytes(), previous)
@@ -384,7 +468,7 @@ class FinalRenderPlanTests(unittest.TestCase):
             with (
                 patch.object(pipeline, "build_page_render_plan", side_effect=AssertionError("QA rebuilt a plan")),
                 patch.object(pipeline, "normalize_vector_text_layout", side_effect=AssertionError("QA rewrote a plan")),
-                patch.object(qa_visual, "_load_plan_artifact", side_effect=AssertionError("QA reloaded a plan")),
+                patch.object(qa_visual, "load_render_plan_artifact", side_effect=AssertionError("QA reloaded a plan")),
                 patch.object(pipeline.qa, "choose_items_for_qa", return_value=[]),
             ):
                 report = pipeline.run_qa_for_job(selected, translations, job, (200, 300), args,

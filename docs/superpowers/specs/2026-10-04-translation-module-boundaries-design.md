@@ -52,7 +52,11 @@ vector 已在最终布局后统一刷新归属诊断，结构检查通过后才�
 
 绘制项现已通过 `layout_role` 表达布局关系、通过 `font_policy` 表达有限字号权限，原因文字只参与诊断说明。合流/拆分传递这些字段，样式检查核对角色和字号范围。[E3]
 
-仍需调整的事实包括：源归属随译文状态重算、对象/JSON 双表示适配散布在 QA 中，以及正式输出写入早于可选 QA。[E2][E5][E7]
+文档入口已复用独立于译文的源分析；`translate_pages()` 在返回前完成边界修复及纯文本整理。原始响应缓存不被修改，渲染与 QA 使用最终译文。[E2][E6]
+
+源图片现通过出现位置 ID、绘制项和覆盖记录进入布局及最终校验。重复覆盖复用已有视觉裁剪；透明、分组和叠放图片在规划时选择源页裁剪。保留现有背景图及边缘图标过滤政策。[E9]
+
+仍需调整的事实包括：任意分片缺少精确来源跨度、对象/JSON 双表示适配散布在 QA 中，以及正式输出写入早于可选 QA。当前顺序检查仅覆盖带完整有序 source IDs 的正文合流，不证明全局阅读顺序。[E5][E7][E11]
 
 已实现的变更由实施记录追踪；未完成的边界与验收条件见下文。两个入口默认按页组批并共用缓存校验，可选 QA 默认值仍由各入口决定。
 
@@ -65,13 +69,13 @@ vector 已在最终布局后统一刷新归属诊断，结构检查通过后才�
 | 编号 | 已检查来源 | 支持的事实 |
 | --- | --- | --- |
 | E1 | [translation_batch.py](../../../translation_batch.py)：`execute_translation_batch`、`execute_json_task`、`validate_translation_payload` | 批次执行已集中；具备响应 ID、空译文和新鲜输出校验 |
-| E2 | [pipeline.py](../../../pipeline.py)：`build_translation_page_components`、`final_visual_ownership_regions`、`build_translation_batches`、`build_page_render_plan` | 组批和渲染分别分析组件，渲染分析接收译文并改变视觉归属 |
+| E2 | [pipeline.py](../../../pipeline.py)：`analyze_selected_pages`、`build_translation_page_components`、`build_translation_batches`、`build_page_render_plan` | 文档入口复用源分析；直接调用 helper 时允许按相同源输入重建；译文状态不决定源归属 |
 | E3 | [layout.py](../../../layout.py)：`text_item_style_issues`、`text_item_font_size_bounds`、`split_translated_text_around_protected`；[pipeline.py](../../../pipeline.py)：`fit_body_flow_text_items`、`merge_adjacent_body_text_flows`、`normalize_vector_text_layout` | 布局与字体政策独立于诊断原因；最终布局修改几何/字号并保存权限；拆分保留元数据 |
 | E4 | [pipeline.py](../../../pipeline.py)：`validate_final_page_plan`、`write_vector_pdf`、`validate_plan_quality`；[render_plan.py](../../../render_plan.py)：`validate_plan_ownership`、`validate_plan_layout` | 最终布局后刷新归属并统一检查覆盖、几何、文本重叠、样式和 fit；结构错误在绘制前阻断 |
 | E5 | [qa_visual.py](../../../qa_visual.py)：`_plan_render_items`、`_item_value`、`detect_ownership_issues`、`generate_visual_qa_report`；[render_plan.py](../../../render_plan.py)：`PageRenderPlan`、`render_plan_to_json` | 检测逻辑兼容字典/对象；清理后归属 ledger 在导出时由组件生成 |
-| E6 | [tests/test_final_render_plan.py](../../../tests/test_final_render_plan.py)：`FinalRenderPlanTests`；[README.md](../../../README.md)：QA Artifacts | 已有最终计划交接、实际页尺寸、输出页映射和跨页修复只应用一次的测试 |
+| E6 | [tests/test_final_render_plan.py](../../../tests/test_final_render_plan.py)：`FinalRenderPlanTests`；[README.md](../../../README.md)：QA Artifacts | 已有最终计划交接、实际页尺寸、输出页映射、最终译文出口及跨页修复只应用一次的测试 |
 | E7 | [translate_pdf_parallel.py](../../../translate_pdf_parallel.py)：`main`；[pipeline.py](../../../pipeline.py)：`translate_document`；[translation_batch.py](../../../translation_batch.py)：`run_batches`；[tests/test_translation_batch.py](../../../tests/test_translation_batch.py)：组批与缓存测试 | 两入口默认按页组批，共用按实际请求校验的缓存；正式输出写入发生在可选 QA 之前 |
-| E9 | [render_pdf.py](../../../render_pdf.py)：`preserve_images_on_page`、`render_plan_item`；[pipeline.py](../../../pipeline.py)：`write_vector_pdf`、`render_pages` | vector 目前会在计划绘制之外保留源图片；raster 有独立绘制路径 |
+| E9 | [render_pdf.py](../../../render_pdf.py)：`source_image_items`、`render_plan_item`；[pipeline.py](../../../pipeline.py)：`add_source_images_to_plan`、`write_vector_pdf`、`render_pages` | vector 源图片进入布局前的计划和覆盖记录；按原始图片边界检查最终覆盖；raster 有独立绘制路径 |
 | E10 | [qa_semantic.py](../../../qa_semantic.py)：`run_backtranslation`、`build_report`；[qa_visual.py](../../../qa_visual.py)：`generate_visual_qa_report` | 回译、几何、源图裁剪检查和渲染 PNG 是不同检查手段，覆盖范围不同 |
 | E11 | [tests/test_layout_stages.py](../../../tests/test_layout_stages.py)、[tests/pdf_render_fixture_runner.py](../../../tests/pdf_render_fixture_runner.py) | 已有部分内容守恒、布局稳定性及 fixture 断言；字符计数不能单独证明阅读顺序正确 |
 | E12 | [AGENTS.md](../../../AGENTS.md)；[既有治理设计](2026-09-07-overengineering-options.md) | 内容保护、验证和提交约束；历史治理已完成的部分与保留的策略差异 |
@@ -153,7 +157,7 @@ G 之后可以运行依赖实际 PDF 的视觉 QA，其结果汇入 H。语义 Q
 #### 7. G：PDF 绘制
 
 - 只按通过校验的计划绘制文字、图片、页尺寸和书签映射；资源读取或 PDF 编码失败明确报错。绘制时不重新决定归属、字体、裁剪或降级。
-- 当前 vector 仍通过 `preserve_images_on_page()` 在计划外复制部分源图片；把这部分内容纳入 A/D 的来源与保护决策，是未完成的迁移目标。[E9]
+- vector 原先计划外复制的源图片已进入计划；`source_image_xref` 明确原生资源或 PDF 裁剪方式。既有视觉区域仍可读取页面 PNG 或 PDF 的同一位置；这一路径的资源格式未做统一迁移。[E9]
 
 #### 8. H：计划与诊断报告
 
@@ -189,7 +193,7 @@ A–H 是需要明确所有者的知识，不要求八个文件或八个公开�
 #### 12. 未完成目标与验收
 
 - **源分析交接：** 组批和渲染消费同一稳定分析；译文缺失或无效不改变源归属，同一源页尺寸与来源身份贯穿后续阶段。[E2]
-- **内容与布局：** 覆盖核对包含来源、文本顺序和合法规范化；unknown 与视觉内容不得丢失。源图片的计划外复制要进入来源与保护记录。[E9][E11]
+- **内容与布局：** 覆盖核对包含来源、文本顺序和合法规范化；unknown 与视觉内容不得丢失。源图片已进入覆盖与保护检查；任意分片和全局顺序仍是后续验证目标。[E9][E11]
 - **计划与报告：** JSON 往返保持诊断代码、severity 和来源；损坏字段明确失败。报告只陈述实际执行的检查。[E5]
 - **缓存与 raster：** 昂贵请求的缓存依据实际输入；raster 的计划与校验使用真实像素布局，不借用 vector 计划。输出像素级验证仍须单独实现。[E6][E7][E9]
 

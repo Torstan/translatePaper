@@ -1,4 +1,5 @@
 import json
+import math
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -7,7 +8,7 @@ from typing import Literal
 
 import ownership
 from classify import is_trivial_keep, normalize_text
-from geometry import bbox_overlap_area
+from geometry import bbox_overlap_area, subtract_bbox
 
 
 VECTOR_BODY_COLOR = (0, 0, 0)
@@ -34,6 +35,8 @@ class RenderItem:
     raster_vertical: bool = False
     # Pixel region to erase before drawing this text; mixed blocks erase only their text component.
     raster_source_bbox: tuple[int, int, int, int] | None = None
+    # None: existing visual clip; 0: explicit PDF page crop; positive: native image resource.
+    source_image_xref: int | None = None
 
 
 @dataclass
@@ -92,6 +95,8 @@ def render_item_to_json(item: RenderItem) -> dict:
         data["raster_vertical"] = item.raster_vertical
     if item.raster_source_bbox is not None:
         data["raster_source_bbox"] = bbox_to_json(item.raster_source_bbox)
+    if item.source_image_xref is not None:
+        data["source_image_xref"] = item.source_image_xref
     return data
 
 
@@ -144,6 +149,84 @@ def render_plan_json_dumps(plan: PageRenderPlan, validation_results: dict | list
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def load_render_plan_artifact(path: str | Path) -> dict:
+    """Validate drawing data at the JSON boundary, preserving diagnostic severity.
+
+    Missing drawing data is a broken artifact, not an empty page. Optional report
+    fields retain their defaults, but malformed supplied fields never disappear.
+    """
+    path = Path(path)
+
+    def require(condition, field):
+        if not condition:
+            raise ValueError(f"invalid render plan {path}: {field}")
+
+    def numbers(value, length):
+        return (isinstance(value, list) and len(value) == length
+                and all(type(v) in (int, float) and math.isfinite(v) for v in value))
+
+    def box(value, field):
+        require(numbers(value, 4), field)
+        require(value[0] <= value[2] and value[1] <= value[3], field)
+
+    try:
+        plan = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ValueError(f"invalid render plan {path}: {exc}") from exc
+    require(isinstance(plan, dict), "expected object")
+    require(type(plan.get("page_num")) is int and plan["page_num"] > 0, "page_num")
+    require(isinstance(plan.get("render_items"), list), "render_items")
+    for index, item in enumerate(plan["render_items"]):
+        field = f"render_items[{index}]"
+        require(isinstance(item, dict), field)
+        require(item.get("kind") in {"translated_text", "original_selectable_text", "original_image_clip"}, field + ".kind")
+        require(isinstance(item.get("source_ids"), list)
+                and all(isinstance(v, str) for v in item["source_ids"]), field + ".source_ids")
+        box(item.get("bbox"), field + ".bbox")
+        if item["kind"] != "original_image_clip":
+            require(isinstance(item.get("text"), str), field + ".text")
+        for name in ("text", "style_name", "fallback_reason", "component_id", "component_kind", "layout_role", "font_policy"):
+            require(isinstance(item.get(name, ""), str), field + "." + name)
+        size = item.get("font_size")
+        require(size is None or (type(size) in (int, float) and math.isfinite(size) and size > 0), field + ".font_size")
+        xref = item.get("source_image_xref")
+        require(xref is None or (type(xref) is int and xref >= 0
+                                and item["kind"] == "original_image_clip"), field + ".source_image_xref")
+    for name in ("coverage_ledger", "protected_regions", "components"):
+        records = plan.get(name, [])
+        require(isinstance(records, list) and all(isinstance(v, dict) for v in records), name)
+    for region in plan.get("protected_regions", []):
+        box(region.get("bbox"), "protected_regions.bbox")
+    for entry in plan.get("coverage_ledger", []):
+        for name in ("block_id", "classification", "render_kind"):
+            require(isinstance(entry.get(name), str) and bool(entry[name]), "coverage_ledger." + name)
+        require(type(entry.get("rendered")) is bool, "coverage_ledger.rendered")
+    for component in plan.get("components", []):
+        require(isinstance(component.get("component_id"), str), "components.component_id")
+        require(component.get("component_kind") in ownership.COMPONENT_KINDS, "components.component_kind")
+        require(isinstance(component.get("source_ids"), list)
+                and all(isinstance(v, str) for v in component["source_ids"]), "components.source_ids")
+        box(component.get("source_bbox"), "components.source_bbox")
+        if component.get("clip_bbox") is not None:
+            box(component["clip_bbox"], "components.clip_bbox")
+    if plan.get("page_size") is not None:
+        require(numbers(plan["page_size"], 2) and min(plan["page_size"]) > 0, "page_size")
+    if plan.get("output_page_num") is not None:
+        require(type(plan["output_page_num"]) is int and plan["output_page_num"] > 0, "output_page_num")
+    validation = plan.get("ownership_validation", {})
+    require(isinstance(validation, dict), "ownership_validation")
+    issues = validation.get("issues", validation.get("errors", []))
+    require(isinstance(issues, list), "ownership_validation.issues")
+    for issue in issues:
+        require(isinstance(issue, dict), "ownership issue")
+        require(issue.get("severity") in {"error", "warning"}, "ownership issue severity")
+        require(isinstance(issue.get("issue_code"), str) and isinstance(issue.get("message"), str), "ownership issue identity")
+        require(isinstance(issue.get("bboxes", []), list), "ownership issue bboxes")
+        for value in issue.get("bboxes", []):
+            box(value, "ownership issue bbox")
+    return plan
 
 
 def render_plan_artifact_path(job_paths, page_num: int) -> Path | None:
@@ -226,6 +309,22 @@ def validate_plan_coverage(
     return errors
 
 
+def validate_source_image_coverage(plan: PageRenderPlan, source_images: list[RenderItem]) -> list[str]:
+    """Check original image obligations after layout, including split visual crops."""
+    errors = []
+    for source in source_images:
+        for source_id in source.source_ids:
+            entries = [entry for entry in plan.ledger if entry.block_id == source_id]
+            remaining = [source.bbox]
+            for item in plan.items:
+                if item.kind == "original_image_clip" and source_id in item.source_ids:
+                    remaining = [piece for box in remaining for piece in subtract_bbox(box, item.bbox)]
+            if (not entries or any(not entry.rendered or entry.render_kind != "original_image_clip"
+                                   for entry in entries) or sum(bbox_area(box) for box in remaining) > 0.01):
+                errors.append(f"page {plan.page_num} source image {source_id} is not fully covered")
+    return errors
+
+
 def bbox_area(box) -> float:
     return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
 
@@ -275,18 +374,19 @@ def validate_plan_text_overlaps(plan: PageRenderPlan) -> list[str]:
     ]
     for left_idx, left in enumerate(text_items):
         for right in text_items[left_idx + 1 :]:
-            if left.source_ids and right.source_ids and set(left.source_ids) == set(right.source_ids):
-                continue
-            if bbox_overlap_height(left.bbox, right.bbox) <= 3.0:
-                continue
-            overlap = bbox_overlap_area(left.bbox, right.bbox)
-            if overlap <= min(bbox_area(left.bbox), bbox_area(right.bbox)) * 0.12:
+            if not text_boxes_significantly_overlap(left.bbox, right.bbox):
                 continue
             errors.append(
                 f"page {plan.page_num} text {left.source_ids or left.fallback_reason}"
                 f" overlaps text {right.source_ids or right.fallback_reason}"
             )
     return errors
+
+
+def text_boxes_significantly_overlap(left, right) -> bool:
+    """Source identity never exempts geometry; valid fragments occupy separate boxes."""
+    return (bbox_overlap_height(left, right) > 3.0
+            and bbox_overlap_area(left, right) > min(bbox_area(left), bbox_area(right)) * 0.12)
 
 
 def update_ledger_render_kind(plan: PageRenderPlan, source_ids: list[str], render_kind: str, fallback_reason: str):

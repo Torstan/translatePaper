@@ -201,7 +201,7 @@ class VisualQaImageTests(unittest.TestCase):
         self.assertEqual(issues[0].source_ids, ["p010b0001", "p010b0002"])
         self.assertEqual(issues[0].render_kind, "text")
 
-    def test_geometry_checks_allow_overlap_for_same_source_text_fragments(self):
+    def test_geometry_checks_reject_overlap_for_same_source_text_fragments(self):
         plan = {
             "page_num": 10,
             "render_items": [
@@ -222,7 +222,37 @@ class VisualQaImageTests(unittest.TestCase):
 
         issues = qa_visual.detect_geometry_issues(plan, page_size=(100, 100))
 
-        self.assertEqual(issues, [])
+        self.assertEqual([issue.category for issue in issues], ["text_overlap"])
+
+    def test_plan_file_rejects_missing_or_malformed_drawing_data(self):
+        valid_item = {"kind": "translated_text", "source_ids": ["b"],
+                      "bbox": [10, 10, 80, 40], "text": "正文"}
+        malformed = [
+            {"page_num": 1},
+            {"page_num": True, "render_items": []},
+            {"page_num": 1, "render_items": None},
+            {"page_num": 1, "render_items": [{**valid_item, "kind": "invented"}]},
+            {"page_num": 1, "render_items": [{**valid_item, "source_ids": "b"}]},
+            {"page_num": 1, "render_items": [{**valid_item, "bbox": [10, 10, float("nan"), 40]}]},
+            {"page_num": 1, "render_items": [{**valid_item, "bbox": [80, 10, 10, 40]}]},
+            {"page_num": 1, "render_items": [{**valid_item, "text": None}]},
+            {"page_num": 1, "render_items": [{key: value for key, value in valid_item.items() if key != "text"}]},
+            {"page_num": 1, "render_items": [{**valid_item, "source_image_xref": 10}]},
+            {"page_num": 1, "render_items": [], "coverage_ledger": {}},
+            {"page_num": 1, "render_items": [], "coverage_ledger": [{}]},
+            {"page_num": 1, "render_items": [], "components": [{"source_bbox": [0, 0, float("inf"), 50]}]},
+            {"page_num": 1, "render_items": [], "page_size": [100, 0]},
+            {"page_num": 1, "render_items": [], "ownership_validation": {"issues": None}},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "broken-plan.json"
+            for payload in malformed:
+                with self.subTest(payload=payload):
+                    path.write_text(json.dumps(payload))
+                    with self.assertRaisesRegex(ValueError, "broken-plan.json"):
+                        qa_visual.generate_visual_qa_report([path], output_dir=root / "qa")
+                    self.assertFalse((root / "qa/visual_qa_report.json").exists())
 
     def test_geometry_checks_report_item_outside_page_bounds(self):
         plan = {

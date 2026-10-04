@@ -40,8 +40,8 @@ class ReviewCleanupTests(unittest.TestCase):
                 self.assertEqual(pipeline.clean_render_text(block, title + "\n操作。下一句。"),
                                  "操作。下一句。")
                 translations = {"b": title + "\n操作。下一句。"}
-                prepared = pipeline.translation_for_block(block, translations)
-                self.assertEqual(pipeline.clean_render_text(block, prepared, translations["b"]),
+                final = pipeline.finalize_translations([(2, [block])], translations)
+                self.assertEqual(pipeline.translation_for_block(block, final),
                                  "操作。下一句。")
 
     def test_margin_body_subject_is_not_a_header_without_separation_or_repetition(self):
@@ -62,8 +62,9 @@ class ReviewCleanupTests(unittest.TestCase):
         block = {**self.block("Concurrent Data Structures\nThe algorithm protects every operation.", y=46),
                  "running_header": "Concurrent Data Structures"}
         text = "算法保护每一个操作，\n并保证所有线程都能够继续运行。"
-        self.assertEqual(pipeline.translation_for_block(block, {"b": text}),
-                         pipeline.prepare_render_translation(text))
+        final = pipeline.finalize_translations([(2, [block])], {"b": text})
+        self.assertEqual(pipeline.translation_for_block(block, final),
+                         "算法保护每一个操作，并保证所有线程都能够继续运行。")
 
     def test_coverage_uses_the_same_trivial_content_policy(self):
         for text, needs_coverage in (("• 12 •", False), ("1234", True),

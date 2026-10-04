@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from geometry import bbox_intersection
 from layout import (
     VECTOR_BODY_COLOR,
     TextStyle,
@@ -117,22 +118,33 @@ def draw_mixed_pdf_lines(
         y += line_height
 
 
-def preserve_images_on_page(src_page, out_page, fitz, dpi: int):
-    matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+def source_image_items(src_page, page_num: int) -> list[RenderItem]:
+    """Choose resources from source PDF facts before layout or drawing.
+
+    IDs identify occurrences, not xrefs: one resource can appear twice on a page.
+    Masked images and grouped rows preserve their composited page appearance.
+    """
     page_area = max(1.0, src_page.rect.get_area())
     image_entries = []
     for index, info in enumerate(src_page.get_image_info(xrefs=True)):
         bbox = image_info_preserve_bbox(info, page_area)
+        if bbox is None or not valid_image_insert_bbox(bbox):
+            continue
+        # The source PDF clips off-page images naturally. Preserve only visible
+        # pixels, and use a crop instead of stretching the full image resource.
+        bbox = bbox_intersection(bbox, src_page.rect)
         if bbox is None:
             continue
         image_entries.append({"index": index, "info": info, "bbox": bbox})
 
+    items = []
     grouped_indices = set()
     for clip in grouped_image_row_clips(image_entries, (src_page.rect.width, src_page.rect.height)):
         if not valid_image_insert_bbox(clip["bbox"]):
             continue
-        pix = src_page.get_pixmap(matrix=matrix, clip=fitz.Rect(clip["bbox"]), alpha=False)
-        out_page.insert_image(clip["bbox"], pixmap=pix, keep_proportion=False)
+        items.append(RenderItem("original_image_clip",
+                                [f"p{page_num:03d}i{index:04d}" for index in sorted(clip["indices"])],
+                                tuple(clip["bbox"]), fallback_reason="native_image_row", source_image_xref=0))
         grouped_indices.update(clip["indices"])
 
     for entry in image_entries:
@@ -141,23 +153,19 @@ def preserve_images_on_page(src_page, out_page, fitz, dpi: int):
         info = entry["info"]
         if not valid_image_insert_bbox(entry["bbox"]):
             continue
-        bbox = fitz.Rect(entry["bbox"])
-        if info.get("has-mask"):
-            pix = src_page.get_pixmap(matrix=matrix, clip=bbox, alpha=False)
-            out_page.insert_image(bbox, pixmap=pix, keep_proportion=False)
-            continue
-        image_stream = None
         xref = info.get("xref") or 0
-        if xref:
+        if info.get("has-mask") or entry["bbox"] != tuple(info["bbox"]):
+            xref = 0
+        elif xref:
             try:
-                image_stream = src_page.parent.extract_image(xref).get("image")
+                if not src_page.parent.extract_image(xref).get("image"):
+                    xref = 0
             except Exception:  # noqa: BLE001
-                image_stream = None
-        if image_stream:
-            out_page.insert_image(bbox, stream=image_stream, keep_proportion=False)
-        else:
-            pix = src_page.get_pixmap(matrix=matrix, clip=bbox, alpha=False)
-            out_page.insert_image(bbox, pixmap=pix, keep_proportion=False)
+                xref = 0
+        items.append(RenderItem("original_image_clip", [f"p{page_num:03d}i{entry['index']:04d}"],
+                                tuple(entry["bbox"]), fallback_reason="native_source_image",
+                                source_image_xref=xref))
+    return items
 
 
 def insert_source_clip(src_page, out_page, fitz, bbox, dpi: int):
@@ -228,6 +236,15 @@ def render_plan_item(out_page, src_page, fitz, item: RenderItem, dpi: int, sourc
             return
         raise RuntimeError(f"text item {item.source_ids or item.fallback_reason} did not fit during render")
     if item.kind == "original_image_clip":
+        if item.source_image_xref is not None:
+            if item.source_image_xref == 0:
+                insert_source_clip(src_page, out_page, fitz, item.bbox, dpi)
+            else:
+                stream = src_page.parent.extract_image(item.source_image_xref).get("image")
+                if not stream:
+                    raise RuntimeError(f"missing planned image resource {item.source_image_xref}")
+                out_page.insert_image(rect, stream=stream, keep_proportion=False)
+            return
         if source_image_path and insert_source_image_clip(out_page, fitz, source_image_path, src_page.rect, item.bbox):
             return
         insert_source_clip(src_page, out_page, fitz, item.bbox, dpi)
