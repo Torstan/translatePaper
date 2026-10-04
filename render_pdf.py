@@ -237,9 +237,12 @@ def render_plan_item(out_page, src_page, fitz, item: RenderItem, dpi: int, sourc
 def write_raster_pdf(pdf_output: Path, image_paths: list[Path], page_size) -> None:
     """Assemble one PDF page per raster image; publish only after all pages succeed."""
     fitz = load_fitz()
-    width, height = page_size
+    single_size = len(page_size) == 2 and isinstance(page_size[0], (int, float))
+    page_sizes = [page_size] * len(image_paths) if single_size else page_size
+    if len(page_sizes) != len(image_paths):
+        raise ValueError("raster page sizes do not match image paths")
     with fitz.open() as doc:
-        for image_path in image_paths:
+        for image_path, (width, height) in zip(image_paths, page_sizes):
             if not image_path.exists():
                 raise FileNotFoundError(f"missing translated raster page: {image_path}")
             page = doc.new_page(width=width, height=height)

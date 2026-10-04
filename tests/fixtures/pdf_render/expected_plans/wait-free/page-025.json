@@ -6,7 +6,7 @@
       "source_id": "p025b0002",
       "classification": "body",
       "render_kind": "translated_text",
-      "fallback_reason": "",
+      "fallback_reason": "source_adapted_font",
       "summary": "Conclusion body block remains translated selectable text."
     },
     {

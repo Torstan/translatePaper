@@ -147,8 +147,8 @@ def main():
     options = pipeline.DocumentOptions(
         dpi=args.dpi, page_start=args.page_start, page_end=args.page_end,
         force_ocr=args.force_ocr, refresh_source=args.refresh_source, render_mode=args.render_mode,
-        batch_chars=args.batch_chars, batch_scope="page", page_workers=args.page_workers,
-        minimum_cache_overlap=0.0, retranslate=args.retranslate,
+        batch_chars=args.batch_chars, page_workers=args.page_workers,
+        retranslate=args.retranslate,
         model=args.model, reasoning_effort=args.reasoning_effort, retries=args.retries,
         overwrite=args.force, qa=args.qa, qa_mode=args.qa_mode, qa_sample_size=args.qa_sample_size,
         qa_batch_chars=args.qa_batch_chars, strict_qa=args.strict_qa,

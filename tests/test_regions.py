@@ -4,6 +4,7 @@ import unittest
 
 import regions
 import classify
+import geometry
 import pipeline as pdf
 
 
@@ -21,6 +22,28 @@ def block(block_id, page, text, x0=100, y0=100, x1=400, y1=120, preserve_image=F
     if preserve_image:
         data["preserve_image"] = True
     return data
+
+
+class GeometryTests(unittest.TestCase):
+    def test_intersection_requires_positive_area_in_both_dimensions(self):
+        cases = [
+            ((0, 0, 10, 10), (5, 4, 12, 8), (5, 4, 10, 8), 20),
+            ((0, 0, 10, 10), (2, 3, 4, 7), (2, 3, 4, 7), 8),
+            ((0, 0, 10, 10), (0, 0, 10, 10), (0, 0, 10, 10), 100),
+            ((0, 0, 10, 10), (11, 2, 12, 8), None, 0),
+            ((0, 0, 10, 10), (2, 11, 8, 12), None, 0),
+            ((0, 0, 10, 10), (10, 2, 12, 8), None, 0),
+            ((0, 0, 10, 10), (10, 10, 12, 12), None, 0),
+            ((0, 0, 0, 10), (-1, 2, 1, 8), None, 0),
+            ((4, 4, 2, 2), (0, 0, 10, 10), None, 0),
+            ((-2.5, -1.5, 1.5, 2.5), (-0.5, 0.5, 3, 4), (-0.5, 0.5, 1.5, 2.5), 4),
+        ]
+        for left, right, intersection, area in cases:
+            for a, b in ((left, right), (right, left)):
+                with self.subTest(left=a, right=b):
+                    self.assertEqual(geometry.bbox_intersection(a, b), intersection)
+                    self.assertEqual(geometry.bbox_intersects(a, b), intersection is not None)
+                    self.assertEqual(geometry.bbox_overlap_area(a, b), area)
 
 
 class RegionExtractionModuleTests(unittest.TestCase):
@@ -548,7 +571,6 @@ class RegionExtractionModuleTests(unittest.TestCase):
             page_num=9,
             bbox_lines=None,
             source_image_path=None,
-            translations={},
         )
         visual_ids = {source_id for region in ownership_regions for source_id in region["source_ids"]}
 

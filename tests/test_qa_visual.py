@@ -9,6 +9,8 @@ from PIL import Image, ImageDraw
 
 import qa_visual
 import layout
+import ownership
+import render_plan
 
 
 class VisualQaImageTests(unittest.TestCase):
@@ -2023,6 +2025,36 @@ class VisualQaRenderTests(unittest.TestCase):
 
 
 class VisualQaReportTests(unittest.TestCase):
+    def test_report_agrees_for_live_plan_and_saved_artifact(self):
+        plan = render_plan.PageRenderPlan(
+            page_num=31, page_size=(100, 100),
+            items=[
+                render_plan.RenderItem("translated_text", ["body"], (10, 10, 80, 50),
+                                       text="正文内容。", font_size=1, style_name="body"),
+                render_plan.RenderItem("original_image_clip", ["visual"], (50, 20, 90, 60)),
+            ],
+            ledger=[
+                render_plan.CoverageEntry("body", "body", "translated_text", True),
+                render_plan.CoverageEntry("visual", "figure_region", "original_image_clip", True),
+            ],
+            ownership_validation=ownership.OwnershipValidationResult([
+                ownership.OwnershipIssue("missing_owner", "warning", 31,
+                                         "source block has no owner", source_ids=["body"]),
+            ]),
+        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            artifact = root / "page-031.render-plan.json"
+            artifact.write_text(render_plan.render_plan_json_dumps(plan), encoding="utf-8")
+            live = qa_visual.generate_visual_qa_report([artifact], plans=[plan], output_dir=root / "live")
+            saved = qa_visual.generate_visual_qa_report([artifact], output_dir=root / "saved")
+            live_payload = json.loads(live.json_path.read_text(encoding="utf-8"))
+            saved_payload = json.loads(saved.json_path.read_text(encoding="utf-8"))
+        self.assertEqual(live_payload, saved_payload)
+        self.assertGreater(live_payload["issue_count"], 0)
+        self.assertEqual({issue["category"] for issue in live_payload["issues"]},
+                         {"missing_ownership", "text_protected_overlap", "body_font_consistency"})
+
     def test_detect_ownership_issues_maps_validation_codes(self):
         plan = {
             "page_num": 21,

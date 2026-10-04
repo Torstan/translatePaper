@@ -13,7 +13,30 @@ import translate_pdf_parallel as parallel
 
 
 class SharedBatchExecutionTests(unittest.TestCase):
-    def test_worker_count_preserves_batches_and_partial_cache(self):
+    def test_cached_translation_requires_the_same_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job = {"job_dir": root, "schema_path": root / "schema.json",
+                   "translations_path": root / "translations.json"}
+            requests = []
+
+            def run(cmd, **kwargs):
+                requests.append(kwargs["input"])
+                output = Path(cmd[cmd.index("-o") + 1])
+                output.write_text(json.dumps({"items": [{"id": "a", "translation": f"译文{len(requests)}"}]}))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with patch("subprocess.run", side_effect=run):
+                original = [translation_batch.TranslationBatch("batch-01", [{"id": "a", "text": "First."}])]
+                changed = [translation_batch.TranslationBatch("batch-01", [{"id": "a", "text": "Changed."}])]
+                self.assertEqual(translation_batch.run_batches(original, job, model="model-a"), {"a": "译文1"})
+                self.assertEqual(translation_batch.run_batches(original, job, model="model-a", workers=3),
+                                 {"a": "译文1"})
+                self.assertEqual(translation_batch.run_batches(changed, job, model="model-a"), {"a": "译文2"})
+                self.assertEqual(translation_batch.run_batches(changed, job, model="model-b"), {"a": "译文3"})
+            self.assertEqual(len(requests), 3)
+
+    def test_worker_count_preserves_batches_and_rejects_unverified_legacy_cache(self):
         for workers in (1, 3):
             with self.subTest(workers=workers), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -39,12 +62,12 @@ class SharedBatchExecutionTests(unittest.TestCase):
                     result = translation_batch.run_batches(
                         batches, {"job_dir": root, "schema_path": root / "schema.json",
                                   "translations_path": cache},
-                        model="test", workers=workers, minimum_cache_overlap=0,
+                        model="test", workers=workers,
                     )
                 self.assertEqual(sorted(requests), [
-                    ("batch-01.out.json", ["b"]), ("batch-02.out.json", ["c"]),
+                    ("batch-01.out.json", ["a", "b"]), ("batch-02.out.json", ["c"]),
                 ])
-                self.assertEqual(result, {"a": "缓存译文", "b": "新译文", "c": "新译文"})
+                self.assertEqual(result, {"a": "新译文", "b": "新译文", "c": "新译文"})
                 self.assertEqual(json.loads(cache.read_text()), result)
 
     def test_failed_later_batch_leaves_completed_batch_for_resume(self):
@@ -89,10 +112,41 @@ class SharedBatchExecutionTests(unittest.TestCase):
 
 
 class DocumentExecutionTests(unittest.TestCase):
+    def test_source_cache_rebuilds_when_pdf_content_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "paper.pdf"
+            source.write_bytes(b"first PDF bytes")
+            with patch.object(pipeline, "TMP_ROOT", root):
+                job = pipeline.build_job_paths(source, "paper")
+            job["job_dir"].mkdir(parents=True)
+            job["source_pages_path"].write_text('[[{"id": "stale", "text": "old"}]]')
+            fresh = [[{"id": "fresh", "page": 1, "block_index": 1,
+                      "text": "Fresh source paragraph.", "xMin": 10, "yMin": 20,
+                      "xMax": 100, "yMax": 40}]]
+            with (
+                patch.object(pipeline, "ensure_assets") as assets,
+                patch.object(pipeline, "parse_bbox", return_value=fresh),
+                patch.object(pipeline, "should_use_ocr", return_value=False),
+                patch.object(pipeline, "text_extraction_looks_garbled", return_value=False),
+            ):
+                first = pipeline.load_or_build_source_pages(source, 200, job, (200, 220))
+                self.assertEqual(first[0][0]["id"], "fresh")
+                self.assertEqual(assets.call_count, 1)
+                pipeline.load_or_build_source_pages(source, 200, job, (200, 220))
+                self.assertEqual(assets.call_count, 1)
+                source.write_bytes(b"changed PDF bytes")
+                pipeline.load_or_build_source_pages(source, 200, job, (200, 220))
+                self.assertEqual(assets.call_count, 2)
+
     def test_failed_sentence_repair_preserves_output_and_completed_translation_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "paper.pdf"
+            with pipeline.load_fitz().open() as source_doc:
+                source_doc.new_page(width=623, height=801)
+                source_doc.new_page(width=623, height=801)
+                source_doc.save(source)
             output = root / "output.pdf"
             output.write_bytes(b"previous PDF")
             job = root / "work/jobs/paper"
@@ -105,14 +159,18 @@ class DocumentExecutionTests(unittest.TestCase):
                 (2, "of operations. Equivalently, each operation appears instantaneously.", 50),
             ]]
             (job / "source_pages.json").write_text(json.dumps(pages))
+            (job / "source_cache_key.txt").write_text(
+                pipeline.source_cache_key(source, 200, 1, 0, False)
+            )
             raw = {"p001b0001": "未完成，并且", "p002b0001": "的操作。后续句子。"}
 
             def run(cmd, **kwargs):
                 self.assertEqual(cmd[:2], ["codex", "exec"])
                 out = Path(cmd[cmd.index("-o") + 1])
-                if out.name == "batch-01.out.json":
+                if out.name.startswith("page-"):
+                    items = json.loads(kwargs["input"].split("待翻译条目如下：", 1)[1])["items"]
                     out.write_text(json.dumps({"items": [
-                        {"id": block_id, "translation": text} for block_id, text in raw.items()
+                        {"id": item["id"], "translation": raw[item["id"]]} for item in items
                     ]}))
                     return subprocess.CompletedProcess(cmd, 0, "", "")
                 return subprocess.CompletedProcess(cmd, 1, "", "sentence repair failed")
@@ -192,7 +250,7 @@ class DocumentExecutionTests(unittest.TestCase):
             self.assertEqual(result["status"], "skipped")
             self.assertEqual(output.read_bytes(), b"previous output")
 
-    def test_both_clis_preserve_batching_qa_defaults_and_selected_source_pages(self):
+    def test_both_clis_share_batching_and_preserve_qa_defaults_and_selected_pages(self):
         for entry in ("serial", "parallel"):
             with self.subTest(entry=entry), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -211,6 +269,9 @@ class DocumentExecutionTests(unittest.TestCase):
                     "xMin": 40, "yMin": 100, "xMax": 350, "yMax": 160,
                 }] for page in (1, 2, 3)]
                 (job / "source_pages.json").write_text(json.dumps(pages))
+                (job / "source_cache_key.txt").write_text(
+                    pipeline.source_cache_key(source, 200, 2, 3, False)
+                )
                 requested_ids, backtranslation_ids = [], []
 
                 def run(cmd, **kwargs):
@@ -242,8 +303,7 @@ class DocumentExecutionTests(unittest.TestCase):
                      patch("subprocess.run", side_effect=run):
                     (serial.main if entry == "serial" else parallel.main)()
 
-                expected = [["p002b0001", "p003b0001"]] if entry == "serial" else [["p002b0001"], ["p003b0001"]]
-                self.assertEqual(sorted(requested_ids), expected)
+                self.assertEqual(sorted(requested_ids), [["p002b0001"], ["p003b0001"]])
                 self.assertEqual(sorted(backtranslation_ids), [] if entry == "serial" else ["p002b0001", "p003b0001"])
                 with fitz.open(output) as pdf:
                     self.assertEqual(len(pdf), 2)

@@ -26,6 +26,43 @@ tests, fixtures in this project.
   failing regression where practical. The expected fix should be observable
   without relying on live Codex calls.
 
+## Translation Architecture Boundaries
+
+The A–H flow in
+[the module-boundaries design](docs/superpowers/specs/2026-10-04-translation-module-boundaries-design.md)
+describes responsibilities, not required Python files or public stage APIs.
+Apply these boundaries when changing the translation pipeline; the design also
+records current gaps and unresolved QA policy.
+
+- Source analysis owns content roles, component ownership, source identity,
+  reading relationships, source regions, and per-page dimensions. Translation
+  results, model choice, and worker count must not redefine those source facts.
+  Keep source page numbers distinct from output page numbers.
+- Translation owns task construction, response validation, and final text
+  repairs. Downstream rendering receives final translations, not raw responses
+  or repair steps. Worker count controls execution concurrency, not task content.
+- Rendering planning chooses how each source item is represented and records
+  its source mapping and coverage obligation. Layout chooses geometry and font
+  fit within that decision; it must not rewrite translations or reclassify
+  source content. Diagnostic reasons such as `fallback_reason` do not grant
+  layout or font permissions.
+- After layout, validate the final vector plan's ownership, coverage, geometry,
+  text overlap, style, and fit before drawing. Recompute final diagnostics
+  instead of trusting an earlier snapshot. Structural errors block drawing
+  regardless of optional QA settings; warnings keep their own severity.
+- PDF drawing consumes the checked plan without inventing new content,
+  fallbacks, or geometry. Reports identify the plan or actual PDF they check;
+  raster output must not be described as validated by vector-only checks. Keep
+  any existing plan-free source-image copying explicit until it is planned.
+- Ordinary callers use the complete document entry; internal orchestration
+  uses complete translation and final-plan operations rather than sequencing
+  their internal stages. Reuse existing modules and records; add files, stage
+  types, or registries only for demonstrated responsibilities.
+- Cache extraction, OCR, and model calls when their actual inputs justify
+  reuse. Keep final plans and QA reports as traceable artifacts; add automatic
+  reuse only when there is evidence of a performance need. Optional QA output
+  acceptance remains a policy decision, separate from mandatory checks.
+
 ## Translation And Rendering Rules
 
 - Titles, headings, subheadings, body text, references, headers/footers, figures,

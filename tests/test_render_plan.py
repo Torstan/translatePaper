@@ -882,7 +882,6 @@ class RenderPlanClassificationTests(unittest.TestCase):
             visual_regions,
             page_size=(612.0, 792.0),
             page_num=7,
-            translations={},
         )
 
         self.assertEqual(len(regions), 1)
@@ -947,7 +946,6 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 blocks,
                 page_size=(612.0, 792.0),
                 source_image_path=source_png,
-                translations={},
             )
             plan = pdf.build_page_render_plan(
                 6,
@@ -1033,7 +1031,6 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 page_size=(612.0, 792.0),
                 page_num=7,
                 source_image_path=source_png,
-                translations={},
             )
 
         source_ids = set().union(*(set(region["source_ids"]) for region in regions))
@@ -1041,7 +1038,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertTrue({"p007b0044", "p007b0045", "p007b0047", "p007b0048", "p007b0049", "p007b0050"} <= source_ids)
         self.assertNotIn("p007b0051", source_ids)
 
-    def test_toolformer_prompt_clip_keeps_untranslated_body_rows_inside_visual_source_bbox(self):
+    def test_toolformer_prompt_clip_bounds_structural_prose_without_taking_source_ownership(self):
         blocks = [
             block("p003b0003", 3, "some examples of API calls:", x0=114.7, y0=100.3, x1=199.4, y1=107.4),
             block(
@@ -1104,11 +1101,10 @@ class RenderPlanClassificationTests(unittest.TestCase):
             visual_regions,
             page_size=(612.0, 792.0),
             page_num=3,
-            translations={},
         )
 
         self.assertEqual(len(regions), 1)
-        self.assertIn("p003b0005", regions[0]["source_ids"])
+        self.assertNotIn("p003b0005", regions[0]["source_ids"])
         self.assertGreaterEqual(regions[0]["bbox"][3], blocks[4]["yMax"])
         self.assertLessEqual(regions[0]["bbox"][3], blocks[5]["yMin"] - region_rules.TEXT_PROTECTED_GAP_PT)
 
@@ -1493,7 +1489,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         self.assertEqual(ledger_by_id["p003b0007"].render_kind, "original_image_clip")
         self.assertEqual(ledger_by_id["p003b0007"].fallback_reason, "visual_region")
 
-    def test_toolformer_table_clip_keeps_untranslated_body_cells_before_lower_owned_rows(self):
+    def test_toolformer_table_clip_bounds_structural_prose_without_taking_source_ownership(self):
         blocks = [
             block("p004b0001", 4, "Table 1: Examples of inputs and outputs for all APIs used.", x0=189.3, y0=72.8, x1=422.3, y1=81.7),
             block("p004b0002", 4, "API Name", x0=113.9, y0=94.3, x1=154.0, y1=102.4),
@@ -1542,11 +1538,10 @@ class RenderPlanClassificationTests(unittest.TestCase):
             visual_regions,
             page_size=(612.0, 792.0),
             page_num=4,
-            translations={},
         )
 
         self.assertEqual(len(regions), 1)
-        self.assertIn("p004b0008", regions[0]["source_ids"])
+        self.assertNotIn("p004b0008", regions[0]["source_ids"])
         self.assertGreaterEqual(regions[0]["bbox"][3], blocks[5]["yMax"])
         self.assertLessEqual(regions[0]["bbox"][3], blocks[6]["yMin"] - region_rules.TEXT_PROTECTED_GAP_PT)
 
@@ -1873,7 +1868,6 @@ class RenderPlanClassificationTests(unittest.TestCase):
             visual_regions,
             page_size=(612.0, 792.0),
             page_num=3,
-            translations={},
         )
 
         self.assertEqual(len(regions), 1)
@@ -3519,7 +3513,8 @@ class GlobalStyleTests(unittest.TestCase):
         ]
         body_box = region_rules.block_to_px_box(blocks[0], 200, 1700, 2200, pad=2)
 
-        protected_boxes = pdf.raster_protected_boxes(blocks, 200, 1700, 2200)
+        plan, _ = pdf.build_raster_page_plan(1, blocks, {}, 200, (1700, 2200), (612, 792))
+        protected_boxes = plan.protected_boxes
 
         self.assertEqual(layout.avoid_protected_boxes(body_box, protected_boxes), body_box)
 
@@ -3935,6 +3930,17 @@ class BodyFlowLayoutTests(unittest.TestCase):
         self.assertEqual(render_plan.validate_plan_layout(plan, page_size=(612.0, 792.0)), [])
         self.assertEqual({entry.render_kind for entry in plan.ledger}, {"original_image_clip"})
 
+        analysis = pdf.build_translation_page_components(
+            130, blocks, page_size=(612, 792), bbox_lines=bbox_lines,
+        )
+        raster, initial_errors = pdf.build_raster_page_plan(
+            130, blocks, translations, 72, (612, 792), (612, 792), source_analysis=analysis,
+        )
+        _, errors = pdf.validate_raster_page_plan(raster, blocks, initial_errors, translations)
+        self.assertEqual(errors, [])
+        self.assertEqual({item.kind for item in raster.items}, {"original_image_clip"})
+        self.assertEqual({entry.block_id for entry in raster.ledger}, {b["id"] for b in blocks})
+
     def test_code_comment_clip_keeps_owned_source_bbox_after_pixel_trim(self):
         blocks = [
             block("p134b0006", 134, "/**", x0=72.0, y0=520.8, x1=92.3, y1=531.8),
@@ -3996,7 +4002,6 @@ class BodyFlowLayoutTests(unittest.TestCase):
                 page_size=(612.0, 792.0),
                 page_num=134,
                 bbox_lines=[],
-                translations={},
             )
 
         self.assertTrue(ownership_regions)
@@ -4391,13 +4396,13 @@ class QualityValidationTests(unittest.TestCase):
             ),
         ]
 
-        errors = pdf.diagnose_source_layout(
-            [(10, page_10), (12, page_12)],
-            {},
-            page_size=(612, 792),
-            job_paths=None,
-        )
+        selected = [(10, page_10), (12, page_12)]
+        analyses = pdf.analyze_selected_pages(selected, (612, 792))
+        plan = pdf.build_page_render_plan(12, page_12, {}, (612, 792),
+                                          source_analysis=analyses[12])
+        errors = pdf.validate_plan_translation_quality(12, page_12, {}, plan)
 
+        self.assertEqual(plan.ledger[0].classification, "reference")
         self.assertFalse(any("p012b0001 normal text block is missing Chinese translation" in error for error in errors))
 
     def test_text_overlap_quality_detects_overlapping_translated_items(self):
@@ -4835,6 +4840,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
                 validation_results={
                     "ownership": pdf.ownership.ownership_validation_to_json(expected_plan.ownership_validation),
                     "coverage_errors": [],
+                    "text_content_errors": [],
                     "layout_errors": [],
                     "text_overlap_errors": [],
                     "style_policy_errors": [],
@@ -4910,8 +4916,9 @@ class RenderPlanSerializationTests(unittest.TestCase):
                                          job_paths={"plans_dir": root / "plans"})
             artifact = json.loads((root / "plans/page-001.render-plan.json").read_text())
             checks = artifact["validation_results"]
-            self.assertEqual(set(checks), {"ownership", "coverage_errors", "layout_errors", "text_overlap_errors",
-                                          "style_policy_errors", "text_fit_errors"})
+            self.assertEqual(set(checks), {"ownership", "coverage_errors", "text_content_errors",
+                                          "layout_errors", "text_overlap_errors", "style_policy_errors",
+                                          "text_fit_errors"})
             for category in ("coverage_errors", "layout_errors", "style_policy_errors", "text_fit_errors"):
                 self.assertTrue(checks[category], category)
             self.assertFalse((root / "out.pdf").exists())

@@ -7,6 +7,7 @@ from typing import Literal
 
 import ownership
 from classify import is_trivial_keep, normalize_text
+from geometry import bbox_overlap_area
 
 
 VECTOR_BODY_COLOR = (0, 0, 0)
@@ -29,6 +30,10 @@ class RenderItem:
     layout_role: Literal["normal", "body_flow", "source_paragraph", "callout", "mixed_visual_body",
                          "embedded_heading", "title_metadata", "journal_footer"] = "normal"
     font_policy: Literal["document", "source_adapted", "compact_body_flow", "dense_visual_row"] = "document"
+    raster_lines: list[str] = field(default_factory=list)
+    raster_vertical: bool = False
+    # Pixel region to erase before drawing this text; mixed blocks erase only their text component.
+    raster_source_bbox: tuple[int, int, int, int] | None = None
 
 
 @dataclass
@@ -53,6 +58,8 @@ class PageRenderPlan:
     ownership_validation: ownership.OwnershipValidationResult = field(default_factory=ownership.OwnershipValidationResult)
     page_size: tuple[float, float] | None = None
     output_page_num: int | None = None
+    coordinate_space: Literal["points", "pixels"] = "points"
+    raster_size: tuple[int, int] | None = None
 
 
 @dataclass
@@ -66,7 +73,7 @@ def bbox_to_json(box) -> list[float]:
 
 
 def render_item_to_json(item: RenderItem) -> dict:
-    return {
+    data = {
         "kind": item.kind,
         "source_ids": list(item.source_ids),
         "bbox": bbox_to_json(item.bbox),
@@ -80,6 +87,12 @@ def render_item_to_json(item: RenderItem) -> dict:
         "layout_role": item.layout_role,
         "font_policy": item.font_policy,
     }
+    if item.raster_lines:
+        data["raster_lines"] = list(item.raster_lines)
+        data["raster_vertical"] = item.raster_vertical
+    if item.raster_source_bbox is not None:
+        data["raster_source_bbox"] = bbox_to_json(item.raster_source_bbox)
+    return data
 
 
 def coverage_entry_to_json(entry: CoverageEntry) -> dict:
@@ -112,6 +125,8 @@ def render_plan_to_json(plan: PageRenderPlan, validation_results: dict | list | 
         "page_num": int(plan.page_num),
         "page_size": None if plan.page_size is None else [float(value) for value in plan.page_size],
         "output_page_num": plan.output_page_num,
+        "coordinate_space": plan.coordinate_space,
+        "raster_size": None if plan.raster_size is None else list(plan.raster_size),
         "render_items": [render_item_to_json(item) for item in plan.items],
         "coverage_ledger": [coverage_entry_to_json(entry) for entry in plan.ledger],
         "components": ownership.components_to_json(plan.components),
@@ -170,11 +185,23 @@ def validate_plan_coverage(
 ) -> list[str]:
     errors = []
     ledger_by_id: dict[str, list[CoverageEntry]] = {}
+    items_by_id: dict[str, list[RenderItem]] = {}
+    for item in plan.items:
+        for source_id in item.source_ids:
+            items_by_id.setdefault(source_id, []).append(item)
     for entry in plan.ledger:
         ledger_by_id.setdefault(entry.block_id, []).append(entry)
     for block in blocks:
         if is_trivial_keep(normalize_text(block.get("text", ""))):
             continue
+        source_box = None
+        if all(key in block for key in ("xMin", "yMin", "xMax", "yMax")):
+            source_box = tuple(float(block[key]) for key in ("xMin", "yMin", "xMax", "yMax"))
+            if plan.coordinate_space == "pixels" and plan.page_size and plan.raster_size:
+                scale_x = plan.raster_size[0] / plan.page_size[0]
+                scale_y = plan.raster_size[1] / plan.page_size[1]
+                source_box = (source_box[0] * scale_x, source_box[1] * scale_y,
+                              source_box[2] * scale_x, source_box[3] * scale_y)
         entries = ledger_by_id.get(block["id"], [])
         if not entries:
             errors.append(f"page {page_num} block {block['id']} has no coverage entry")
@@ -185,21 +212,22 @@ def validate_plan_coverage(
                 continue
             if entry.render_kind == "skip_explicitly" and entry.classification not in ALLOWED_SKIP_CLASSES:
                 errors.append(f"page {page_num} block {block['id']} has illegal skip class {entry.classification}")
+            elif entry.render_kind != "skip_explicitly" and not any(
+                item.kind == entry.render_kind for item in items_by_id.get(block["id"], [])
+            ):
+                errors.append(
+                    f"page {page_num} block {block['id']} has no matching {entry.render_kind} render item"
+                )
+            elif entry.render_kind == "original_image_clip" and source_box and bbox_area(source_box) > 0:
+                clips = [item for item in items_by_id.get(block["id"], [])
+                         if item.kind == "original_image_clip"]
+                if not any(bbox_overlap_area(source_box, item.bbox) > 0.5 for item in clips):
+                    errors.append(f"page {page_num} block {block['id']} is outside its image clip")
     return errors
 
 
 def bbox_area(box) -> float:
     return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
-
-
-def bbox_overlap_area(a, b) -> float:
-    x0 = max(a[0], b[0])
-    y0 = max(a[1], b[1])
-    x1 = min(a[2], b[2])
-    y1 = min(a[3], b[3])
-    if x1 <= x0 or y1 <= y0:
-        return 0.0
-    return (x1 - x0) * (y1 - y0)
 
 
 def bbox_overlap_height(a, b) -> float:

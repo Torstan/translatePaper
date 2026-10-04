@@ -5,6 +5,8 @@ from statistics import median
 
 from PIL import Image
 
+from geometry import bbox_intersects, bbox_overlap_area
+from geometry import bbox_overlap_area as overlap_area
 from classify import (
     NORMAL_TRANSLATED_CLASSES,
     cjk_char_count,
@@ -96,16 +98,6 @@ def protected_box_for_block(block, dpi: int, page_width: int, page_height: int):
         min(page_width, x1),
         min(page_height, y1),
     )
-
-
-def overlap_area(box_a, box_b):
-    x0 = max(box_a[0], box_b[0])
-    y0 = max(box_a[1], box_b[1])
-    x1 = min(box_a[2], box_b[2])
-    y1 = min(box_a[3], box_b[3])
-    if x1 <= x0 or y1 <= y0:
-        return 0
-    return (x1 - x0) * (y1 - y0)
 
 
 def horizontal_overlap(box_a, box_b):
@@ -260,13 +252,7 @@ def block_area_pt(block) -> float:
 
 
 def block_overlap_area_pt(a, b) -> float:
-    x0 = max(a["xMin"], b["xMin"])
-    y0 = max(a["yMin"], b["yMin"])
-    x1 = min(a["xMax"], b["xMax"])
-    y1 = min(a["yMax"], b["yMax"])
-    if x1 <= x0 or y1 <= y0:
-        return 0.0
-    return (x1 - x0) * (y1 - y0)
+    return bbox_overlap_area(block_bbox(a), block_bbox(b))
 
 
 def block_bbox(block) -> tuple[float, float, float, float]:
@@ -277,16 +263,6 @@ def bbox_area(box) -> float:
     return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
 
 
-def bbox_overlap_area(box_a, box_b) -> float:
-    x0 = max(box_a[0], box_b[0])
-    y0 = max(box_a[1], box_b[1])
-    x1 = min(box_a[2], box_b[2])
-    y1 = min(box_a[3], box_b[3])
-    if x1 <= x0 or y1 <= y0:
-        return 0.0
-    return (x1 - x0) * (y1 - y0)
-
-
 def bbox_union(boxes) -> tuple[float, float, float, float]:
     return (
         min(box[0] for box in boxes),
@@ -294,10 +270,6 @@ def bbox_union(boxes) -> tuple[float, float, float, float]:
         max(box[2] for box in boxes),
         max(box[3] for box in boxes),
     )
-
-
-def bbox_intersects(a, b) -> bool:
-    return min(a[2], b[2]) > max(a[0], b[0]) and min(a[3], b[3]) > max(a[1], b[1])
 
 
 def bbox_center(box) -> tuple[float, float]:

@@ -5,7 +5,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from classify import cjk_char_count, is_page_number, normalize_text, should_preserve_as_image
+from classify import cjk_char_count, normalize_text
+from geometry import bbox_overlap_area as _overlap_area
 from render_plan import (
     PageRenderPlan,
     RenderItem,
@@ -889,16 +890,6 @@ def target_font_size_points_for_block(block, *, max_size: float = 30.0) -> float
     return max(6.0, min(max_size, source_line_height / 1.25 * SOURCE_FONT_SCALE))
 
 
-def _overlap_area(box_a, box_b):
-    x0 = max(box_a[0], box_b[0])
-    y0 = max(box_a[1], box_b[1])
-    x1 = min(box_a[2], box_b[2])
-    y1 = min(box_a[3], box_b[3])
-    if x1 <= x0 or y1 <= y0:
-        return 0
-    return (x1 - x0) * (y1 - y0)
-
-
 def avoid_protected_boxes(box, protected_boxes):
     x0, y0, x1, y1 = box
     for protected in protected_boxes or []:
@@ -945,12 +936,9 @@ def build_render_boxes(
     block_to_px_box,
     translation_resolver,
 ):
+    """Lay out text already selected by rendering planning, without reclassifying it."""
     base_boxes = {}
     for block in blocks:
-        if should_preserve_as_image(block):
-            continue
-        if is_page_number(block["text"]):
-            continue
         translation = translation_resolver(block, translations)
         if not translation:
             continue

@@ -3,6 +3,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from geometry import bbox_overlap_area
 
 COMPONENT_KIND_TRANSLATED_TEXT = "translated_text"
 COMPONENT_KIND_VISUAL = "visual"
@@ -100,16 +101,6 @@ def bbox_union(boxes) -> tuple[float, float, float, float]:
 
 def bbox_area(box) -> float:
     return max(0.0, float(box[2]) - float(box[0])) * max(0.0, float(box[3]) - float(box[1]))
-
-
-def bbox_overlap_area(left, right) -> float:
-    x0 = max(float(left[0]), float(right[0]))
-    y0 = max(float(left[1]), float(right[1]))
-    x1 = min(float(left[2]), float(right[2]))
-    y1 = min(float(left[3]), float(right[3]))
-    if x1 <= x0 or y1 <= y0:
-        return 0.0
-    return (x1 - x0) * (y1 - y0)
 
 
 def bbox_overlap_height(left, right) -> float:

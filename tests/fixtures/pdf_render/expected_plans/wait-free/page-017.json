@@ -16,7 +16,7 @@
       "source_id": "p017b0005",
       "classification": "body",
       "render_kind": "translated_text",
-      "fallback_reason": "",
+      "fallback_reason": "source_adapted_font",
       "summary": "Proof text after the protected code clip remains translated selectable body text."
     },
     {

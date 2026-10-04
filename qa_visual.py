@@ -10,6 +10,7 @@ from PIL import Image
 from classify import NORMAL_TRANSLATED_CLASSES, source_requires_chinese_translation
 from layout import document_style_hierarchy_errors, text_item_style_issues
 from render_plan import RenderItem, bbox_significantly_overlaps_protected
+from geometry import bbox_overlap_area as _bbox_overlap_area
 
 
 TOOL_ROOT = Path(__file__).resolve().parent
@@ -218,16 +219,6 @@ def _bbox_area(bbox) -> float:
     return max(0.0, x1 - x0) * max(0.0, y1 - y0)
 
 
-def _bbox_overlap_area(left, right) -> float:
-    x0 = max(left[0], right[0])
-    y0 = max(left[1], right[1])
-    x1 = min(left[2], right[2])
-    y1 = min(left[3], right[3])
-    if x1 <= x0 or y1 <= y0:
-        return 0.0
-    return (x1 - x0) * (y1 - y0)
-
-
 def _bbox_overlap_height(left, right) -> float:
     return max(0.0, min(left[3], right[3]) - max(left[1], right[1]))
 
@@ -247,26 +238,20 @@ def _source_ids_for_item(item) -> list[str]:
     return [str(source_id) for source_id in _item_value(item, "source_ids", [])]
 
 
-def _ledger_value(entry, name: str, default=None):
-    if isinstance(entry, Mapping):
-        return entry.get(name, default)
-    return getattr(entry, name, default)
-
-
 def _ledger_by_block_id(plan) -> dict[str, object]:
-    return {str(_ledger_value(entry, "block_id")): entry for entry in _plan_ledger_entries(plan)}
+    return {str(_item_value(entry, "block_id")): entry for entry in _plan_ledger_entries(plan)}
 
 
 def _has_component_ownership_metadata(plan) -> bool:
     return any(
-        str(_ledger_value(entry, "component_kind", "") or "")
+        str(_item_value(entry, "component_kind", "") or "")
         for entry in _plan_ledger_entries(plan)
     )
 
 
 def _classifications_by_block_id(plan) -> dict[str, str]:
     return {
-        block_id: str(_ledger_value(entry, "classification", ""))
+        block_id: str(_item_value(entry, "classification", ""))
         for block_id, entry in _ledger_by_block_id(plan).items()
     }
 
@@ -351,7 +336,7 @@ def _translated_block_explains_dark_excess(dark_bbox, clip_bbox, blocks_by_id, l
             if block_id in source_ids:
                 continue
             entry = ledger_by_id.get(block_id)
-            if _ledger_value(entry, "classification") not in NORMAL_TRANSLATED_CLASSES:
+            if _item_value(entry, "classification") not in NORMAL_TRANSLATED_CLASSES:
                 continue
             if not source_requires_chinese_translation(str(block.get("text", ""))):
                 continue
@@ -389,21 +374,21 @@ def _dedupe_protected_regions(regions: list[dict]) -> list[dict]:
 
 
 def _ownership_issue_to_visual_issue(plan, issue) -> VisualQaIssue:
-    issue_code = str(_ledger_value(issue, "issue_code", ""))
+    issue_code = str(_item_value(issue, "issue_code", ""))
     category = OWNERSHIP_ISSUE_CATEGORY_BY_CODE.get(issue_code, issue_code or "ownership_violation")
-    source_ids = [str(source_id) for source_id in _ledger_value(issue, "source_ids", [])]
-    bboxes = _ledger_value(issue, "bboxes", []) or []
+    source_ids = [str(source_id) for source_id in _item_value(issue, "source_ids", [])]
+    bboxes = _item_value(issue, "bboxes", []) or []
     bbox = None
     if bboxes:
         bbox = _bbox_tuple(bboxes[0])
-    elif _ledger_value(issue, "bbox") is not None:
-        bbox = _bbox_tuple(_ledger_value(issue, "bbox"))
-    component_ids = [str(component_id) for component_id in _ledger_value(issue, "component_ids", [])]
+    elif _item_value(issue, "bbox") is not None:
+        bbox = _bbox_tuple(_item_value(issue, "bbox"))
+    component_ids = [str(component_id) for component_id in _item_value(issue, "component_ids", [])]
     artifact_paths = {}
     if component_ids:
         artifact_paths["component_ids"] = ",".join(sorted(component_ids))
-    severity = str(_ledger_value(issue, "severity", "error"))
-    message = str(_ledger_value(issue, "message", ""))
+    severity = str(_item_value(issue, "severity", "error"))
+    message = str(_item_value(issue, "message", ""))
     if issue_code and issue_code not in message:
         message = f"{issue_code}: {message}"
     return VisualQaIssue(
@@ -420,11 +405,6 @@ def _ownership_issue_to_visual_issue(plan, issue) -> VisualQaIssue:
 
 def detect_ownership_issues(plan) -> list[VisualQaIssue]:
     validation = _item_value(plan, "ownership_validation", None)
-    if validation is None:
-        if isinstance(plan, Mapping):
-            validation = plan.get("ownership_validation")
-        else:
-            validation = getattr(plan, "ownership_validation", None)
     if not validation:
         return []
     serialized_issues = _item_value(validation, "errors", None)
@@ -561,7 +541,7 @@ def _split_regions_explain_dark_excess(
         if block_id in source_ids:
             continue
         entry = ledger_by_id.get(block_id)
-        if _ledger_value(entry, "classification") not in NORMAL_TRANSLATED_CLASSES:
+        if _item_value(entry, "classification") not in NORMAL_TRANSLATED_CLASSES:
             continue
         if not source_requires_chinese_translation(str(block.get("text", ""))):
             continue
@@ -685,10 +665,10 @@ def detect_image_clip_boundary_issues(
     body_block_ids = {
         block_id
         for block_id, entry in ledger_by_id.items()
-        if _ledger_value(entry, "classification") == "body"
+        if _item_value(entry, "classification") == "body"
         and body_source_requires_translation(block_id)
         and (
-            str(_ledger_value(entry, "component_kind", "") or "") == "translated_text"
+            str(_item_value(entry, "component_kind", "") or "") == "translated_text"
             if ownership_aware
             else True
         )
@@ -696,8 +676,8 @@ def detect_image_clip_boundary_issues(
     visual_ledger_ids = {
         block_id
         for block_id, entry in ledger_by_id.items()
-        if str(_ledger_value(entry, "component_kind", "") or "") == "visual"
-        and str(_ledger_value(entry, "render_kind", "") or "") == "original_image_clip"
+        if str(_item_value(entry, "component_kind", "") or "") == "visual"
+        and str(_item_value(entry, "render_kind", "") or "") == "original_image_clip"
     }
     clip_union_by_source_id = _clip_union_for_source_ids(items)
     for item_index, item in enumerate(items):
@@ -913,13 +893,16 @@ def detect_style_issues(plan, *, font_tolerance: float = 0.01) -> list[VisualQaI
     ]
     classifications_by_id = _classifications_by_block_id(plan)
     for value in _plan_render_items(plan):
-        # JSON artifacts and in-memory plans share the domain policy. Only the
-        # artifact boundary adapts representations; it does not redefine styles.
-        item = value if isinstance(value, RenderItem) else RenderItem(
-            kind=value["kind"], source_ids=_source_ids_for_item(value),
-            bbox=_bbox_tuple(value["bbox"]), style_name=value.get("style_name", ""),
-            font_size=value.get("font_size"), fallback_reason=value.get("fallback_reason", ""),
-            layout_role=value.get("layout_role", "normal"), font_policy=value.get("font_policy", "document"),
+        # Match the artifact's numeric representation before applying the shared style policy.
+        size = _item_value(value, "font_size")
+        item = RenderItem(
+            kind=_item_value(value, "kind"), source_ids=_source_ids_for_item(value),
+            bbox=_bbox_tuple(_item_value(value, "bbox")),
+            style_name=_item_value(value, "style_name", ""),
+            font_size=None if size is None else float(size),
+            fallback_reason=_item_value(value, "fallback_reason", ""),
+            layout_role=_item_value(value, "layout_role", "normal"),
+            font_policy=_item_value(value, "font_policy", "document"),
         )
         classifications = {
             classifications_by_id[source_id] for source_id in item.source_ids

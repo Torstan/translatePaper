@@ -12,6 +12,41 @@ import translation_batch
 
 
 class TranslationBatchTests(unittest.TestCase):
+    def test_boundary_repair_cache_requires_unchanged_translation_inputs(self):
+        pages = [
+            (1, [{"id": "p001b0001", "page": 1, "block_index": 1,
+                  "text": "The history appears sequential to each process, and",
+                  "xMin": 130, "yMin": 590, "xMax": 486, "yMax": 630}]),
+            (2, [{"id": "p002b0001", "page": 2, "block_index": 1,
+                  "text": "of operations. Equivalently, each operation appears instantaneously.",
+                  "xMin": 130, "yMin": 50, "xMax": 486, "yMax": 90}]),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job = {"job_dir": root, "boundary_schema_path": root / "schema.json",
+                   "boundary_repairs_path": root / "repairs.json"}
+            raw = {"p001b0001": "未完成，并且", "p002b0001": "的操作。后续句子。"}
+            calls = []
+
+            def run(cmd, **kwargs):
+                calls.append(kwargs["input"])
+                Path(cmd[cmd.index("-o") + 1]).write_text(json.dumps({"items": [{
+                    "key": "p001b0001->p002b0001", "translation": f"完整句子{len(calls)}。",
+                    "next_prefix_translation": "",
+                }]}))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with patch("subprocess.run", side_effect=run):
+                first = pipeline.postprocess_cross_page_sentence_splits(pages, raw, job_paths=job, model="test")
+                repeated = pipeline.postprocess_cross_page_sentence_splits(pages, raw, job_paths=job, model="test")
+                changed = pipeline.postprocess_cross_page_sentence_splits(
+                    pages, {**raw, "p002b0001": "修改后的译文。"}, job_paths=job, model="test",
+                )
+            self.assertEqual(first["p001b0001"], "完整句子1。")
+            self.assertEqual(repeated["p001b0001"], "完整句子1。")
+            self.assertEqual(changed["p001b0001"], "完整句子2。")
+            self.assertEqual(len(calls), 2)
+
     def test_boundary_repairs_retry_invalid_or_stale_output(self):
         good = {"items": [{"key": "a->b", "translation": "完整句子。", "next_prefix_translation": ""}]}
         invalid = [None, "not JSON", "[]", '{"items": []}',
@@ -70,6 +105,10 @@ class TranslationBatchTests(unittest.TestCase):
             for mode in ("vector", "raster"):
                 with self.subTest(entry=entry, mode=mode), tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
+                    with pipeline.load_fitz().open() as source_doc:
+                        source_doc.new_page(width=623, height=801)
+                        source_doc.new_page(width=623, height=801)
+                        source_doc.save(root / "input.pdf")
                     job = {"job_dir": root, "boundary_schema_path": root / "schema.json",
                            "boundary_repairs_path": root / "repairs.json", "job_slug": "test",
                            "translations_path": root / "translations.json", "pages_dir": root,
@@ -82,8 +121,11 @@ class TranslationBatchTests(unittest.TestCase):
                     def vector(pdf, output, selected, translations, *rest, **kwargs):
                         drawn.append(dict(translations))
                         return pipeline.DocumentRenderResult([], translations)
-                    def raster(selected, translations, *rest):
+                    def raster(selected, translations, *rest, **kwargs):
                         drawn.append(dict(translations))
+                        return [pipeline.PageRenderPlan(page_num=page_num, page_size=(623, 801),
+                                                        raster_size=(623, 801), coordinate_space="pixels")
+                                for page_num, _ in selected]
                     def run(cmd, **kwargs):
                         Path(cmd[cmd.index("-o") + 1]).write_text(json.dumps({"items": [{
                             "key": "p001b0001->p002b0001", "translation": "完整句子。",
@@ -98,6 +140,7 @@ class TranslationBatchTests(unittest.TestCase):
                         patch.object(pipeline, "render_pages", side_effect=raster),
                         patch.object(pipeline.render_pdf, "write_raster_pdf"),
                         patch.object(pipeline, "validate_document_quality", side_effect=validate),
+                        patch.object(pipeline, "validate_raster_page_plan", return_value=({}, [])),
                         patch.object(pipeline.qa, "choose_items_for_qa", return_value=[]),
                         patch.object(pipeline, "run_visual_qa_for_job", return_value={"visual_error_count": 0}),
                         patch.object(pipeline, "set_work_dir"),
@@ -114,11 +157,41 @@ class TranslationBatchTests(unittest.TestCase):
                                 pipeline.DocumentOptions(model="test", render_mode=mode, qa=True, qa_sample_size=0),
                             )
                     self.assertEqual(drawn, [expected])
-                    self.assertEqual(checked, [expected] if entry == "parallel" else [])
+                    self.assertEqual(checked, [expected] if entry == "parallel" and mode == "vector" else [])
                     self.assertEqual(command.call_count, 1)
                     self.assertEqual(raw["p002b0001"], "的操作。的操作。后续句子。")
 
-    def test_serial_batches_span_pages_while_parallel_batches_stay_on_each_page(self):
+    def test_default_translation_batches_reuse_cache_across_worker_counts(self):
+        pages = [(page, [{"id": f"p{page:03d}b0001", "page": page, "block_index": 1,
+                         "text": "This complete body paragraph explains the experimental results in detail.",
+                         "xMin": 20, "yMin": 70, "xMax": 280, "yMax": 130}])
+                 for page in (1, 2)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job = {"job_dir": root, "schema_path": root / "schema.json",
+                   "translations_path": root / "translations.json"}
+            requested = []
+
+            def run(cmd, **kwargs):
+                items = json.loads(kwargs["input"].split("待翻译条目如下：", 1)[1])["items"]
+                requested.append([item["id"] for item in items])
+                Path(cmd[cmd.index("-o") + 1]).write_text(json.dumps({"items": [
+                    {"id": item["id"], "translation": "完整正文。"} for item in items
+                ]}))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with patch("subprocess.run", side_effect=run):
+                first = pipeline.translate_pages(
+                    pages, (300, 400), job, pipeline.DocumentOptions(model="test", page_workers=1),
+                )
+                repeated = pipeline.translate_pages(
+                    pages, (300, 400), job, pipeline.DocumentOptions(model="test", page_workers=2),
+                )
+            self.assertEqual(requested, [["p001b0001"], ["p002b0001"]])
+            self.assertEqual(first, ({"p001b0001": "完整正文。", "p002b0001": "完整正文。"}, 2))
+            self.assertEqual(repeated, first)
+
+    def test_explicit_batch_scopes_keep_their_distinct_boundaries(self):
         pages = [[{"id": f"p{page:03d}b0001", "page": page, "block_index": 1,
                    "text": "This complete body paragraph explains the experimental results in detail.",
                    "xMin": 20, "yMin": 70, "xMax": 280, "yMax": 130}]
@@ -130,7 +203,7 @@ class TranslationBatchTests(unittest.TestCase):
         self.assertEqual([(batch.prefix, [item["id"] for item in batch.items]) for batch in concurrent],
                          [("page-001-chunk-01", ["p001b0001"]), ("page-002-chunk-01", ["p002b0001"])])
 
-    def test_low_overlap_cache_is_rejected_by_serial_and_retained_by_parallel(self):
+    def test_unverified_legacy_cache_is_rejected_by_both_entries(self):
         items = [{"id": f"p001b{index:04d}", "text": "Body paragraph."} for index in range(1, 6)]
         for entry in ("serial", "parallel"):
             with self.subTest(entry=entry), tempfile.TemporaryDirectory() as tmp:
@@ -151,11 +224,9 @@ class TranslationBatchTests(unittest.TestCase):
                 with patch("subprocess.run", side_effect=run):
                     result = translation_batch.run_batches(
                         [translation_batch.TranslationBatch("batch-01", items)], job, model="test",
-                        minimum_cache_overlap=0.6 if entry == "serial" else 0.0,
                     )
-                expected_requests = items if entry == "serial" else items[1:]
-                self.assertEqual(requested, [item["id"] for item in expected_requests])
-                self.assertEqual(result["p001b0001"], "新译文" if entry == "serial" else "缓存译文")
+                self.assertEqual(requested, [item["id"] for item in items])
+                self.assertEqual(result["p001b0001"], "新译文")
                 self.assertEqual(json.loads(job["translations_path"].read_text()), result)
 
     def run_entry(self, entry, responses, *, stale_output=None):
@@ -188,7 +259,6 @@ class TranslationBatchTests(unittest.TestCase):
                 result = translation_batch.run_batches(
                     [translation_batch.TranslationBatch(prefix, items)], job, model="test-model",
                     workers=1 if entry == "serial" else 2,
-                    minimum_cache_overlap=0.6 if entry == "serial" else 0.0,
                 )
             self.assertEqual(json.loads(job["translations_path"].read_text()), result)
             return result, len(requests)

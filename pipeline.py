@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import hashlib
 import html
 import json
 import math
@@ -8,7 +9,7 @@ import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from statistics import median
 
@@ -20,6 +21,7 @@ import qa_visual
 import render_plan
 import render_pdf
 import translation_batch
+from geometry import bbox_intersection
 from translation_batch import normalize_translation
 from classify import (
     ENGLISH_FUNCTION_WORDS,
@@ -298,13 +300,14 @@ def ensure_assets(
     job_paths,
     page_start: int = 1,
     page_end: int = 0,
+    refresh: bool = False,
 ) -> Path:
     TMP_ROOT.mkdir(parents=True, exist_ok=True)
     job_paths["job_dir"].mkdir(parents=True, exist_ok=True)
     job_paths["pages_dir"].mkdir(parents=True, exist_ok=True)
     job_paths["translated_pages_dir"].mkdir(parents=True, exist_ok=True)
     bbox_path = job_paths["bbox_path"]
-    if not bbox_path.exists():
+    if refresh or not bbox_path.exists():
         try:
             proc = run(["pdftotext", "-bbox-layout", str(pdf_path), "-"], check=True)
             bbox_path.write_text(proc.stdout, encoding="utf-8")
@@ -315,6 +318,9 @@ def ensure_assets(
                 f"reason={exc}\n",
                 encoding="utf-8",
             )
+    if refresh:
+        for page_image in job_paths["pages_dir"].glob("page-*.png"):
+            page_image.unlink()
     if page_end:
         expected_pages = [
             job_paths["pages_dir"] / f"page-{page_num:03d}.png"
@@ -670,19 +676,32 @@ def load_or_build_source_pages(
     force_ocr: bool = False,
 ):
     source_pages_path = job_paths["source_pages_path"]
-    if source_pages_path.exists() and not force_ocr:
+    cache_key_path = source_pages_path.with_name("source_cache_key.txt")
+    cache_key = source_cache_key(pdf_path, dpi, page_start, page_end, force_ocr)
+    cache_valid = cache_key_path.exists() and cache_key_path.read_text(encoding="utf-8").strip() == cache_key
+    if cache_valid and source_pages_path.exists():
         return load_source_pages(job_paths)
 
-    ensure_assets(pdf_path, dpi, job_paths, page_start, page_end)
-    if source_pages_path.exists():
-        return load_source_pages(job_paths)
+    ensure_assets(pdf_path, dpi, job_paths, page_start, page_end, refresh=not cache_valid)
 
     pages = parse_bbox(job_paths["bbox_path"])
     if force_ocr or should_use_ocr(pages) or text_extraction_looks_garbled(pages):
         pages = generate_ocr_pages(job_paths, pdf_size_pt)
     pages = [blocks for _, blocks in mark_running_headers(list(enumerate(pages, 1)), bbox_lines_by_page(job_paths))]
     save_source_pages(pages, job_paths)
+    cache_key_path.write_text(cache_key + "\n", encoding="utf-8")
     return pages
+
+
+def source_cache_key(pdf_path: Path, dpi: int, page_start: int, page_end: int, force_ocr: bool) -> str:
+    digest = hashlib.sha256()
+    with pdf_path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    settings = {"version": 1, "dpi": dpi, "page_start": page_start,
+                "page_end": page_end, "force_ocr": force_ocr}
+    digest.update(json.dumps(settings, sort_keys=True).encode("utf-8"))
+    return digest.hexdigest()
 
 
 def visual_region_has_code_comment_context(region, block_by_id: dict[str, dict]) -> bool:
@@ -912,17 +931,8 @@ def final_visual_ownership_regions(
     page_num: int = 1,
     source_image_path: Path | None = None,
     bbox_lines=None,
-    translations=None,
 ) -> list[dict]:
-    translations_known = translations is not None
-    translations = translations or {}
     block_by_id = {block["id"]: block for block in page}
-
-    def has_renderable_translation(source_id: str) -> bool:
-        block = block_by_id.get(source_id)
-        if block is None or classes.get(source_id) not in NORMAL_TRANSLATED_CLASSES:
-            return False
-        return block_has_valid_chinese_translation(block, translations)
 
     raw_visual_ids = {source_id for region in visual_regions for source_id in region["source_ids"]}
     preliminary_regions = []
@@ -930,7 +940,7 @@ def final_visual_ownership_regions(
     cap_guard_visual_ids = set(raw_visual_ids)
     for region in visual_regions:
         source_bbox = region.get("bbox")
-        source_ids = {source_id for source_id in region["source_ids"] if not has_renderable_translation(source_id)}
+        source_ids = set(region["source_ids"])
         if region.get("has_row_cell_seed"):
             source_ids.update(row_aligned_nonprose_table_cell_ids(page, classes, set(region["source_ids"])))
         if source_bbox is not None:
@@ -949,10 +959,7 @@ def final_visual_ownership_regions(
                 source_ids,
             )
             cap_guard_visual_ids.update(structural_ids)
-            # Batch planning has no translations yet, so keep prose rows translatable
-            # while still using them to cap visual clip growth.
-            if translations_known:
-                source_ids.update(source_id for source_id in structural_ids if not has_renderable_translation(source_id))
+            # Structural prose bounds visual clips, but remains translatable source content.
         preliminary_regions.append((region, source_bbox, source_ids))
         expanded_visual_ids.update(source_ids)
 
@@ -967,7 +974,6 @@ def final_visual_ownership_regions(
             page_num=page_num,
             source_image_path=source_image_path,
             bbox_lines=bbox_lines,
-            translations=translations,
             visual_ids=cap_guard_visual_ids,
         )
         region_has_table_caption = any(
@@ -993,7 +999,6 @@ def final_visual_ownership_regions(
                 cap_guard_visual_ids,
             )
         )
-        source_ids = {source_id for source_id in source_ids if not has_renderable_translation(source_id)}
         ownership_region = dict(region)
         ownership_region["source_ids"] = sorted(source_ids)
         ownership_region["source_bbox"] = region_bbox if mixed_split is not None else source_bbox or region_bbox
@@ -1120,7 +1125,6 @@ def build_translation_page_components(
     bbox_lines=None,
     source_image_path: Path | None = None,
     in_reference_section: bool = False,
-    translations=None,
 ) -> TranslationPageOwnership:
     raw_visual_regions = build_visual_regions(page)
     classes = classify_blocks(page, raw_visual_regions)
@@ -1140,7 +1144,6 @@ def build_translation_page_components(
         page_num=page_num,
         source_image_path=source_image,
         bbox_lines=bbox_lines,
-        translations=translations,
     )
     duplicate_ids = {
         block_id
@@ -1185,19 +1188,33 @@ def build_translation_page_components(
     )
 
 
-def build_translation_batches(selected_pages, max_chars: int, *, page_size=None, job_paths=None, batch_scope="document"):
+def analyze_selected_pages(selected_pages, page_size, job_paths=None,
+                           page_sizes_by_page=None) -> dict[int, TranslationPageOwnership]:
+    lines_by_page = bbox_lines_by_page(job_paths)
+    in_reference_section = False
+    analyses = {}
+    for page_num, page in selected_pages:
+        analysis = build_translation_page_components(
+            page_num, page,
+            page_size=(page_sizes_by_page or {}).get(page_num, page_size), job_paths=job_paths,
+            bbox_lines=lines_by_page.get(page_num), in_reference_section=in_reference_section,
+        )
+        analyses[page_num] = analysis
+        in_reference_section = analysis.in_reference_section
+    return analyses
+
+
+def build_translation_batches(selected_pages, max_chars: int, *, page_size=None, job_paths=None,
+                              batch_scope="page", source_analysis_by_page=None):
     """Choose source content once; batching scope is independent of worker count."""
     if batch_scope not in {"document", "page"}:
         raise ValueError(f"unknown batch scope: {batch_scope}")
     prepared_pages = []
-    lines_by_page = bbox_lines_by_page(job_paths)
-    in_reference_section = False
+    analyses = source_analysis_by_page
+    if analyses is None:
+        analyses = analyze_selected_pages(selected_pages, page_size, job_paths)
     for page_num, page in selected_pages:
-        ownership_result = build_translation_page_components(
-            page_num, page, page_size=page_size, job_paths=job_paths,
-            bbox_lines=lines_by_page.get(page_num), in_reference_section=in_reference_section,
-        )
-        in_reference_section = ownership_result.in_reference_section
+        ownership_result = analyses[page_num]
         translatable_ids = set(ownership_result.translatable_ids)
         prepared_pages.append((page_num, [
             {"id": block["id"], "text": block["text"]}
@@ -1663,19 +1680,24 @@ def load_boundary_repairs(job_paths) -> dict:
     path = job_paths.get("boundary_repairs_path")
     if not path or not Path(path).exists():
         return {}
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
-def save_boundary_repairs(job_paths, repairs: dict) -> None:
+def save_boundary_repairs(job_paths, request_key: str, repairs: dict) -> None:
     path = job_paths.get("boundary_repairs_path")
     if not path:
         return
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(repairs, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(path).write_text(json.dumps({"request_key": request_key, "repairs": repairs},
+                                     ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def write_boundary_repair_schema(path: Path) -> None:
-    schema = {
+def boundary_repair_schema() -> dict:
+    return {
         "type": "object",
         "properties": {
             "items": {
@@ -1695,7 +1717,10 @@ def write_boundary_repair_schema(path: Path) -> None:
         "required": ["items"],
         "additionalProperties": False,
     }
-    path.write_text(json.dumps(schema, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def write_boundary_repair_schema(path: Path) -> None:
+    path.write_text(json.dumps(boundary_repair_schema(), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def make_boundary_repair_prompt(items: list[dict]) -> str:
@@ -1708,6 +1733,29 @@ def make_boundary_repair_prompt(items: list[dict]) -> str:
         "如果没有需要删除的前缀，填空字符串。不要解释，不要 Markdown，只输出 JSON。\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
     )
+
+
+def boundary_repair_prompt_items(candidates: list[dict], translations: dict) -> list[dict]:
+    return [
+        {
+            "key": candidate["key"],
+            "source_sentence": candidate["source_sentence"],
+            "previous_source": candidate["previous_source"],
+            "next_source": candidate["next_source"],
+            "previous_translation": translations.get(candidate["previous_id"], ""),
+            "next_translation": translations.get(candidate["next_id"], ""),
+        }
+        for candidate in candidates
+    ]
+
+
+def boundary_repair_request_key(candidates: list[dict], translations: dict,
+                                model: str, reasoning_effort: str) -> str:
+    request = {"prompt": make_boundary_repair_prompt(boundary_repair_prompt_items(candidates, translations)),
+               "schema": boundary_repair_schema(), "model": model,
+               "reasoning_effort": reasoning_effort}
+    encoded = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def translate_boundary_sentence_repairs(
@@ -1723,20 +1771,8 @@ def translate_boundary_sentence_repairs(
         return {}
     schema_path = job_paths["boundary_schema_path"]
     write_boundary_repair_schema(schema_path)
-    prompt_items = []
-    for candidate in candidates:
-        prompt_items.append(
-            {
-                "key": candidate["key"],
-                "source_sentence": candidate["source_sentence"],
-                "previous_source": candidate["previous_source"],
-                "next_source": candidate["next_source"],
-                "previous_translation": translations.get(candidate["previous_id"], ""),
-                "next_translation": translations.get(candidate["next_id"], ""),
-            }
-        )
     return translation_batch.execute_json_task(
-        make_boundary_repair_prompt(prompt_items),
+        make_boundary_repair_prompt(boundary_repair_prompt_items(candidates, translations)),
         job_paths["job_dir"], "boundary-sentence-repair", schema_path,
         validate=lambda payload: validate_boundary_repair_payload(
             payload, {candidate["key"] for candidate in candidates},
@@ -1782,7 +1818,16 @@ def postprocess_cross_page_sentence_splits(
     selected_pages = mark_running_headers(selected_pages, lines_by_page)
     candidates = detect_cross_page_sentence_splits(selected_pages, bbox_lines_by_page=lines_by_page)
     repairs = {}
-    repairs.update(load_boundary_repairs(job_paths))
+    request_key = boundary_repair_request_key(candidates, repaired_translations, model, reasoning_effort) if model else ""
+    cached = load_boundary_repairs(job_paths)
+    if request_key and cached.get("request_key") == request_key and isinstance(cached.get("repairs"), dict):
+        try:
+            repairs.update(validate_boundary_repair_payload(
+                {"items": [{"key": key, **value} for key, value in cached["repairs"].items()]},
+                {candidate["key"] for candidate in candidates},
+            ))
+        except (TypeError, ValueError):
+            pass
     if boundary_repairs:
         repairs.update(boundary_repairs)
     missing = [candidate for candidate in candidates if candidate["key"] not in repairs]
@@ -1796,7 +1841,8 @@ def postprocess_cross_page_sentence_splits(
             retries=retries,
         )
         repairs.update(generated)
-        save_boundary_repairs(job_paths, repairs)
+        if not boundary_repairs and len(repairs) == len(candidates):
+            save_boundary_repairs(job_paths, request_key, repairs)
 
     blocks_by_id = {block["id"]: block for _, blocks in selected_pages for block in blocks}
     for candidate in candidates:
@@ -1860,18 +1906,23 @@ def raster_text_fill_for_background(bg) -> tuple[int, int, int, int]:
     return (32, 32, 32, 255)
 
 
-def draw_vertical(draw_img: Image.Image, text: str, box, fill_bg, fill_text):
+def draw_vertical(draw_img: Image.Image, text: str, box, fill_bg, fill_text, font_size=None):
     x0, y0, x1, y1 = box
     width = max(1, x1 - x0)
     height = max(1, y1 - y0)
-    font_size, _ = fit_font_and_lines(text, height - 4, width - 4, vertical=True)
+    if font_size is None:
+        font_size, _ = fit_font_and_lines(text, height - 4, width - 4, vertical=True)
     font = raster_image_font(font_size)
     tmp = Image.new("RGBA", (height, width), fill_bg + (255,))
     tdraw = ImageDraw.Draw(tmp)
     bbox = tdraw.textbbox((0, 0), text, font=font)
     tx = max(0, (height - (bbox[2] - bbox[0])) // 2)
     ty = max(0, (width - (bbox[3] - bbox[1])) // 2)
-    tdraw.text((tx, ty), text, font=font, fill=fill_text)
+    if fill_text[0] > 180:
+        tdraw.text((tx, ty), text, font=font, fill=fill_text,
+                   stroke_width=1, stroke_fill=fill_text)
+    else:
+        tdraw.text((tx, ty), text, font=font, fill=fill_text)
     rotated = tmp.rotate(90, expand=True)
     draw_img.alpha_composite(rotated, (x0, y0))
 
@@ -1894,7 +1945,7 @@ def build_render_boxes(blocks, translations, dpi: int, page_width: int, page_hei
         page_height,
         protected_boxes,
         block_to_px_box=block_to_px_box,
-        translation_resolver=translation_for_block,
+        translation_resolver=lambda block, texts: texts[block["id"]],
     )
 
 
@@ -1905,9 +1956,14 @@ def draw_block(
     dpi: int,
     protected_boxes=None,
     render_box=None,
+    planned_font_size=None,
+    planned_lines=None,
+    planned_vertical=None,
+    source_box=None,
 ):
     if render_box is not None:
-        source_box = block_to_px_box(block, dpi, draw_img.width, draw_img.height, pad=2)
+        if source_box is None:
+            source_box = block_to_px_box(block, dpi, draw_img.width, draw_img.height, pad=2)
         # Clear the complete source text box when layout moves or clips the
         # translated text. Protected image clips are restored after all text is
         # drawn, so clipping this cleanup to protected boxes can leave source
@@ -1931,29 +1987,33 @@ def draw_block(
 
     width = max(10, x1 - x0 - 4)
     height = max(10, y1 - y0 - 4)
-    vertical = raster_text_should_render_vertical(block.get("text", ""), box)
+    vertical = (raster_text_should_render_vertical(block.get("text", ""), box)
+                if planned_vertical is None else planned_vertical)
     fill_text = raster_text_fill_for_background(bg)
     if vertical:
-        draw_vertical(draw_img, translation, box, bg, fill_text)
+        draw_vertical(draw_img, translation, box, bg, fill_text, font_size=planned_font_size)
         return
 
-    target_font_size = target_font_size_for_block(block, dpi, vertical=False)
-    font_size, lines = fit_font_and_lines(
-        translation,
-        width,
-        height,
-        vertical=False,
-        max_font_size=target_font_size,
-    )
+    if planned_font_size is None or planned_lines is None:
+        target_font_size = target_font_size_for_block(block, dpi, vertical=False)
+        font_size, lines = fit_font_and_lines(
+            translation, width, height, vertical=False, max_font_size=target_font_size,
+        )
+    else:
+        font_size, lines = planned_font_size, planned_lines
     font = raster_image_font(font_size)
     line_height = raster_line_height(font)
     text_img = Image.new("RGBA", (x1 - x0, y1 - y0), (0, 0, 0, 0))
     text_draw = ImageDraw.Draw(text_img)
     y = 2
     for line in lines:
-        text_draw.text((2, y), line, font=font, fill=fill_text)
+        if fill_text[0] > 180:
+            text_draw.text((2, y), line, font=font, fill=fill_text,
+                           stroke_width=1, stroke_fill=fill_text)
+        else:
+            text_draw.text((2, y), line, font=font, fill=fill_text)
         y += line_height
-        draw_img.alpha_composite(text_img, (x0, y0))
+    draw_img.alpha_composite(text_img, (x0, y0))
 
 
 def bbox_to_px_box(bbox, dpi: int, page_width: int, page_height: int, pad: int = 3):
@@ -1967,55 +2027,220 @@ def bbox_to_px_box(bbox, dpi: int, page_width: int, page_height: int, pad: int =
     )
 
 
-def raster_protected_boxes(blocks, dpi: int, page_width: int, page_height: int):
-    visual_regions = build_visual_regions(blocks)
-    visual_source_ids = {
-        source_id
-        for region in visual_regions
-        for source_id in region.get("source_ids", [])
-    }
-    boxes = [
-        bbox_to_px_box(region["bbox"], dpi, page_width, page_height, pad=3)
-        for region in visual_regions
-        if region.get("bbox")
-    ]
-    boxes.extend(
-        protected_box_for_block(block, dpi, page_width, page_height)
-        for block in blocks
-        if should_preserve_as_image(block) and block["id"] not in visual_source_ids
-    )
-    return boxes
+def build_raster_page_plan(page_num, blocks, translations, dpi, raster_size, page_size, *,
+                           output_page_num=None, source_analysis=None, bbox_lines=None):
+    """Plan each source component once, then freeze pixel geometry and wrapping."""
+    width, height = raster_size
+    if source_analysis is None:
+        source_analysis = build_translation_page_components(
+            page_num, blocks, page_size=page_size, bbox_lines=bbox_lines,
+        )
+    plan = PageRenderPlan(page_num=page_num, page_size=tuple(page_size),
+                          output_page_num=output_page_num, coordinate_space="pixels",
+                          raster_size=(width, height), components=list(source_analysis.components))
+    block_by_id = {block["id"]: block for block in blocks}
+    classes = source_analysis.classes
+    text_blocks = []
+    text_items = []
+    text_by_component = {}
+    for component in plan.components:
+        kind = component.component_kind
+        mixed = component_has_reason(component, ownership.REASON_MIXED_VISUAL_BODY_SPLIT)
+        source_blocks = [block_by_id[source_id] for source_id in component.source_ids]
+        if kind in {ownership.COMPONENT_KIND_PAGE_NUMBER, ownership.COMPONENT_KIND_DUPLICATE}:
+            classification = "page_number" if kind == ownership.COMPONENT_KIND_PAGE_NUMBER else "nested_duplicate"
+            for source_id in component.source_ids:
+                plan.ledger.append(CoverageEntry(
+                    source_id, classification, "skip_explicitly", True,
+                    component_id=component.component_id, component_kind=kind,
+                ))
+            continue
+
+        if kind == ownership.COMPONENT_KIND_TRANSLATED_TEXT and mixed:
+            item = mixed_visual_body_component_render_item(component, translations, page_size, bbox_lines)
+            if item is None:
+                # Without a resolvable body fragment, preserve that fragment explicitly.
+                item = RenderItem("original_image_clip", list(component.source_ids), component.source_bbox,
+                                  fallback_reason="mixed_visual_body_original_image")
+        elif kind in {ownership.COMPONENT_KIND_VISUAL, ownership.COMPONENT_KIND_UNKNOWN,
+                      ownership.COMPONENT_KIND_SKIP}:
+            item = RenderItem("original_image_clip", list(component.source_ids),
+                              component.clip_bbox or component.source_bbox,
+                              fallback_reason=("visual_region" if kind == ownership.COMPONENT_KIND_VISUAL
+                                               else "preserved_source_image"))
+        else:
+            text = "\n".join(translation_for_block(block, translations) for block in source_blocks).strip()
+            if text:
+                fallback = ("" if all(translations.get(b["id"]) for b in source_blocks)
+                            else "missing_translation_original_text")
+                item = RenderItem("translated_text", list(component.source_ids), component.source_bbox,
+                                  text=text, fallback_reason=fallback)
+            else:
+                item = RenderItem("original_image_clip", list(component.source_ids), component.source_bbox,
+                                  fallback_reason="preserved_source_image")
+
+        item.component_id = component.component_id
+        item.component_kind = kind
+        if item.kind == "original_image_clip":
+            # Source analysis has already selected the clip extent; do not expand it into nearby prose.
+            item.bbox = bbox_to_px_box(item.bbox, dpi, width, height, pad=0)
+            plan.protected_boxes.append(item.bbox)
+        else:
+            x0, y0, x1, y1 = component.source_bbox
+            # Component IDs distinguish two fragments that share the same extracted source block.
+            block = dict(source_blocks[0], id=component.component_id,
+                         xMin=x0, yMin=y0, xMax=x1, yMax=y1)
+            if mixed:
+                block["text"] = item.text
+            item.raster_source_bbox = bbox_to_px_box(component.source_bbox, dpi, width, height,
+                                                     pad=0 if mixed else 2)
+            item.bbox = item.raster_source_bbox
+            text_blocks.append(block)
+            text_items.append(item)
+            text_by_component[component.component_id] = item.text
+        plan.items.append(item)
+        for source_id in component.source_ids:
+            plan.ledger.append(CoverageEntry(
+                source_id, "body" if mixed and kind == ownership.COMPONENT_KIND_TRANSLATED_TEXT
+                else classes.get(source_id, "unknown"), item.kind, True, item.fallback_reason,
+                component_id=component.component_id, component_kind=kind,
+            ))
+
+    render_boxes = build_render_boxes(text_blocks, text_by_component, dpi, width, height, plan.protected_boxes)
+    errors = []
+    for block, item in zip(text_blocks, text_items):
+        box = render_boxes.get(block["id"])
+        if box is None:
+            box = avoid_protected_boxes(item.raster_source_bbox, plan.protected_boxes)
+        if box is not None and item.layout_role == "mixed_visual_body":
+            # A split fragment fits inside its assigned region; growing into siblings would undo ownership.
+            box = bbox_intersection(box, item.raster_source_bbox)
+            if box is not None:
+                box = tuple(int(value) for value in box)
+        if box is None:
+            errors.append(f"page {page_num} component {item.component_id} has no raster text box")
+            continue
+        item.bbox = box
+        item.raster_vertical = raster_text_should_render_vertical(block.get("text", ""), box)
+        item.font_size, item.raster_lines = fit_font_and_lines(
+            item.text, max(10, box[2] - box[0] - 4), max(10, box[3] - box[1] - 4),
+            vertical=item.raster_vertical,
+            max_font_size=target_font_size_for_block(block, dpi, vertical=item.raster_vertical),
+        )
+    return plan, errors
 
 
-def render_pages(pages, translations, dpi: int, job_paths):
-    for page_num, blocks in pages:
-        src = page_image_path(page_num, job_paths)
-        out = translated_page_path(page_num, job_paths)
-        source_img = Image.open(src).convert("RGBA")
+def validate_raster_page_plan(plan, blocks, initial_errors=None, translations=None):
+    errors = list(initial_errors or [])
+    errors.extend(validate_plan_coverage(plan.page_num, blocks, plan))
+    if plan.components:
+        # Components stay in source points; compare render layers in that same coordinate space.
+        sx = plan.page_size[0] / plan.raster_size[0]
+        sy = plan.page_size[1] / plan.raster_size[1]
+        point_items = [replace(item, bbox=(item.bbox[0] * sx, item.bbox[1] * sy,
+                                           item.bbox[2] * sx, item.bbox[3] * sy))
+                       for item in plan.items]
+        point_plan = replace(plan, items=point_items, coordinate_space="points")
+        plan.ownership_validation = render_plan.validate_plan_ownership(point_plan, blocks)
+        errors.extend(issue.message for issue in plan.ownership_validation.issues if issue.severity == "error")
+        # A shared source ID cannot hide a missing component of a mixed block.
+        for component in plan.components:
+            for source_id in component.source_ids:
+                entries = [entry for entry in plan.ledger
+                           if entry.component_id == component.component_id and entry.block_id == source_id]
+                if not entries:
+                    errors.append(f"page {plan.page_num} component {component.component_id} has no coverage entry for {source_id}")
+                for entry in entries:
+                    if entry.render_kind != "skip_explicitly" and not any(
+                        item.component_id == component.component_id and source_id in item.source_ids
+                        and item.kind == entry.render_kind for item in plan.items
+                    ):
+                        errors.append(f"page {plan.page_num} component {component.component_id} has no matching render item for {source_id}")
+    if translations is not None:
+        errors.extend(validate_plan_text_content(plan.page_num, blocks, translations, plan))
+    width, height = plan.raster_size
+    protected = [item for item in plan.items if item.kind == "original_image_clip"]
+    components_by_id = {component.component_id: component for component in plan.components}
+    for item in plan.items:
+        x0, y0, x1, y1 = item.bbox
+        if x0 < 0 or y0 < 0 or x1 > width or y1 > height or x1 <= x0 or y1 <= y0:
+            errors.append(f"page {plan.page_num} item {item.source_ids} outside raster bounds")
+        if item.kind not in {"translated_text", "original_selectable_text"}:
+            continue
+        component = components_by_id.get(item.component_id)
+        if component is not None:
+            erase_box = item.raster_source_bbox
+            source = component.source_bbox
+            # Allow pixel rounding and the normal text cleanup padding, but never a whole mixed block.
+            pad = 1 if component_has_reason(component, ownership.REASON_MIXED_VISUAL_BODY_SPLIT) else 3
+            if (erase_box is None or erase_box[0] < max(0, source[0] / sx - pad)
+                    or erase_box[1] < max(0, source[1] / sy - pad)
+                    or erase_box[2] > min(width, source[2] / sx + pad)
+                    or erase_box[3] > min(height, source[3] / sy + pad)
+                    or erase_box[2] <= erase_box[0] or erase_box[3] <= erase_box[1]):
+                errors.append(f"page {plan.page_num} component {component.component_id} has invalid raster erase box")
+        if compact_render_content("".join(item.raster_lines)) != compact_render_content(item.text):
+            errors.append(f"page {plan.page_num} block {item.source_ids} raster lines omit or reorder text")
+        if item.font_size is None:
+            errors.append(f"page {plan.page_num} component {item.component_id} has no raster font plan")
+            continue
+        font = raster_image_font(int(item.font_size))
+        for clip in protected:
+            overlap = bbox_overlap_area(item.bbox, clip.bbox)
+            if overlap > min(bbox_area(item.bbox), bbox_area(clip.bbox)) * 0.01:
+                errors.append(f"page {plan.page_num} block {item.source_ids} overlaps protected raster clip")
+        if item.raster_vertical:
+            text_box = ImageDraw.Draw(Image.new("RGB", (1, 1))).textbbox((0, 0), item.text, font=font)
+            if text_box[2] - text_box[0] > y1 - y0 or text_box[3] - text_box[1] > x1 - x0:
+                errors.append(f"page {plan.page_num} block {item.source_ids} does not fit raster box")
+        else:
+            text_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+            if (raster_line_height(font) * len(item.raster_lines) > max(0, y1 - y0 - 4)
+                    or any(text_draw.textlength(line, font=font) > x1 - x0 - 4
+                           for line in item.raster_lines)):
+                errors.append(f"page {plan.page_num} block {item.source_ids} does not fit raster box")
+    return {"checks_performed": (["ownership", "component_coverage"] if plan.components else []) +
+                                ["coverage", "text_content", "raster_bounds",
+                                 "raster_text_fit", "raster_protection"] +
+                                (["raster_source_cleanup"] if plan.components else []),
+            "errors": errors}, errors
+
+
+def render_pages(pages, translations, dpi: int, job_paths, page_sizes=None, source_analysis_by_page=None):
+    plans = []
+    lines_by_page = bbox_lines_by_page(job_paths)
+    for output_page_num, (page_num, blocks) in enumerate(pages, start=1):
+        with Image.open(page_image_path(page_num, job_paths)) as source_img:
+            raster_size = source_img.size
+        page_size = page_sizes[output_page_num - 1] if page_sizes else (
+            raster_size[0] * 72 / dpi, raster_size[1] * 72 / dpi)
+        plan, initial_errors = build_raster_page_plan(
+            page_num, blocks, translations, dpi, raster_size, page_size,
+            output_page_num=output_page_num,
+            source_analysis=None if source_analysis_by_page is None else source_analysis_by_page.get(page_num),
+            bbox_lines=lines_by_page.get(page_num),
+        )
+        validation, errors = validate_raster_page_plan(plan, blocks, initial_errors, translations)
+        if errors:
+            try_write_render_plan_artifact(plan, validation, job_paths)
+            raise RuntimeError("\n".join(errors[:20]))
+        write_render_plan_artifact(plan, validation, job_paths)
+        plans.append(plan)
+    for plan in plans:
+        source_img = Image.open(page_image_path(plan.page_num, job_paths)).convert("RGBA")
         img = source_img.copy()
-        protected_boxes = raster_protected_boxes(blocks, dpi, img.width, img.height)
-        render_boxes = build_render_boxes(blocks, translations, dpi, img.width, img.height, protected_boxes)
-        for block in blocks:
-            if should_preserve_as_image(block):
+        for item in plan.items:
+            if item.kind not in {"translated_text", "original_selectable_text"}:
                 continue
-            if is_page_number(block["text"]):
-                continue
-            translated = translation_for_block(block, translations)
-            if not translated:
-                continue
-            draw_block(
-                img,
-                block,
-                translated,
-                dpi,
-                protected_boxes=protected_boxes,
-                render_box=render_boxes.get(block["id"]),
-            )
-        for box in protected_boxes:
-            x0, y0, x1, y1 = box
-            if x1 > x0 and y1 > y0:
-                img.alpha_composite(source_img.crop(box), (x0, y0))
-        img.save(out)
+            draw_block(img, {}, item.text, dpi, source_box=item.raster_source_bbox,
+                       render_box=item.bbox, planned_font_size=int(item.font_size),
+                       planned_lines=item.raster_lines, planned_vertical=item.raster_vertical)
+        for item in plan.items:
+            if item.kind == "original_image_clip":
+                x0, y0, x1, y1 = item.bbox
+                img.alpha_composite(source_img.crop(item.bbox), (x0, y0))
+        img.save(translated_page_path(plan.page_num, job_paths))
+    return plans
 
 
 def compact_duplicate_text(text: str) -> str:
@@ -3486,12 +3711,15 @@ def translated_text_exclusion_boxes(blocks, classes, translations, region_bbox, 
     return boxes
 
 
-def translated_component_exclusion_boxes(components, matching_visual_component, region_bbox, page_size):
+def translated_component_exclusion_boxes(components, matching_visual_component, region_bbox, page_size, image_source_ids=()):
     boxes = []
+    image_source_ids = set(image_source_ids)
     for component in components:
         if component.component_kind != ownership.COMPONENT_KIND_TRANSLATED_TEXT:
             continue
         if matching_visual_component is not None and component.component_id == matching_visual_component.component_id:
+            continue
+        if set(component.source_ids) <= image_source_ids:
             continue
         source_box = component.source_bbox
         if bbox_overlap_area(source_box, region_bbox) <= 0.0:
@@ -3657,6 +3885,7 @@ def build_page_render_plan(
     bbox_lines=None,
     source_image_path: Path | None = None,
     force_reference: bool = False,
+    source_analysis: TranslationPageOwnership | None = None,
 ) -> PageRenderPlan:
     blocks = mark_running_headers([(page_num, blocks)], {page_num: bbox_lines or []})[0][1]
     plan = PageRenderPlan(page_num=page_num, page_size=tuple(page_size))
@@ -3674,15 +3903,16 @@ def build_page_render_plan(
             )
             plan.protected_boxes.append(full_page_bbox)
             return plan
-    ownership_result = build_translation_page_components(
-        page_num,
-        blocks,
-        page_size=page_size,
-        bbox_lines=bbox_lines,
-        source_image_path=source_image_path,
-        in_reference_section=force_reference,
-        translations=translations,
-    )
+    ownership_result = source_analysis
+    if ownership_result is None:
+        ownership_result = build_translation_page_components(
+            page_num,
+            blocks,
+            page_size=page_size,
+            bbox_lines=bbox_lines,
+            source_image_path=source_image_path,
+            in_reference_section=force_reference,
+        )
     plan.components = list(ownership_result.components)
     visual_regions = ownership_result.visual_regions
     classes = dict(ownership_result.classes)
@@ -3746,6 +3976,15 @@ def build_page_render_plan(
             nontranslated_blocks_covered_by_visual_region(blocks, classes, region_bbox, visual_ids)
         )
         image_source_ids = list(matching_component.source_ids if matching_component is not None else region["source_ids"])
+        missing_visual_body_ids = {
+            source_id
+            for source_id in translated_blocks_structurally_covered_by_visual_region(
+                blocks, classes, region_bbox, set(image_source_ids)
+            )
+            if not block_has_valid_chinese_translation(block_by_id[source_id], translations)
+        }
+        image_source_ids.extend(sorted(missing_visual_body_ids - set(image_source_ids)))
+        visual_covered_text_ids.update(missing_visual_body_ids)
         exclusion_boxes = translated_text_exclusion_boxes(
             blocks,
             classes,
@@ -3760,6 +3999,7 @@ def build_page_render_plan(
                 matching_component,
                 region_bbox,
                 page_size,
+                image_source_ids,
             )
         )
         clip_bboxes = split_visual_clip_around_translated_text(
@@ -3849,15 +4089,16 @@ def build_page_render_plan(
             continue
         classification = classes.get(block["id"], "unknown")
         if block["id"] in visual_covered_text_ids:
-            plan.ledger.append(
-                CoverageEntry(
-                    block["id"],
-                    classification,
-                    "original_image_clip",
-                    True,
-                    "covered_by_visual_region",
+            if not any(entry.block_id == block["id"] for entry in plan.ledger):
+                plan.ledger.append(
+                    CoverageEntry(
+                        block["id"],
+                        classification,
+                        "original_image_clip",
+                        True,
+                        "covered_by_visual_region",
+                    )
                 )
-            )
             continue
         bbox = adjusted_render_bbox(block, classification, page_size)
         if classification in {"body", "heading", "title", "reference"}:
@@ -4124,8 +4365,8 @@ def build_page_render_plan(
 def arrange_page_render_items(plan: PageRenderPlan, blocks, page_size, bbox_lines) -> None:
     """Resolve source fragments, place body flows, then protect explicit fallbacks.
 
-    This stage owns the repair order. Keep the second balance: its recomputed
-    lane bounds can move text after the first pass; one pass changes fixtures.
+    This stage owns the repair order. The second balance follows enumeration
+    and fragment repairs, which can change lane contents and positions.
     Final font fitting happens once at the drawing boundary, after ownership
     metadata has been attached to every resulting item.
     """
@@ -4149,7 +4390,7 @@ def arrange_page_render_items(plan: PageRenderPlan, blocks, page_size, bbox_line
 
 
 def validate_plan_translation_quality(page_num: int, blocks, translations, plan: PageRenderPlan) -> list[str]:
-    errors = []
+    errors = validate_plan_text_content(page_num, blocks, translations, plan)
     ledger_by_id = {entry.block_id: entry for entry in plan.ledger}
     block_by_id = {block["id"]: block for block in blocks}
     rendered_text_by_id = rendered_text_by_source_id(plan)
@@ -4181,6 +4422,25 @@ def validate_plan_translation_quality(page_num: int, blocks, translations, plan:
     return errors
 
 
+def validate_plan_text_content(page_num: int, blocks, translations, plan: PageRenderPlan) -> list[str]:
+    """Require final translated text to survive plan merges and splits in order."""
+    errors = []
+    ledger_by_id = {entry.block_id: entry for entry in plan.ledger}
+    rendered_by_id = rendered_text_by_source_id(plan)
+    for block in blocks:
+        block_id = block["id"]
+        entry = ledger_by_id.get(block_id)
+        translated = translations.get(block_id)
+        if entry is None or entry.render_kind != "translated_text" or not translated:
+            continue
+        expected = clean_render_text(block, translation_for_block(block, translations), translated)
+        expected_content = compact_render_content(translation_anchor_text(expected))
+        rendered_chars = iter(compact_render_content(rendered_by_id.get(block_id, "")))
+        if expected_content and not all(char in rendered_chars for char in expected_content):
+            errors.append(f"page {page_num} block {block_id} rendered text is missing or reorders translated content")
+    return errors
+
+
 def rendered_text_by_source_id(plan: PageRenderPlan) -> dict[str, str]:
     rendered: dict[str, list[str]] = {}
     for item in sorted(plan.items, key=lambda candidate: (candidate.bbox[1], candidate.bbox[0])):
@@ -4193,6 +4453,10 @@ def rendered_text_by_source_id(plan: PageRenderPlan) -> dict[str, str]:
 
 def compact_cjk_text(text: str) -> str:
     return "".join(re.findall(r"[\u4e00-\u9fff]", normalize_text(text)))
+
+
+def compact_render_content(text: str) -> str:
+    return "".join(re.findall(r"[A-Za-z0-9\u4e00-\u9fff]", normalize_text(text))).casefold()
 
 
 def cjk_anchor(text: str, length: int = 8) -> str:
@@ -4408,12 +4672,10 @@ def validate_footer_consistency(plans: list[PageRenderPlan]) -> list[str]:
 
 
 def normalize_vector_text_layout(plan: PageRenderPlan, page_size, fitz=None) -> None:
-    """Apply deterministic text layout repairs before validating or drawing vector text."""
+    """Release visual padding, fit geometry, then adapt fonts before drawing."""
     release_visual_clip_overcapture_for_text_fit(plan, page_size, fitz=fitz)
     expand_text_boxes_to_fit(plan, page_size, fitz=fitz)
     rebalance_body_text_flows(plan, page_size, fitz=fitz)
-    release_visual_clip_overcapture_for_text_fit(plan, page_size, fitz=fitz)
-    expand_text_boxes_to_fit(plan, page_size, fitz=fitz)
     fit_dense_visual_body_rows(plan, page_size, fitz=fitz)
     fit_body_flow_text_items(plan, fitz=fitz)
 
@@ -4523,26 +4785,6 @@ def fit_body_flow_text_items(plan: PageRenderPlan, fitz=None) -> None:
         item.font_policy = "compact_body_flow"
         item.fallback_reason = BODY_FLOW_COMPACT_FALLBACK
         update_ledger_render_kind(plan, item.source_ids, item.kind, BODY_FLOW_COMPACT_FALLBACK)
-
-
-def diagnose_source_layout(selected_pages, translations, page_size, job_paths=None) -> list[str]:
-    """Diagnose source layout with final translations, without repairing them again."""
-    plans = []
-    fitz = load_fitz()
-    lines_by_page = bbox_lines_by_page(job_paths)
-    in_reference_section = False
-    for page_num, blocks in selected_pages:
-        plan = build_page_render_plan(
-            page_num, blocks, translations, page_size,
-            bbox_lines=lines_by_page.get(page_num),
-            source_image_path=source_page_image_path(job_paths, page_num),
-            force_reference=in_reference_section,
-        )
-        normalize_vector_text_layout(plan, page_size, fitz=fitz)
-        plan.ownership_validation = render_plan.validate_plan_ownership(plan, blocks)
-        in_reference_section = any(entry.classification == "reference" for entry in plan.ledger)
-        plans.append(plan)
-    return validate_document_quality(selected_pages, translations, plans, job_paths=job_paths)
 
 
 def validate_document_quality(selected_pages, translations, plans: list[PageRenderPlan], job_paths=None) -> list[str]:
@@ -4906,7 +5148,7 @@ def convert_unfit_nonprose_text_to_image_clips(plan: PageRenderPlan, blocks, fit
     plan.items = new_items
 
 
-def validate_final_page_plan(plan: PageRenderPlan, blocks, fitz) -> tuple[dict, list[str]]:
+def validate_final_page_plan(plan: PageRenderPlan, blocks, fitz, translations=None) -> tuple[dict, list[str]]:
     """Refresh diagnostics after layout and collect every mandatory vector check.
 
     Warnings remain reportable without blocking drawing. Optional content-quality
@@ -4917,6 +5159,8 @@ def validate_final_page_plan(plan: PageRenderPlan, blocks, fitz) -> tuple[dict, 
     plan.ownership_validation = render_plan.validate_plan_ownership(plan, blocks)
     checks = {
         "coverage_errors": validate_plan_coverage(plan.page_num, blocks, plan),
+        "text_content_errors": validate_plan_text_content(plan.page_num, blocks, translations, plan)
+        if translations is not None else [],
         "layout_errors": validate_plan_layout(plan, plan.page_size),
         "text_overlap_errors": validate_plan_text_overlaps(plan),
         "style_policy_errors": validate_plan_style_policy(plan),
@@ -4930,7 +5174,7 @@ def validate_final_page_plan(plan: PageRenderPlan, blocks, fitz) -> tuple[dict, 
 def build_final_page_plan(
     page_num, blocks, translations, page_size, *, bbox_lines=None,
     source_image_path=None, force_reference=False, output_page_num=None,
-    job_paths=None, fitz=None,
+    job_paths=None, fitz=None, source_analysis=None,
 ) -> PageRenderPlan:
     """Build, adapt and validate a vector plan; save requested diagnostic artifacts.
 
@@ -4942,11 +5186,12 @@ def build_final_page_plan(
     plan = build_page_render_plan(
         page_num, blocks, translations, page_size, bbox_lines=bbox_lines,
         source_image_path=source_image_path, force_reference=force_reference,
+        source_analysis=source_analysis,
     )
     plan.page_size = page_size
     plan.output_page_num = output_page_num
     normalize_vector_text_layout(plan, page_size, fitz=fitz)
-    validation_results, errors = validate_final_page_plan(plan, blocks, fitz)
+    validation_results, errors = validate_final_page_plan(plan, blocks, fitz, translations)
     if errors:
         try_write_render_plan_artifact(plan, validation_results, job_paths)
         raise RuntimeError("\n".join(errors[:20]))
@@ -4954,10 +5199,12 @@ def build_final_page_plan(
     return plan
 
 
-def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translations, dpi: int, job_paths=None) -> DocumentRenderResult:
+def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translations, dpi: int,
+                     job_paths=None, source_analysis_by_page=None) -> DocumentRenderResult:
     fitz = load_fitz()
     with fitz.open(pdf_path) as src_doc, fitz.open() as out_doc:
-        selected_pages = mark_running_headers(selected_pages, bbox_lines_by_page(job_paths))
+        if source_analysis_by_page is None:
+            selected_pages = mark_running_headers(selected_pages, bbox_lines_by_page(job_paths))
         lines_by_page = bbox_lines_by_page(job_paths)
         total_pages = len(selected_pages)
         in_reference_section = False
@@ -4984,6 +5231,7 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
                 output_page_num=output_idx,
                 job_paths=job_paths,
                 fitz=fitz,
+                source_analysis=(source_analysis_by_page or {}).get(page_num),
             )
             plans.append(plan)
             plan_has_reference = any(entry.classification == "reference" for entry in plan.ledger)
@@ -5010,17 +5258,22 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
 
 def render_translated_pdf(
     pdf_path: Path, pdf_output: Path, selected_pages, translations, page_size,
-    dpi: int, job_paths, *, render_mode: str,
+    dpi: int, job_paths, *, render_mode: str, source_analysis_by_page=None,
 ) -> DocumentRenderResult:
     """Render final translations; model execution and sentence repairs belong to translation."""
     if render_mode == "raster":
-        render_pages(selected_pages, translations, dpi, job_paths)
+        with load_fitz().open(pdf_path) as source_doc:
+            page_sizes = [(source_doc[page_num - 1].rect.width, source_doc[page_num - 1].rect.height)
+                          for page_num, _ in selected_pages]
+        plans = render_pages(selected_pages, translations, dpi, job_paths,
+                             page_sizes=page_sizes, source_analysis_by_page=source_analysis_by_page)
         render_pdf.write_raster_pdf(
-            pdf_output, [translated_page_path(idx, job_paths) for idx, _ in selected_pages], page_size,
+            pdf_output, [translated_page_path(idx, job_paths) for idx, _ in selected_pages], page_sizes,
         )
-        return DocumentRenderResult([], translations)
+        return DocumentRenderResult(plans, translations)
     return write_vector_pdf(
         pdf_path, pdf_output, selected_pages, translations, dpi, job_paths=job_paths,
+        source_analysis_by_page=source_analysis_by_page,
     )
 
 
@@ -5129,6 +5382,7 @@ def write_deterministic_quality_report(
     issues: list[str],
     job_dir: Path,
     plan_artifact_paths=None,
+    checks_performed=None,
 ):
     normalized_plan_artifact_paths = normalize_artifact_paths(plan_artifact_paths)
     (job_dir / "deterministic_quality_report.json").write_text(
@@ -5137,6 +5391,7 @@ def write_deterministic_quality_report(
                 "issue_count": len(issues),
                 "issues": issues,
                 "plan_artifact_paths": normalized_plan_artifact_paths,
+                "checks_performed": list(checks_performed or []),
             },
             ensure_ascii=False,
             indent=2,
@@ -5144,6 +5399,8 @@ def write_deterministic_quality_report(
         encoding="utf-8",
     )
     lines = ["# Deterministic PDF Quality Report", "", f"- issue_count: {len(issues)}", ""]
+    if checks_performed:
+        lines.append(f"- checks_performed: {', '.join(checks_performed)}")
     for issue in issues[:100]:
         lines.append(f"- {issue}")
     if normalized_plan_artifact_paths:
@@ -5170,22 +5427,34 @@ def run_qa_for_job(
         for page in pages
         for block in page
     }
+    if render_result is None:
+        raise ValueError("QA requires the actual render result")
     if getattr(options, "render_mode", "vector") == "vector":
-        if render_result is None:
-            raise ValueError("vector QA requires the actual render result")
+        checks_performed = ["coverage", "text_content", "layout", "translation_quality", "image_clip_content",
+                            "vector_text_fit", "footer_consistency"]
         translations = render_result.translations
         deterministic_issues = validate_document_quality(
             selected_pages, translations, render_result.plans, job_paths=job_paths,
         )
     else:
-        deterministic_issues = diagnose_source_layout(
-            selected_pages, translations, page_size, job_paths=job_paths,
-        )
+        checks_performed = ["coverage", "text_content", "raster_bounds", "raster_text_fit",
+                            "raster_protection", "translation_quality"]
+        translations = render_result.translations
+        if len(render_result.plans) != len(selected_pages):
+            raise ValueError("raster QA requires the actual raster plans")
+        deterministic_issues = []
+        for (page_num, blocks), plan in zip(selected_pages, render_result.plans):
+            if plan.page_num != page_num or plan.coordinate_space != "pixels":
+                raise ValueError("raster QA received a plan for another page or coordinate space")
+            _, issues = validate_raster_page_plan(plan, blocks, translations=translations)
+            deterministic_issues.extend(issues)
+            deterministic_issues.extend(validate_plan_translation_quality(page_num, blocks, translations, plan))
     plan_artifact_paths = render_plan_artifact_paths(selected_pages, job_paths)
     write_deterministic_quality_report(
         deterministic_issues,
         job_paths["job_dir"],
         plan_artifact_paths=plan_artifact_paths,
+        checks_performed=checks_performed,
     )
     if deterministic_issues and options.strict_qa:
         raise RuntimeError(
@@ -5211,6 +5480,7 @@ def run_qa_for_job(
         "deterministic_issue_count": len(deterministic_issues),
         "deterministic_issues": deterministic_issues[:10],
         "plan_artifact_paths": plan_artifact_paths,
+        "deterministic_checks_performed": checks_performed,
         "checked_blocks": len(report),
         "worst_score": report[0]["score"] if report else None,
         "worst_items": report[:5],
@@ -5249,9 +5519,8 @@ class DocumentOptions:
     refresh_source: bool = False
     render_mode: str = "vector"
     batch_chars: int = 10000
-    batch_scope: str = "document"
+    batch_scope: str = "page"
     page_workers: int = 1
-    minimum_cache_overlap: float = 0.6
     retranslate: bool = False
     model: str = "gpt-5.5"
     reasoning_effort: str = "low"
@@ -5265,7 +5534,8 @@ class DocumentOptions:
     strict_body_flow: bool = False
 
 
-def translate_pages(selected_pages, page_size, job_paths, options: DocumentOptions) -> tuple[dict[str, str], int]:
+def translate_pages(selected_pages, page_size, job_paths, options: DocumentOptions,
+                    source_analysis_by_page=None) -> tuple[dict[str, str], int]:
     """Translate selected source pages and apply boundary repairs exactly once.
 
     Return final translations and the requested source-block count for job reports.
@@ -5273,13 +5543,13 @@ def translate_pages(selected_pages, page_size, job_paths, options: DocumentOptio
     """
     batches = build_translation_batches(
         selected_pages, options.batch_chars, page_size=page_size, job_paths=job_paths,
-        batch_scope=options.batch_scope,
+        batch_scope=options.batch_scope, source_analysis_by_page=source_analysis_by_page,
     )
     translated_blocks = len({item["id"] for batch in batches for item in batch.items})
     translations = translation_batch.run_batches(
         batches, job_paths, model=options.model, reasoning_effort=options.reasoning_effort,
         retries=options.retries, workers=options.page_workers,
-        minimum_cache_overlap=options.minimum_cache_overlap, retranslate=options.retranslate,
+        retranslate=options.retranslate,
     )
     translations = postprocess_cross_page_sentence_splits(
         selected_pages, translations, job_paths=job_paths, model=options.model,
@@ -5289,7 +5559,7 @@ def translate_pages(selected_pages, page_size, job_paths, options: DocumentOptio
 
 
 def translate_document(pdf_path: Path, output_path: Path, options: DocumentOptions, *, job_name: str | None = None) -> dict:
-    """Run one document; CLI defaults select batching, cache and QA policies explicitly."""
+    """Run one document with shared batching and cache rules."""
     if output_path.exists() and not options.overwrite:
         return {
             "pdf": str(pdf_path),
@@ -5323,11 +5593,22 @@ def translate_document(pdf_path: Path, output_path: Path, options: DocumentOptio
     if not selected_pages:
         raise RuntimeError(f"no pages selected for {pdf_path}")
 
-    translations, translated_blocks = translate_pages(selected_pages, pdf_size_pt, job_paths, options)
+    with load_fitz().open(pdf_path) as source_doc:
+        page_sizes_by_page = {
+            page_num: (source_doc[page_num - 1].rect.width, source_doc[page_num - 1].rect.height)
+            for page_num, _ in selected_pages
+        }
+    source_analysis_by_page = analyze_selected_pages(
+        selected_pages, pdf_size_pt, job_paths, page_sizes_by_page=page_sizes_by_page,
+    )
+    translations, translated_blocks = translate_pages(
+        selected_pages, pdf_size_pt, job_paths, options, source_analysis_by_page,
+    )
 
     render_result = render_translated_pdf(
         pdf_path, output_path, selected_pages, translations, pdf_size_pt, options.dpi,
         job_paths, render_mode=options.render_mode,
+        source_analysis_by_page=source_analysis_by_page,
     )
     translations = render_result.translations
 

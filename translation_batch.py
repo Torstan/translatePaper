@@ -1,5 +1,6 @@
 """Execute fixed translation batches with retries, resume and incremental saves."""
 
+import hashlib
 import json
 import re
 import shutil
@@ -29,32 +30,59 @@ def backup_if_exists(path: Path, label: str):
 def run_batches(
     batches: list[TranslationBatch], job_paths, *, model: str,
     reasoning_effort: str = "low", retries: int = 3, workers: int = 1,
-    minimum_cache_overlap: float = 0.0, retranslate: bool = False,
+    retranslate: bool = False,
 ) -> dict[str, str]:
-    """Resume accepted IDs and save collected successes; workers never regroup items.
-
-    The overlap threshold preserves the two CLI cache policies. ID overlap alone
-    does not establish freshness when the source or prompt changes.
-    """
+    """Resume only batches whose validated response matches the actual request."""
     cache_path = job_paths["translations_path"]
-    valid_ids = {item["id"] for batch in batches for item in batch.items}
+    request_cache_path = cache_path.with_name(f"{cache_path.stem}.cache.json")
+    request_keys = {
+        batch.prefix: translation_request_key(batch, model, reasoning_effort)
+        for batch in batches
+    }
     translations = {}
+    cached_requests = {}
     if retranslate:
         backup_if_exists(cache_path, "backup")
-    elif cache_path.exists():
-        existing = json.loads(cache_path.read_text(encoding="utf-8"))
-        overlap = len(valid_ids & set(existing))
-        if valid_ids and overlap < max(1, int(len(valid_ids) * minimum_cache_overlap)):
-            backup_if_exists(cache_path, "stale")
-        else:
-            translations = {key: value for key, value in existing.items() if key in valid_ids}
+        backup_if_exists(request_cache_path, "backup")
+        request_cache_path.unlink(missing_ok=True)
+    elif request_cache_path.exists():
+        try:
+            loaded = json.loads(request_cache_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                cached_requests = loaded
+        except (OSError, ValueError):
+            pass
 
-    todo = [
-        TranslationBatch(batch.prefix, [item for item in batch.items if item["id"] not in translations])
-        for batch in batches
-    ]
-    todo = [batch for batch in todo if batch.items]
+    accepted_requests = {}
+    todo = []
+    for batch in batches:
+        key = request_keys[batch.prefix]
+        cached = cached_requests.get(key)
+        try:
+            result = validate_translation_payload(
+                {"items": [{"id": block_id, "translation": value}
+                           for block_id, value in cached.items()]},
+                {item["id"] for item in batch.items},
+            ) if isinstance(cached, dict) else None
+        except ValueError:
+            result = None
+        if result is None:
+            todo.append(batch)
+        else:
+            accepted_requests[key] = result
+            translations.update(result)
+
+    def save_cache() -> None:
+        temporary = cache_path.with_name(f"{cache_path.name}.tmp")
+        temporary.write_text(json.dumps(translations, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(cache_path)
+        request_temporary = request_cache_path.with_name(f"{request_cache_path.name}.tmp")
+        request_temporary.write_text(json.dumps(accepted_requests, ensure_ascii=False, indent=2), encoding="utf-8")
+        request_temporary.replace(request_cache_path)
+
     if not todo:
+        if batches:
+            save_cache()
         return translations
     write_schema(job_paths["schema_path"])
 
@@ -64,26 +92,25 @@ def run_batches(
             model=model, reasoning_effort=reasoning_effort, retries=retries,
         )
 
-    def save(result):
+    def save(batch, result):
         # Only this coordinator writes the cache; workers produce independent results.
+        accepted_requests[request_keys[batch.prefix]] = result
         translations.update(result)
-        temporary = cache_path.with_name(f"{cache_path.name}.tmp")
-        temporary.write_text(json.dumps(translations, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(cache_path)
+        save_cache()
 
     if workers == 1:
         for batch in todo:
-            save(execute(batch))
+            save(batch, execute(batch))
     else:
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(execute, batch) for batch in todo]
+            futures = {executor.submit(execute, batch): batch for batch in todo}
             for future in as_completed(futures):
-                save(future.result())
+                save(futures[future], future.result())
     return translations
 
 
-def write_schema(path: Path):
-    schema = {
+def translation_schema() -> dict:
+    return {
         "type": "object",
         "properties": {
             "items": {
@@ -102,7 +129,17 @@ def write_schema(path: Path):
         "required": ["items"],
         "additionalProperties": False,
     }
-    path.write_text(json.dumps(schema, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def translation_request_key(batch: TranslationBatch, model: str, reasoning_effort: str) -> str:
+    request = {"prompt": make_prompt(batch.items), "schema": translation_schema(),
+               "model": model, "reasoning_effort": reasoning_effort}
+    encoded = json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def write_schema(path: Path):
+    path.write_text(json.dumps(translation_schema(), ensure_ascii=False, indent=2), encoding="utf-8")
 
 def make_prompt(batch):
     glossary = textwrap.dedent(
