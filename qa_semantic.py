@@ -2,30 +2,10 @@ import difflib
 import json
 import math
 import re
-import subprocess
 import textwrap
 from pathlib import Path
-from typing import Callable
 
-
-TOOL_ROOT = Path(__file__).resolve().parent
-
-
-def run_command(cmd, *, input_text=None, cwd=TOOL_ROOT, check=True):
-    proc = subprocess.run(
-        cmd,
-        input=input_text,
-        text=True,
-        cwd=cwd,
-        capture_output=True,
-        check=False,
-    )
-    if check and proc.returncode != 0:
-        raise RuntimeError(
-            f"command failed ({proc.returncode}): {' '.join(cmd)}\n"
-            f"stdout:\n{proc.stdout}\n\nstderr:\n{proc.stderr}"
-        )
-    return proc
+from translation_batch import execute_json_task
 
 
 def normalize_english(text: str) -> str:
@@ -79,6 +59,28 @@ def make_prompt(batch):
     return intro + "\n" + json.dumps({"items": batch}, ensure_ascii=False, indent=2)
 
 
+def validate_backtranslation_payload(payload, expected_ids: set[str]) -> dict[str, str]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        raise ValueError("expected an items array")
+    result = {}
+    for item in payload["items"]:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            raise ValueError("expected a string item id")
+        block_id = item["id"]
+        if block_id in result:
+            raise ValueError(f"duplicate id: {block_id}")
+        text = item.get("back_translation")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"empty or invalid back translation: {block_id}")
+        result[block_id] = text.strip()
+    if set(result) != expected_ids:
+        raise ValueError(
+            f"mismatched ids, missing={sorted(expected_ids - result.keys())[:5]}, "
+            f"extra={sorted(result.keys() - expected_ids)[:5]}"
+        )
+    return result
+
+
 def run_backtranslation(
     items,
     batch_chars: int,
@@ -87,9 +89,7 @@ def run_backtranslation(
     model: str = "gpt-5.5",
     reasoning_effort: str = "low",
     retries: int = 3,
-    runner: Callable | None = None,
 ):
-    runner = runner or run_command
     schema_path = job_dir / "backtranslate_schema.json"
     make_schema(schema_path)
     results = {}
@@ -108,62 +108,12 @@ def run_backtranslation(
         batches.append(current)
 
     for idx, batch in enumerate(batches, start=1):
-        prompt = make_prompt(batch)
-        out_path = job_dir / f"backtranslate-{idx:02d}.json"
-        log_path = job_dir / f"backtranslate-{idx:02d}.log.txt"
-        success = False
-        for _attempt in range(1, retries + 1):
-            proc = runner(
-                [
-                    "codex",
-                    "exec",
-                    "--skip-git-repo-check",
-                    "-m",
-                    model,
-                    "-c",
-                    f"model_reasoning_effort='{reasoning_effort}'",
-                    "--disable",
-                    "plugins",
-                    "--disable",
-                    "shell_snapshot",
-                    "--sandbox",
-                    "workspace-write",
-                    "--ephemeral",
-                    "--output-schema",
-                    str(schema_path),
-                    "-o",
-                    str(out_path),
-                    "-",
-                ],
-                input_text=prompt,
-                check=False,
-            )
-            log_path.write_text(proc.stdout + "\n\nSTDERR\n" + proc.stderr, encoding="utf-8")
-            if proc.returncode != 0 or not out_path.exists():
-                continue
-
-            payload = json.loads(out_path.read_text(encoding="utf-8"))
-            expected = {item["id"] for item in batch}
-            seen = {item["id"] for item in payload["items"]}
-            if seen != expected:
-                continue
-
-            empty_items = [item["id"] for item in payload["items"] if not item["back_translation"].strip()]
-            if empty_items:
-                log_path.write_text(
-                    log_path.read_text(encoding="utf-8")
-                    + f"\n\nVALIDATION ERROR\nempty back translations: {empty_items[:10]}\n",
-                    encoding="utf-8",
-                )
-                continue
-
-            for item in payload["items"]:
-                results[item["id"]] = item["back_translation"].strip()
-            success = True
-            break
-
-        if not success:
-            raise RuntimeError(f"back-translation batch {idx} failed, see {log_path}")
+        expected_ids = {item["id"] for item in batch}
+        results.update(execute_json_task(
+            make_prompt(batch), job_dir, f"backtranslate-{idx:02d}", schema_path,
+            validate=lambda payload: validate_backtranslation_payload(payload, expected_ids),
+            model=model, reasoning_effort=reasoning_effort, retries=retries,
+        ))
     return results
 
 

@@ -12,7 +12,7 @@ import layout
 import regions as region_rules
 import render_pdf
 import render_plan
-import translate_pdf_via_codex as pdf
+import pipeline as pdf
 
 
 def block(block_id, page, text, x0=100, y0=100, x1=400, y1=120, preserve_image=False):
@@ -590,9 +590,9 @@ class RenderPlanClassificationTests(unittest.TestCase):
             patch.object(pdf, "build_visual_regions", return_value=[]),
             patch.object(pdf, "classify_blocks", return_value={"p001b0001": "subheading"}),
         ):
-            batches = pdf.build_batches([blocks], max_chars=7000)
+            batches = pdf.build_translation_batches(list(enumerate([blocks], 1)), max_chars=7000, batch_scope="document")
 
-        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0001"]])
+        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0001"]])
 
     def test_build_batches_excludes_text_covered_by_visual_region(self):
         blocks = [
@@ -615,9 +615,9 @@ class RenderPlanClassificationTests(unittest.TestCase):
             patch.object(pdf, "build_visual_regions", return_value=visual_regions),
             patch.object(pdf, "classify_blocks", return_value=classes),
         ):
-            batches = pdf.build_batches([blocks], max_chars=7000)
+            batches = pdf.build_translation_batches(list(enumerate([blocks], 1)), max_chars=7000, batch_scope="document")
 
-        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0003"]])
+        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0003"]])
 
     def test_build_batches_consumes_page_component_ownership(self):
         blocks = [
@@ -633,10 +633,10 @@ class RenderPlanClassificationTests(unittest.TestCase):
             patch.object(pdf, "classify_blocks", return_value=classes),
         ):
             result = pdf.build_translation_page_components(1, blocks)
-            batches = pdf.build_batches([blocks], max_chars=7000)
+            batches = pdf.build_translation_batches(list(enumerate([blocks], 1)), max_chars=7000, batch_scope="document")
 
         self.assertEqual(result.translatable_ids, ["p001b0003"])
-        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0003"]])
+        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0003"]])
 
     def test_batch_planning_and_render_plan_use_same_page_components(self):
         blocks = [
@@ -698,9 +698,9 @@ class RenderPlanClassificationTests(unittest.TestCase):
             patch.object(pdf, "build_visual_regions", return_value=visual_regions),
             patch.object(pdf, "classify_blocks", return_value=classes),
         ):
-            batches = pdf.build_batches([blocks], max_chars=7000, page_size=(400, 400))
+            batches = pdf.build_translation_batches(list(enumerate([blocks], 1)), max_chars=7000, page_size=(400, 400), batch_scope="document")
 
-        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0003"]])
+        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0003"]])
 
     def test_translation_ownership_uses_final_visual_clip_padding(self):
         blocks = [
@@ -1248,10 +1248,10 @@ class RenderPlanClassificationTests(unittest.TestCase):
             patch.object(pdf, "classify_blocks", return_value=classes),
         ):
             ownership_result = pdf.build_translation_page_components(3, blocks, page_size=(612.0, 792.0))
-            batches = pdf.build_batches([blocks], max_chars=7000, page_size=(612.0, 792.0), page_numbers=[3])
+            batches = pdf.build_translation_batches(list(zip([3], [blocks])), max_chars=7000, page_size=(612.0, 792.0), batch_scope="document")
 
         self.assertEqual(ownership_result.translatable_ids, ["p003b0005", "p003b0007"])
-        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p003b0005", "p003b0007"]])
+        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p003b0005", "p003b0007"]])
 
     def test_image_fallback_ledger_does_not_inherit_translated_component_kind(self):
         plan = render_plan.PageRenderPlan(page_num=6)
@@ -1272,7 +1272,6 @@ class RenderPlanClassificationTests(unittest.TestCase):
             None,
             pdf.ownership.CONFIDENCE_INFERRED,
             ["body"],
-            "translated_text",
         )
 
         pdf.annotate_plan_with_component_metadata(plan, {"p006b0012": [component]})
@@ -1379,6 +1378,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
             self.assertEqual(text_items[source_id].kind, "translated_text")
             self.assertEqual(text_items[source_id].style_name, "body")
             self.assertEqual(text_items[source_id].fallback_reason, "dense_visual_body_row")
+            self.assertEqual(text_items[source_id].font_policy, "dense_visual_row")
             self.assertGreaterEqual(text_items[source_id].font_size, layout.SHRINK_FIT_MIN_FONT_SIZE)
             self.assertLess(text_items[source_id].font_size, layout.BODY_FONT_SIZE)
             self.assertEqual(ledger_by_id[source_id].render_kind, "translated_text")
@@ -1399,6 +1399,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 font_size=layout.BODY_FONT_SIZE,
                 style_name="body",
                 fallback_reason="body_flow",
+                layout_role="body_flow",
             )
         )
         plan.items.append(render_plan.RenderItem("original_image_clip", ["formula-below"], (249.3, 600.3, 443.2, 652.4)))
@@ -1414,6 +1415,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
         text_item = next(item for item in plan.items if item.kind == "translated_text")
         self.assertLess(text_item.font_size, layout.BODY_FONT_SIZE)
         self.assertEqual(text_item.fallback_reason, "body_flow_compact")
+        self.assertEqual((text_item.layout_role, text_item.font_policy), ("body_flow", "compact_body_flow"))
 
     def test_toolformer_prompt_clip_image_preserves_untranslated_structural_body_rows(self):
         blocks = [
@@ -1728,7 +1730,6 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 (71.61, 355.755, 463.35, 371.91),
                 ownership.CONFIDENCE_CONSERVATIVE,
                 [ownership.REASON_MIXED_VISUAL_BODY_SPLIT, "visual_region"],
-                "original_image_clip",
             ),
             ownership.PageComponent(
                 "p136c0002",
@@ -1738,7 +1739,6 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 None,
                 ownership.CONFIDENCE_INFERRED,
                 ["body", ownership.REASON_MIXED_VISUAL_BODY_SPLIT],
-                "translated_text",
                 parent_component_id="p136c0001",
             ),
             ownership.PageComponent(
@@ -1749,7 +1749,6 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 (71.61, 411.45, 512.67, 465.15),
                 ownership.CONFIDENCE_CONSERVATIVE,
                 ["visual_region"],
-                "original_image_clip",
             ),
         ]
         ownership_result = pdf.TranslationPageOwnership(
@@ -1763,10 +1762,8 @@ class RenderPlanClassificationTests(unittest.TestCase):
             components=components,
             validation=ownership.OwnershipValidationResult(),
             visual_regions=visual_regions,
-            raw_visual_regions=visual_regions,
             translatable_ids=["p136b0004"],
             in_reference_section=False,
-            force_reference_page=False,
         )
 
         with patch.object(pdf, "build_translation_page_components", return_value=ownership_result):
@@ -1834,7 +1831,6 @@ class RenderPlanClassificationTests(unittest.TestCase):
             clip_bbox=(249.3, 585.2, 443.2, 652.4),
             confidence=pdf.ownership.CONFIDENCE_CONSERVATIVE,
             reason_codes=["visual_region"],
-            render_strategy="original_image_clip",
         )
         plan.components = [component]
 
@@ -1904,14 +1900,9 @@ class RenderPlanClassificationTests(unittest.TestCase):
                 patch.object(pdf, "build_visual_regions", return_value=visual_regions),
                 patch.object(pdf, "classify_blocks", return_value=classes),
             ):
-                batches = pdf.build_batches(
-                    [blocks],
-                    max_chars=7000,
-                    page_size=(400, 400),
-                    job_paths={"bbox_path": bbox_path},
-                )
+                batches = pdf.build_translation_batches(list(enumerate([blocks], 1)), max_chars=7000, page_size=(400, 400), job_paths={"bbox_path": bbox_path}, batch_scope="document")
 
-        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0003"]])
+        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0003"]])
 
     def assert_heading_pair_original_fallback(self, translations, reason):
         blocks = [
@@ -2074,9 +2065,9 @@ class RenderPlanClassificationTests(unittest.TestCase):
             patch.object(pdf, "build_visual_regions", return_value=[]),
             patch.object(pdf, "classify_blocks", return_value=class_by_id),
         ):
-            batches = pdf.build_batches([blocks], max_chars=7000)
+            batches = pdf.build_translation_batches(list(enumerate([blocks], 1)), max_chars=7000, batch_scope="document")
 
-        sent_ids = [item["id"] for batch in batches for item in batch]
+        sent_ids = [item["id"] for batch in batches for item in batch.items]
         self.assertEqual(sent_ids, ["p001b0001", "p001b0002", "p001b0003", "p001b0004"])
 
     def test_build_batches_excludes_duplicate_components(self):
@@ -2098,13 +2089,13 @@ class RenderPlanClassificationTests(unittest.TestCase):
             patch.object(pdf, "classify_blocks", return_value=classes),
         ):
             result = pdf.build_translation_page_components(1, blocks)
-            batches = pdf.build_batches([blocks], max_chars=7000)
+            batches = pdf.build_translation_batches(list(enumerate([blocks], 1)), max_chars=7000, batch_scope="document")
 
         duplicate_component = next(
             component for component in result.components if component.source_ids == ["p001b0001"]
         )
         self.assertEqual(duplicate_component.component_kind, "duplicate")
-        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0002"]])
+        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0002"]])
 
     def test_build_batches_excludes_preserve_image_skip_components(self):
         blocks = [
@@ -2134,14 +2125,14 @@ class RenderPlanClassificationTests(unittest.TestCase):
             patch.object(pdf, "classify_blocks", return_value=classes),
         ):
             result = pdf.build_translation_page_components(1, blocks)
-            batches = pdf.build_batches([blocks], max_chars=7000)
+            batches = pdf.build_translation_batches(list(enumerate([blocks], 1)), max_chars=7000, batch_scope="document")
 
         skip_component = next(
             component for component in result.components if component.source_ids == ["p001b0001"]
         )
         self.assertEqual(skip_component.component_kind, pdf.ownership.COMPONENT_KIND_SKIP)
         self.assertEqual(result.translatable_ids, ["p001b0002"])
-        self.assertEqual([[item["id"] for item in batch] for batch in batches], [["p001b0002"]])
+        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0002"]])
 
     def test_build_batches_keeps_reference_continuation_pages_untranslated(self):
         page_10 = [
@@ -2178,9 +2169,9 @@ class RenderPlanClassificationTests(unittest.TestCase):
             block("p011b0003", 11, "11", x0=301, y0=743, x1=311, y1=752),
         ]
 
-        batches = pdf.build_batches([page_10, page_11], max_chars=7000, page_numbers=[10, 11])
+        batches = pdf.build_translation_batches(list(zip([10, 11], [page_10, page_11])), max_chars=7000, batch_scope="document")
 
-        sent_ids = [item["id"] for batch in batches for item in batch]
+        sent_ids = [item["id"] for batch in batches for item in batch.items]
         self.assertEqual(sent_ids, [])
 
     def test_unknown_nontrivial_block_is_preserved_and_reported_as_image_clip(self):
@@ -3416,6 +3407,7 @@ class GlobalStyleTests(unittest.TestCase):
                 font_size=layout.DOCUMENT_STYLES["subheading"].font_size,
                 style_name="subheading",
                 fallback_reason="embedded_heading",
+                layout_role="embedded_heading",
             )
         )
         plan.ledger.append(render_plan.CoverageEntry("p001b0001", "body", "translated_text", True, "embedded_heading_split"))
@@ -3775,6 +3767,9 @@ class BodyFlowLayoutTests(unittest.TestCase):
         self.assertEqual(items["p134b0002"].fallback_reason, "callout_heading")
         self.assertEqual(items["p134b0003"].fallback_reason, "callout_heading")
         self.assertEqual(items["p134b0004"].fallback_reason, "callout_body")
+        self.assertTrue(all(items[source_id].layout_role == "callout"
+                            for source_id in ("p134b0002", "p134b0003", "p134b0004")))
+        self.assertEqual(items["p134b0002"].font_policy, "source_adapted")
         self.assertGreaterEqual(items["p134b0002"].bbox[1], 300.0)
         self.assertGreaterEqual(items["p134b0003"].bbox[1], 350.0)
         self.assertGreaterEqual(items["p134b0004"].bbox[1], 390.0)
@@ -4056,6 +4051,7 @@ class BodyFlowLayoutTests(unittest.TestCase):
         self.assertEqual(len(body_items), 1)
         self.assertEqual(body_items[0].source_ids, ["p043b0005", "p043b0006"])
         self.assertEqual(body_items[0].fallback_reason, "body_flow_source_adapted_font")
+        self.assertEqual((body_items[0].layout_role, body_items[0].font_policy), ("body_flow", "source_adapted"))
         self.assertGreater(body_items[0].font_size, layout.DOCUMENT_STYLES["body"].font_size)
         self.assertEqual(layout.validate_plan_text_fit(plan), [])
         self.assertEqual(layout.validate_plan_style_policy(plan), [])
@@ -4765,6 +4761,8 @@ class RenderPlanSerializationTests(unittest.TestCase):
                 "fallback_reason": "",
                 "component_id": "",
                 "component_kind": "",
+                "layout_role": "normal",
+                "font_policy": "document",
             },
         )
         self.assertEqual(
@@ -4819,7 +4817,6 @@ class RenderPlanSerializationTests(unittest.TestCase):
                 output_pdf,
                 [(1, blocks)],
                 translations,
-                (200, 200),
                 72,
                 job_paths={"plans_dir": plans_dir},
             )
@@ -4839,6 +4836,7 @@ class RenderPlanSerializationTests(unittest.TestCase):
                     "ownership": pdf.ownership.ownership_validation_to_json(expected_plan.ownership_validation),
                     "coverage_errors": [],
                     "layout_errors": [],
+                    "text_overlap_errors": [],
                     "style_policy_errors": [],
                     "text_fit_errors": [],
                 },
@@ -4881,7 +4879,6 @@ class RenderPlanSerializationTests(unittest.TestCase):
                     output_pdf,
                     [(1, blocks)],
                     translations,
-                    (200, 200),
                     72,
                     job_paths={"plans_dir": plans_dir},
                 )
@@ -4889,44 +4886,35 @@ class RenderPlanSerializationTests(unittest.TestCase):
 
             self.assertEqual(artifacts[0], artifacts[1])
 
-    def test_failed_vector_pdf_plan_artifact_records_only_executed_validation(self):
+    def test_failed_vector_pdf_plan_artifact_records_all_validation_categories(self):
         fitz = render_pdf.load_fitz()
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            source_pdf = tmp_path / "source.pdf"
-            output_pdf = tmp_path / "out.pdf"
-            plans_dir = tmp_path / "plans"
-
-            src_doc = fitz.open()
-            src_doc.new_page(width=100, height=100)
-            src_doc.save(source_pdf)
-            src_doc.close()
-
-            blocks = [block("p001b0001", 1, "A short source line.", x0=10, y0=10, x1=40, y1=20)]
-            original_validate = pdf.validate_plan_coverage
-            pdf.validate_plan_coverage = lambda page_num, blocks_arg, plan: ["coverage failed before later checks"]
-            try:
-                with self.assertRaisesRegex(RuntimeError, "coverage failed before later checks"):
-                    pdf.write_vector_pdf(
-                        source_pdf,
-                        output_pdf,
-                        [(1, blocks)],
-                        {"p001b0001": "稳定的中文正文。"},
-                        (100, 100),
-                        72,
-                        job_paths={"plans_dir": plans_dir},
-                    )
-            finally:
-                pdf.validate_plan_coverage = original_validate
-
-            artifact = json.loads((plans_dir / "page-001.render-plan.json").read_text(encoding="utf-8"))
-            self.assertEqual(
-                artifact["validation_results"],
-                {
-                    "ownership": {"ok": True, "issues": []},
-                    "coverage_errors": ["coverage failed before later checks"],
-                },
-            )
+            root = Path(tmp)
+            source_pdf = root / "source.pdf"
+            with fitz.open() as doc:
+                doc.new_page(width=100, height=100)
+                doc.save(source_pdf)
+            blocks = [block("p001b0001", 1, "A complete source paragraph.", x0=10, y0=10, x1=90, y1=80)]
+            translations = {"p001b0001": "完整的中文正文。"}
+            plan = pdf.build_page_render_plan(1, blocks, translations, (100, 100))
+            plan.ledger[0].rendered = False
+            plan.ledger[0].classification = "heading"
+            plan.items[0].bbox = (110, 10, 130, 12)
+            plan.items[0].style_name = "body"
+            with (
+                patch.object(pdf, "build_page_render_plan", return_value=plan),
+                patch.object(pdf, "normalize_vector_text_layout"),
+            ):
+                with self.assertRaises(RuntimeError):
+                    pdf.write_vector_pdf(source_pdf, root / "out.pdf", [(1, blocks)], translations, 72,
+                                         job_paths={"plans_dir": root / "plans"})
+            artifact = json.loads((root / "plans/page-001.render-plan.json").read_text())
+            checks = artifact["validation_results"]
+            self.assertEqual(set(checks), {"ownership", "coverage_errors", "layout_errors", "text_overlap_errors",
+                                          "style_policy_errors", "text_fit_errors"})
+            for category in ("coverage_errors", "layout_errors", "style_policy_errors", "text_fit_errors"):
+                self.assertTrue(checks[category], category)
+            self.assertFalse((root / "out.pdf").exists())
 
     def test_vector_pdf_rejects_and_records_style_policy_errors(self):
         fitz = render_pdf.load_fitz()
@@ -4963,7 +4951,6 @@ class RenderPlanSerializationTests(unittest.TestCase):
                         output_pdf,
                         [(1, blocks)],
                         {"p001b0001": "1. 引言"},
-                        (200, 200),
                         72,
                         job_paths={"plans_dir": plans_dir},
                     )
@@ -4995,7 +4982,6 @@ class RenderPlanSerializationTests(unittest.TestCase):
                     output_pdf,
                     [(1, blocks)],
                     {"p001b0001": "这是一个很长很长的译文，应该无法放入这个非常矮的文本框中。" * 8},
-                    (100, 100),
                     72,
                     job_paths={"plans_dir": plans_dir},
                 )
@@ -5039,7 +5025,6 @@ class SourceClipRenderingTests(unittest.TestCase):
                 output_pdf,
                 [(1, blocks)],
                 {},
-                (100, 100),
                 72,
                 job_paths={"pages_dir": pages_dir},
             )
@@ -5078,7 +5063,6 @@ class SourceClipRenderingTests(unittest.TestCase):
                     output_pdf,
                     [(1, blocks)],
                     {"p001b0001": "这是一个很长很长的译文，应该无法放入这个非常矮的文本框中。" * 8},
-                    (100, 100),
                     72,
                     job_paths={"pages_dir": pages_dir},
                 )

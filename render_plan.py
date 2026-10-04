@@ -3,6 +3,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 import ownership
 from classify import is_trivial_keep, normalize_text
@@ -24,6 +25,10 @@ class RenderItem:
     fallback_reason: str = ""
     component_id: str = ""
     component_kind: str = ""
+    # Layout relationships and font permissions are independent of diagnostics.
+    layout_role: Literal["normal", "body_flow", "source_paragraph", "callout", "mixed_visual_body",
+                         "embedded_heading", "title_metadata", "journal_footer"] = "normal"
+    font_policy: Literal["document", "source_adapted", "compact_body_flow", "dense_visual_row"] = "document"
 
 
 @dataclass
@@ -45,7 +50,6 @@ class PageRenderPlan:
     ledger: list[CoverageEntry] = field(default_factory=list)
     protected_boxes: list[tuple[float, float, float, float]] = field(default_factory=list)
     components: list[ownership.PageComponent] = field(default_factory=list)
-    ownership_ledger: list[ownership.OwnershipLedgerEntry] = field(default_factory=list)
     ownership_validation: ownership.OwnershipValidationResult = field(default_factory=ownership.OwnershipValidationResult)
     page_size: tuple[float, float] | None = None
     output_page_num: int | None = None
@@ -73,6 +77,8 @@ def render_item_to_json(item: RenderItem) -> dict:
         "fallback_reason": item.fallback_reason,
         "component_id": item.component_id,
         "component_kind": item.component_kind,
+        "layout_role": item.layout_role,
+        "font_policy": item.font_policy,
     }
 
 
@@ -109,10 +115,7 @@ def render_plan_to_json(plan: PageRenderPlan, validation_results: dict | list | 
         "render_items": [render_item_to_json(item) for item in plan.items],
         "coverage_ledger": [coverage_entry_to_json(entry) for entry in plan.ledger],
         "components": ownership.components_to_json(plan.components),
-        "ownership_ledger": [
-            ownership.ownership_ledger_entry_to_json(entry)
-            for entry in sorted(plan.ownership_ledger, key=lambda item: (item.source_id, item.component_id))
-        ],
+        "ownership_ledger": ownership.ownership_ledger_to_json(plan.page_num, plan.components),
         "ownership_validation": ownership.ownership_validation_to_json(plan.ownership_validation),
         "protected_regions": [{"bbox": bbox_to_json(box)} for box in plan.protected_boxes],
         "validation_results": _stable_json_value(validation_results) if validation_results is not None else [],
@@ -211,7 +214,15 @@ def bbox_significantly_overlaps_protected(box, protected_box) -> bool:
     return overlap > min(bbox_area(box), bbox_area(protected_box)) * 0.05
 
 
+def validate_plan_ownership(plan: PageRenderPlan, blocks) -> ownership.OwnershipValidationResult:
+    """Check source ownership and render layers against the current plan."""
+    source_result = ownership.validate_ownership(plan.page_num, blocks, plan.components)
+    layer_result = ownership.validate_render_layer_exclusivity(plan, plan.components)
+    return ownership.OwnershipValidationResult(source_result.issues + layer_result.issues)
+
+
 def validate_plan_layout(plan: PageRenderPlan, page_size) -> list[str]:
+    """Check page bounds and protected geometry; ownership is checked separately."""
     errors = []
     width, height = page_size
     protected = [item for item in plan.items if item.kind == "original_image_clip"]
@@ -224,8 +235,6 @@ def validate_plan_layout(plan: PageRenderPlan, page_size) -> list[str]:
         for protected_item in protected:
             if bbox_significantly_overlaps_protected(item.bbox, protected_item.bbox):
                 errors.append(f"page {plan.page_num} text {item.source_ids} overlaps protected {protected_item.source_ids}")
-    ownership_result = ownership.validate_render_layer_exclusivity(plan, plan.components)
-    errors.extend(issue.message for issue in ownership_result.issues)
     return errors
 
 

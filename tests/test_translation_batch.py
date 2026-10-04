@@ -4,11 +4,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
-import translate_pdf_parallel as parallel
-import translate_pdf_via_codex as pipeline
+import translate_pdf_via_codex as serial_cli
+import pipeline
+import translation_batch
 
 
 class TranslationBatchTests(unittest.TestCase):
@@ -74,11 +74,6 @@ class TranslationBatchTests(unittest.TestCase):
                            "boundary_repairs_path": root / "repairs.json", "job_slug": "test",
                            "translations_path": root / "translations.json", "pages_dir": root,
                            "translated_pages_dir": root}
-                    args = SimpleNamespace(suffix="-Chinese", force=True, refresh_source=False, dpi=72,
-                                           page_start=1, page_end=0, force_ocr=False, batch_chars=7000,
-                                           retranslate=False, render_mode=mode, qa=True, model="test",
-                                           reasoning_effort="low", retries=3, strict_qa=False,
-                                           qa_mode="sample", qa_sample_size=0, qa_batch_chars=7000)
                     drawn = []
                     checked = []
                     def validate(selected, translations, plans, **kwargs):
@@ -98,14 +93,13 @@ class TranslationBatchTests(unittest.TestCase):
                         patch.object(pipeline, "build_job_paths", return_value=job),
                         patch.object(pipeline, "get_pdf_page_size", return_value=(623, 801)),
                         patch.object(pipeline, "load_or_build_source_pages", return_value=pages),
-                        patch.object(pipeline, "translate_batches", return_value=raw),
-                        patch.object(parallel, "run_parallel_translation", return_value=raw),
+                        patch.object(translation_batch, "run_batches", return_value=raw),
                         patch.object(pipeline, "write_vector_pdf", side_effect=vector),
                         patch.object(pipeline, "render_pages", side_effect=raster),
                         patch.object(pipeline.render_pdf, "write_raster_pdf"),
                         patch.object(pipeline, "validate_document_quality", side_effect=validate),
-                        patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
-                        patch.object(parallel, "run_visual_qa_for_job", return_value={"visual_error_count": 0}),
+                        patch.object(pipeline.qa, "choose_items_for_qa", return_value=[]),
+                        patch.object(pipeline, "run_visual_qa_for_job", return_value={"visual_error_count": 0}),
                         patch.object(pipeline, "set_work_dir"),
                         patch("subprocess.run", side_effect=run) as command,
                         patch.object(sys, "argv", ["translate", "--pdf", str(root / "input.pdf"),
@@ -113,9 +107,12 @@ class TranslationBatchTests(unittest.TestCase):
                                                   "--render-mode", mode]),
                     ):
                         if entry == "serial":
-                            pipeline.main()
+                            serial_cli.main()
                         else:
-                            parallel.translate_one_pdf(root / "input.pdf", root, args)
+                            pipeline.translate_document(
+                                root / "input.pdf", root / "out.pdf",
+                                pipeline.DocumentOptions(model="test", render_mode=mode, qa=True, qa_sample_size=0),
+                            )
                     self.assertEqual(drawn, [expected])
                     self.assertEqual(checked, [expected] if entry == "parallel" else [])
                     self.assertEqual(command.call_count, 1)
@@ -126,13 +123,12 @@ class TranslationBatchTests(unittest.TestCase):
                    "text": "This complete body paragraph explains the experimental results in detail.",
                    "xMin": 20, "yMin": 70, "xMax": 280, "yMax": 130}]
                  for page in (1, 2)]
-        serial = pipeline.build_batches(pages, 7000, page_size=(300, 400))
-        concurrent = parallel.build_page_batches(list(enumerate(pages, 1)), 7000,
-                                                  page_size=(300, 400))
-        self.assertEqual([[item["id"] for item in batch] for batch in serial],
+        serial = pipeline.build_translation_batches(list(enumerate(pages, 1)), 7000, page_size=(300, 400), batch_scope="document")
+        concurrent = pipeline.build_translation_batches(list(enumerate(pages, 1)), 7000, page_size=(300, 400), batch_scope="page")
+        self.assertEqual([[item["id"] for item in batch.items] for batch in serial],
                          [["p001b0001", "p002b0001"]])
-        self.assertEqual([(batch.page_num, [item["id"] for item in batch.items]) for batch in concurrent],
-                         [(1, ["p001b0001"]), (2, ["p002b0001"])])
+        self.assertEqual([(batch.prefix, [item["id"] for item in batch.items]) for batch in concurrent],
+                         [("page-001-chunk-01", ["p001b0001"]), ("page-002-chunk-01", ["p002b0001"])])
 
     def test_low_overlap_cache_is_rejected_by_serial_and_retained_by_parallel(self):
         items = [{"id": f"p001b{index:04d}", "text": "Body paragraph."} for index in range(1, 6)]
@@ -153,13 +149,10 @@ class TranslationBatchTests(unittest.TestCase):
                     return subprocess.CompletedProcess(cmd, 0, "", "")
 
                 with patch("subprocess.run", side_effect=run):
-                    if entry == "serial":
-                        result = pipeline.translate_batches([items], job, model="test")
-                    else:
-                        cached = parallel.load_cached_translations(job["translations_path"],
-                                                                   {item["id"] for item in items}, retranslate=False)
-                        args = SimpleNamespace(model="test", reasoning_effort="low", retries=1, page_workers=1)
-                        result = parallel.run_parallel_translation([parallel.PageBatch(1, 1, items)], cached, job, args)
+                    result = translation_batch.run_batches(
+                        [translation_batch.TranslationBatch("batch-01", items)], job, model="test",
+                        minimum_cache_overlap=0.6 if entry == "serial" else 0.0,
+                    )
                 expected_requests = items if entry == "serial" else items[1:]
                 self.assertEqual(requested, [item["id"] for item in expected_requests])
                 self.assertEqual(result["p001b0001"], "新译文" if entry == "serial" else "缓存译文")
@@ -188,15 +181,15 @@ class TranslationBatchTests(unittest.TestCase):
                     output.write_text(response, encoding="utf-8")
                 return subprocess.CompletedProcess(cmd, returncode, "stdout", "stderr")
 
+            prefix = "batch-01" if entry == "serial" else "page-001-chunk-01"
             if stale_output is not None:
-                prefix = "batch-01" if entry == "serial" else "page-001-chunk-01"
                 (root / f"{prefix}.out.json").write_text(stale_output)
             with patch("subprocess.run", side_effect=run), patch("time.sleep"):
-                if entry == "serial":
-                    result = pipeline.translate_batches([items], job, model="test-model")
-                else:
-                    args = SimpleNamespace(model="test-model", reasoning_effort="low", retries=3, page_workers=2)
-                    result = parallel.run_parallel_translation([parallel.PageBatch(1, 1, items)], {}, job, args)
+                result = translation_batch.run_batches(
+                    [translation_batch.TranslationBatch(prefix, items)], job, model="test-model",
+                    workers=1 if entry == "serial" else 2,
+                    minimum_cache_overlap=0.6 if entry == "serial" else 0.0,
+                )
             self.assertEqual(json.loads(job["translations_path"].read_text()), result)
             return result, len(requests)
 
@@ -246,7 +239,7 @@ class TranslationBatchTests(unittest.TestCase):
                 root = Path(tmp)
                 job = {"job_dir": root, "schema_path": root / "schema.json",
                        "translations_path": root / "translations.json"}
-                batches = [parallel.PageBatch(page, 1, [{"id": f"p{page:03d}b0001", "text": "Body."}])
+                batches = [translation_batch.TranslationBatch(f"page-{page:03d}-chunk-01", [{"id": f"p{page:03d}b0001", "text": "Body."}])
                            for page in (1, 2)]
                 def run(cmd, **kwargs):
                     payload = json.loads(kwargs["input"].split("待翻译条目如下：", 1)[1])
@@ -254,9 +247,8 @@ class TranslationBatchTests(unittest.TestCase):
                                         for item in payload["items"]]}
                     Path(cmd[cmd.index("-o") + 1]).write_text(json.dumps(result))
                     return subprocess.CompletedProcess(cmd, 0, "", "")
-                args = SimpleNamespace(model="test", reasoning_effort="low", retries=1, page_workers=workers)
                 with patch("subprocess.run", side_effect=run):
-                    result = parallel.run_parallel_translation(batches, {}, job, args)
+                    result = translation_batch.run_batches(batches, job, model="test", workers=workers, retries=1)
                 expected = {"p001b0001": "正文。", "p002b0001": "正文。"}
                 self.assertEqual(result, expected)
                 self.assertEqual(json.loads(job["translations_path"].read_text()), expected)

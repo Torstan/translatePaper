@@ -1,6 +1,6 @@
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -75,7 +75,6 @@ SOURCE_ADAPTED_FONT_MAX_BY_STYLE = {
     "heading": 13.2,
     "title": 15.4,
 }
-TEXT_FLOW_EXCLUDED_FALLBACK_REASONS = {"callout_heading", "callout_body"}
 
 
 @dataclass(frozen=True)
@@ -110,6 +109,7 @@ DOCUMENT_STYLES = {
 }
 
 BODY_FONT_SIZE = DOCUMENT_STYLES["body"].font_size
+DENSE_VISUAL_BODY_ROW_MAX_HEIGHT_PT = BODY_FONT_SIZE * 0.95
 HEADING_FONT_SIZE = DOCUMENT_STYLES["heading"].font_size
 TITLE_FONT_SIZE = DOCUMENT_STYLES["title"].font_size
 JOURNAL_FOOTER_FONT_SIZE = DOCUMENT_STYLES["footer"].font_size
@@ -125,19 +125,23 @@ STYLE_POLICY_CLASSIFICATION_STYLES = {
     "journal_footer": {"footer"},
     "page_number": {"footer"},
 }
-STYLE_POLICY_ROLE_SPLIT_EXCEPTIONS = {
-    "embedded_heading",
-    "embedded_heading_body",
-    "first_page_abstract",
-    "first_page_metadata",
-    "first_page_title",
-    "body_flow_compact",
-    "dense_visual_body_row",
-    "mixed_visual_body",
-    "source_adapted_font",
-    "body_flow_source_adapted_font",
-    "callout_heading",
-    "callout_body",
+STYLE_POLICY_LAYOUT_ROLES = {
+    "normal": set(DOCUMENT_STYLES),
+    "body_flow": {"body"},
+    "source_paragraph": {"body"},
+    "callout": {"heading", "body"},
+    "mixed_visual_body": {"body"},
+    "embedded_heading": {"heading", "subheading", "body"},
+    "title_metadata": {"title", "metadata", "body"},
+    "journal_footer": {"footer"},
+}
+STYLE_POLICY_SPLIT_SOURCE_CLASSES = {
+    "body_flow": {"body", "figure_region", "table_region", "formula_region", "code_region", "unknown"},
+    "source_paragraph": {"body"},
+    "callout": {"body", "title", "heading", "subheading"},
+    "embedded_heading": {"body", "heading", "subheading"},
+    "title_metadata": {"title", "body", "heading", "subheading", "metadata"},
+    "mixed_visual_body": {"body", "figure_region", "table_region", "formula_region", "code_region", "unknown"},
 }
 
 
@@ -397,13 +401,7 @@ def drawable_pdf_line_tokens(line: list[str]) -> list[str]:
 
 
 def render_text_style_name(item: RenderItem) -> str:
-    if item.style_name:
-        return item.style_name
-    if item.fallback_reason == "journal_footer":
-        return "footer"
-    if item.fallback_reason == "reference_original":
-        return "reference"
-    return "body"
+    return item.style_name or "body"
 
 
 def text_item_fit_metrics(item: RenderItem, fitz) -> tuple[tuple[float, float] | None, float, float]:
@@ -578,7 +576,7 @@ def item_is_body_layout_text(item: RenderItem) -> bool:
         item.kind in {"translated_text", "original_selectable_text"}
         and item.text.strip()
         and render_text_style_name(item) in TEXT_FLOW_STYLE_NAMES
-        and item.fallback_reason not in TEXT_FLOW_EXCLUDED_FALLBACK_REASONS
+        and item.layout_role != "callout"
         and not item_is_formula_intro_text(item)
     )
 
@@ -684,7 +682,7 @@ def body_group_limits(plan: PageRenderPlan, group: list[int], page_size) -> tupl
 
 
 def body_group_max_gap(items: list[RenderItem]) -> float:
-    if items and all(item.fallback_reason == "source_paragraph_split" for item in items):
+    if items and all(item.layout_role == "source_paragraph" for item in items):
         return SOURCE_PARAGRAPH_FLOW_MAX_GAP_PT
     return BODY_FLOW_MAX_GAP_PT
 
@@ -1217,14 +1215,11 @@ def split_translated_text_around_protected(plan: PageRenderPlan, page_size=None,
             if not text.strip():
                 continue
             replacement_items.append(
-                RenderItem(
-                    item.kind,
-                    list(item.source_ids),
-                    segment,
+                replace(
+                    item,
+                    source_ids=list(item.source_ids),
+                    bbox=segment,
                     text=text,
-                    font_size=item.font_size,
-                    style_name=item.style_name,
-                    color=item.color,
                     fallback_reason=item.fallback_reason or "split_around_visual",
                 )
             )
@@ -1252,13 +1247,35 @@ def document_style_hierarchy_errors() -> list[str]:
     return errors
 
 
+def text_item_font_size_bounds(item: RenderItem, style_name: str, classifications: set[str]) -> tuple[float, float] | None:
+    """Bound each font permission to the layout that can produce it."""
+    default = text_style(style_name).font_size
+    if item.font_policy == "document":
+        return default, default
+    if item.kind != "translated_text":
+        return None
+    if item.font_policy == "source_adapted" and style_name in SOURCE_ADAPTED_FONT_MAX_BY_STYLE:
+        return round(default + SOURCE_ADAPTED_FONT_MIN_DELTA_PT, 1), SOURCE_ADAPTED_FONT_MAX_BY_STYLE[style_name]
+    if style_name != "body":
+        return None
+    if item.font_policy == "compact_body_flow" and item.layout_role == "body_flow":
+        return SHRINK_FIT_MIN_FONT_SIZE, BODY_FONT_SIZE
+    if (
+        item.font_policy == "dense_visual_row"
+        and item.layout_role == "normal"
+        and len(item.source_ids) == 1
+        and classifications == {"body"}
+        and 0 < item.bbox[3] - item.bbox[1] <= DENSE_VISUAL_BODY_ROW_MAX_HEIGHT_PT
+    ):
+        return SHRINK_FIT_MIN_FONT_SIZE, BODY_FONT_SIZE
+    return None
+
+
 def text_item_style_issues(
     item: RenderItem, classifications: set[str], *, font_tolerance: float = 0.01,
 ) -> list[tuple[str, str]]:
-    """Drawing and offline QA enforce the same roles, sizes and explicit exceptions."""
+    """Check source roles and bounded font permissions, independent of reasons."""
     if item.kind not in {"translated_text", "original_selectable_text"}:
-        return []
-    if item.fallback_reason in STYLE_POLICY_ROLE_SPLIT_EXCEPTIONS:
         return []
     allowed_styles = set().union(*(
         STYLE_POLICY_CLASSIFICATION_STYLES[classification]
@@ -1266,13 +1283,27 @@ def text_item_style_issues(
     ))
     actual_name = render_text_style_name(item)
     issues = []
+    role_styles = STYLE_POLICY_LAYOUT_ROLES.get(item.layout_role)
+    if role_styles is None:
+        issues.append(("style_hierarchy", f"has invalid layout role {item.layout_role}"))
+    elif actual_name not in role_styles:
+        issues.append(("style_hierarchy", f"has style {actual_name} outside layout role {item.layout_role}"))
+    split_source_classes = STYLE_POLICY_SPLIT_SOURCE_CLASSES.get(item.layout_role)
+    if split_source_classes is not None:
+        if classifications and classifications <= split_source_classes:
+            allowed_styles = role_styles
+        else:
+            issues.append(("style_hierarchy", f"has layout role {item.layout_role} incompatible with source roles {sorted(classifications)}"))
     if allowed_styles and actual_name not in allowed_styles:
         expected = "/".join(sorted(allowed_styles))
         issues.append(("style_hierarchy", f"has style {actual_name}, expected {expected}"))
-    expected_size = text_style(actual_name).font_size
-    if item.font_size is None or abs(item.font_size - expected_size) > font_tolerance:
-        category = "body_font_consistency" if actual_name == "body" else "style_hierarchy"
-        issues.append((category, f"has font size {item.font_size}, expected {expected_size}"))
+    category = "body_font_consistency" if actual_name == "body" else "style_hierarchy"
+    bounds = text_item_font_size_bounds(item, actual_name, classifications)
+    if bounds is None:
+        issues.append((category, f"has invalid font policy {item.font_policy} for {item.layout_role}/{actual_name}"))
+    elif item.font_size is None or not bounds[0] - font_tolerance <= item.font_size <= bounds[1] + font_tolerance:
+        expected = str(bounds[0]) if bounds[0] == bounds[1] else f"{bounds[0]}..{bounds[1]} for {item.font_policy}"
+        issues.append((category, f"has font size {item.font_size}, expected {expected}"))
     return issues
 
 

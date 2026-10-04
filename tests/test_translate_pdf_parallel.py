@@ -9,6 +9,7 @@ from unittest.mock import patch
 from PIL import Image
 
 import translate_pdf_parallel as parallel
+import pipeline
 
 
 class ParallelBatchPlanningTests(unittest.TestCase):
@@ -24,10 +25,10 @@ class ParallelBatchPlanningTests(unittest.TestCase):
             }
         ]
         with (
-            patch.object(parallel.pipeline, "build_visual_regions", return_value=[]),
-            patch.object(parallel.pipeline, "classify_blocks", return_value={"p001b0001": "subheading"}),
+            patch.object(pipeline, "build_visual_regions", return_value=[]),
+            patch.object(pipeline, "classify_blocks", return_value={"p001b0001": "subheading"}),
         ):
-            batches = parallel.build_page_batches([(1, blocks)], max_chars=7000)
+            batches = pipeline.build_translation_batches([(1, blocks)], max_chars=7000, batch_scope="page")
 
         self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0001"]])
 
@@ -70,10 +71,10 @@ class ParallelBatchPlanningTests(unittest.TestCase):
             "p001b0003": "body",
         }
         with (
-            patch.object(parallel.pipeline, "build_visual_regions", return_value=visual_regions),
-            patch.object(parallel.pipeline, "classify_blocks", return_value=classes),
+            patch.object(pipeline, "build_visual_regions", return_value=visual_regions),
+            patch.object(pipeline, "classify_blocks", return_value=classes),
         ):
-            batches = parallel.build_page_batches([(1, blocks)], max_chars=7000)
+            batches = pipeline.build_translation_batches([(1, blocks)], max_chars=7000, batch_scope="page")
 
         self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0003"]])
 
@@ -155,11 +156,11 @@ class ParallelBatchPlanningTests(unittest.TestCase):
         }
 
         with (
-            patch.object(parallel.pipeline, "build_visual_regions", return_value=visual_regions),
-            patch.object(parallel.pipeline, "classify_blocks", return_value=classes),
+            patch.object(pipeline, "build_visual_regions", return_value=visual_regions),
+            patch.object(pipeline, "classify_blocks", return_value=classes),
         ):
-            ownership_result = parallel.pipeline.build_translation_page_components(3, blocks, page_size=(612.0, 792.0))
-            batches = parallel.build_page_batches([(3, blocks)], max_chars=7000, page_size=(612.0, 792.0))
+            ownership_result = pipeline.build_translation_page_components(3, blocks, page_size=(612.0, 792.0))
+            batches = pipeline.build_translation_batches([(3, blocks)], max_chars=7000, page_size=(612.0, 792.0), batch_scope="page")
 
         batch_ids = {item["id"] for batch in batches for item in batch.items}
         self.assertTrue({"p003b0005", "p003b0007", "p003b0013"} <= batch_ids)
@@ -216,11 +217,11 @@ class ParallelBatchPlanningTests(unittest.TestCase):
         }
 
         with (
-            patch.object(parallel.pipeline, "build_visual_regions", return_value=visual_regions),
-            patch.object(parallel.pipeline, "classify_blocks", return_value=classes),
+            patch.object(pipeline, "build_visual_regions", return_value=visual_regions),
+            patch.object(pipeline, "classify_blocks", return_value=classes),
         ):
-            ownership_result = parallel.pipeline.build_translation_page_components(4, blocks, page_size=(612.0, 792.0))
-            batches = parallel.build_page_batches([(4, blocks)], max_chars=7000, page_size=(612.0, 792.0))
+            ownership_result = pipeline.build_translation_page_components(4, blocks, page_size=(612.0, 792.0))
+            batches = pipeline.build_translation_batches([(4, blocks)], max_chars=7000, page_size=(612.0, 792.0), batch_scope="page")
 
         batch_ids = {item["id"] for batch in batches for item in batch.items}
         self.assertTrue({"p004b0008", "p004b0011", "p004b0012"} <= batch_ids)
@@ -257,48 +258,14 @@ class ParallelBatchPlanningTests(unittest.TestCase):
         classes = {"p001b0001": "figure_region", "p001b0002": "body", "p001b0003": "body"}
 
         with (
-            patch.object(parallel.pipeline, "build_visual_regions", return_value=visual_regions),
-            patch.object(parallel.pipeline, "classify_blocks", return_value=classes),
+            patch.object(pipeline, "build_visual_regions", return_value=visual_regions),
+            patch.object(pipeline, "classify_blocks", return_value=classes),
         ):
-            result = parallel.pipeline.build_translation_page_components(1, blocks)
-            batches = parallel.build_page_batches([(1, blocks)], max_chars=7000)
+            result = pipeline.build_translation_page_components(1, blocks)
+            batches = pipeline.build_translation_batches([(1, blocks)], max_chars=7000, batch_scope="page")
 
         self.assertEqual(result.translatable_ids, ["p001b0003"])
         self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0003"]])
-
-    def test_build_page_batches_routes_through_prepare_page_ownership(self):
-        blocks = [
-            {
-                "id": "p001b0001",
-                "text": "This body paragraph should be translated.",
-                "xMin": 80.0,
-                "yMin": 100.0,
-                "xMax": 360.0,
-                "yMax": 130.0,
-            }
-        ]
-        ownership_result = SimpleNamespace(translatable_ids=["p001b0001"])
-
-        with (
-            patch.object(
-                parallel.pipeline,
-                "prepare_page_ownership",
-                return_value=(ownership_result, True),
-                create=True,
-            ) as prepare_mock,
-            patch.object(
-                parallel.pipeline,
-                "build_translation_page_components",
-                side_effect=AssertionError("build_page_batches must use prepare_page_ownership"),
-            ),
-        ):
-            batches = parallel.build_page_batches([(1, blocks)], max_chars=7000, page_size=(400, 400))
-
-        prepare_mock.assert_called_once()
-        _, kwargs = prepare_mock.call_args
-        self.assertEqual(kwargs["page_size"], (400, 400))
-        self.assertFalse(kwargs["in_reference_section"])
-        self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0001"]])
 
     def test_build_page_batches_excludes_text_covered_by_final_visual_clip_padding(self):
         blocks = [
@@ -334,10 +301,10 @@ class ParallelBatchPlanningTests(unittest.TestCase):
             "p001b0003": "body",
         }
         with (
-            patch.object(parallel.pipeline, "build_visual_regions", return_value=visual_regions),
-            patch.object(parallel.pipeline, "classify_blocks", return_value=classes),
+            patch.object(pipeline, "build_visual_regions", return_value=visual_regions),
+            patch.object(pipeline, "classify_blocks", return_value=classes),
         ):
-            batches = parallel.build_page_batches([(1, blocks)], max_chars=7000, page_size=(400, 400))
+            batches = pipeline.build_translation_batches([(1, blocks)], max_chars=7000, page_size=(400, 400), batch_scope="page")
 
         self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0003"]])
 
@@ -380,15 +347,10 @@ class ParallelBatchPlanningTests(unittest.TestCase):
             bbox_path = Path(tmp) / "source_bbox.html"
             bbox_path.write_text(bbox_html, encoding="utf-8")
             with (
-                patch.object(parallel.pipeline, "build_visual_regions", return_value=visual_regions),
-                patch.object(parallel.pipeline, "classify_blocks", return_value=classes),
+                patch.object(pipeline, "build_visual_regions", return_value=visual_regions),
+                patch.object(pipeline, "classify_blocks", return_value=classes),
             ):
-                batches = parallel.build_page_batches(
-                    [(1, blocks)],
-                    max_chars=7000,
-                    page_size=(400, 400),
-                    job_paths={"bbox_path": bbox_path},
-                )
+                batches = pipeline.build_translation_batches([(1, blocks)], max_chars=7000, page_size=(400, 400), job_paths={"bbox_path": bbox_path}, batch_scope="page")
 
         self.assertEqual([[item["id"] for item in batch.items] for batch in batches], [["p001b0003"]])
 
@@ -419,10 +381,10 @@ class ParallelBatchPlanningTests(unittest.TestCase):
             for idx, (block_id, classification) in enumerate(class_by_id.items())
         ]
         with (
-            patch.object(parallel.pipeline, "build_visual_regions", return_value=[]),
-            patch.object(parallel.pipeline, "classify_blocks", return_value=class_by_id),
+            patch.object(pipeline, "build_visual_regions", return_value=[]),
+            patch.object(pipeline, "classify_blocks", return_value=class_by_id),
         ):
-            batches = parallel.build_page_batches([(1, blocks)], max_chars=7000)
+            batches = pipeline.build_translation_batches([(1, blocks)], max_chars=7000, batch_scope="page")
 
         sent_ids = [item["id"] for batch in batches for item in batch.items]
         self.assertEqual(sent_ids, ["p001b0001", "p001b0002", "p001b0003", "p001b0004"])
@@ -473,7 +435,7 @@ class ParallelBatchPlanningTests(unittest.TestCase):
             },
         ]
 
-        batches = parallel.build_page_batches([(10, page_10), (11, page_11)], max_chars=7000)
+        batches = pipeline.build_translation_batches([(10, page_10), (11, page_11)], max_chars=7000, batch_scope="page")
 
         sent_ids = [item["id"] for batch in batches for item in batch.items]
         self.assertEqual(sent_ids, [])
@@ -524,7 +486,7 @@ class ParallelBatchPlanningTests(unittest.TestCase):
             },
         ]
 
-        batches = parallel.build_page_batches([(10, page_10), (11, page_11)], max_chars=7000)
+        batches = pipeline.build_translation_batches([(10, page_10), (11, page_11)], max_chars=7000, batch_scope="page")
 
         sent_ids = [item["id"] for batch in batches for item in batch.items]
         self.assertEqual(sent_ids, [])
@@ -567,7 +529,7 @@ class ParallelBatchPlanningTests(unittest.TestCase):
             },
         ]
 
-        batches = parallel.build_page_batches([(10, page_10), (11, page_11)], max_chars=7000)
+        batches = pipeline.build_translation_batches([(10, page_10), (11, page_11)], max_chars=7000, batch_scope="page")
 
         sent_ids = [item["id"] for batch in batches for item in batch.items]
         self.assertEqual(sent_ids, [])
@@ -644,10 +606,7 @@ class ParallelBatchPlanningTests(unittest.TestCase):
             },
         ]
 
-        batches = parallel.build_page_batches(
-            [(10, page_10), (11, page_11), (12, mixed_page_12)],
-            max_chars=7000,
-        )
+        batches = pipeline.build_translation_batches([(10, page_10), (11, page_11), (12, mixed_page_12)], max_chars=7000, batch_scope="page")
 
         sent_ids = [item["id"] for batch in batches for item in batch.items]
         self.assertEqual(sent_ids, ["p012b0003", "p012b0004", "p012b0005"])
@@ -698,7 +657,7 @@ class ParallelBatchPlanningTests(unittest.TestCase):
             },
         ]
 
-        batches = parallel.build_page_batches([(10, page_10), (13, figure_page)], max_chars=7000)
+        batches = pipeline.build_translation_batches([(10, page_10), (13, figure_page)], max_chars=7000, batch_scope="page")
 
         sent_ids = [item["id"] for batch in batches for item in batch.items]
         self.assertEqual(sent_ids, ["p013b0042"])
@@ -723,19 +682,19 @@ class ParallelArtifactReportTests(unittest.TestCase):
             )
 
             with (
-                patch.object(parallel.pipeline, "validate_document_quality", return_value=["layout issue"]),
-                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
-                patch.object(parallel.qa, "run_backtranslation", return_value={}),
-                patch.object(parallel.qa, "build_report", return_value=[]),
-                patch.object(parallel.qa, "write_markdown"),
+                patch.object(pipeline, "validate_document_quality", return_value=["layout issue"]),
+                patch.object(pipeline.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(pipeline.qa, "run_backtranslation", return_value={}),
+                patch.object(pipeline.qa, "build_report", return_value=[]),
+                patch.object(pipeline.qa, "write_markdown"),
             ):
-                result = parallel.run_qa_for_job(
+                result = pipeline.run_qa_for_job(
                     selected_pages,
                     translations={},
                     job_paths=job_paths,
                     page_size=(612, 792),
-                    args=args,
-                    render_result=parallel.pipeline.DocumentRenderResult([], {}),
+                    options=args,
+                    render_result=pipeline.DocumentRenderResult([], {}),
                 )
 
             expected_paths = [
@@ -758,13 +717,13 @@ class ParallelArtifactReportTests(unittest.TestCase):
             original_tmp_dir = parallel.TMP_DIR
             original_summary_json = parallel.SUMMARY_JSON
             original_summary_md = parallel.SUMMARY_MD
-            original_pipeline_tmp_root = parallel.pipeline.TMP_ROOT
+            original_pipeline_tmp_root = pipeline.TMP_ROOT
 
             def restore_work_dirs():
                 parallel.TMP_DIR = original_tmp_dir
                 parallel.SUMMARY_JSON = original_summary_json
                 parallel.SUMMARY_MD = original_summary_md
-                parallel.pipeline.TMP_ROOT = original_pipeline_tmp_root
+                pipeline.TMP_ROOT = original_pipeline_tmp_root
 
             self.addCleanup(restore_work_dirs)
             parallel.set_work_dir(Path(tmp))
@@ -867,21 +826,21 @@ class ParallelArtifactReportTests(unittest.TestCase):
             )
 
             with (
-                patch.object(parallel.pipeline, "validate_document_quality", return_value=[]),
-                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
-                patch.object(parallel.qa, "run_backtranslation", return_value={}),
-                patch.object(parallel.qa, "build_report", return_value=[]),
-                patch.object(parallel.qa, "write_markdown"),
-                patch.object(parallel.qa_visual, "generate_visual_qa_report", return_value=visual_report) as visual_mock,
+                patch.object(pipeline, "validate_document_quality", return_value=[]),
+                patch.object(pipeline.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(pipeline.qa, "run_backtranslation", return_value={}),
+                patch.object(pipeline.qa, "build_report", return_value=[]),
+                patch.object(pipeline.qa, "write_markdown"),
+                patch.object(pipeline.qa_visual, "generate_visual_qa_report", return_value=visual_report) as visual_mock,
             ):
-                result = parallel.run_qa_for_job(
+                result = pipeline.run_qa_for_job(
                     selected_pages,
                     translations={},
                     job_paths=job_paths,
                     page_size=(612, 792),
-                    args=args,
+                    options=args,
                     output_pdf_path=output_pdf,
-                    render_result=parallel.pipeline.DocumentRenderResult([], {}),
+                    render_result=pipeline.DocumentRenderResult([], {}),
                 )
 
             visual_mock.assert_called_once()
@@ -971,21 +930,21 @@ class ParallelArtifactReportTests(unittest.TestCase):
             )
 
             with (
-                patch.object(parallel.pipeline, "validate_document_quality", return_value=[]),
-                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
-                patch.object(parallel.qa, "run_backtranslation", return_value={}),
-                patch.object(parallel.qa, "build_report", return_value=[]),
-                patch.object(parallel.qa, "write_markdown"),
-                patch.object(parallel.qa_visual, "generate_visual_qa_report", return_value=visual_report),
+                patch.object(pipeline, "validate_document_quality", return_value=[]),
+                patch.object(pipeline.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(pipeline.qa, "run_backtranslation", return_value={}),
+                patch.object(pipeline.qa, "build_report", return_value=[]),
+                patch.object(pipeline.qa, "write_markdown"),
+                patch.object(pipeline.qa_visual, "generate_visual_qa_report", return_value=visual_report),
             ):
-                result = parallel.run_qa_for_job(
+                result = pipeline.run_qa_for_job(
                     selected_pages,
                     translations={},
                     job_paths=job_paths,
                     page_size=(612, 792),
-                    args=args,
+                    options=args,
                     output_pdf_path=output_pdf,
-                    render_result=parallel.pipeline.DocumentRenderResult([], {}),
+                    render_result=pipeline.DocumentRenderResult([], {}),
                 )
 
             self.assertEqual(result["visual_checked_pages"], [1, 2])
@@ -1041,22 +1000,22 @@ class ParallelArtifactReportTests(unittest.TestCase):
             )
 
             with (
-                patch.object(parallel.pipeline, "validate_document_quality", return_value=[]),
-                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
-                patch.object(parallel.qa, "run_backtranslation", return_value={}),
-                patch.object(parallel.qa, "build_report", return_value=[]),
-                patch.object(parallel.qa, "write_markdown"),
-                patch.object(parallel.qa_visual, "generate_visual_qa_report", return_value=visual_report),
+                patch.object(pipeline, "validate_document_quality", return_value=[]),
+                patch.object(pipeline.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(pipeline.qa, "run_backtranslation", return_value={}),
+                patch.object(pipeline.qa, "build_report", return_value=[]),
+                patch.object(pipeline.qa, "write_markdown"),
+                patch.object(pipeline.qa_visual, "generate_visual_qa_report", return_value=visual_report),
             ):
                 with self.assertRaisesRegex(RuntimeError, "visual QA found 1 error"):
-                    parallel.run_qa_for_job(
+                    pipeline.run_qa_for_job(
                         selected_pages,
                         translations={},
                         job_paths=job_paths,
                         page_size=(612, 792),
-                        args=args,
+                        options=args,
                         output_pdf_path=output_pdf,
-                        render_result=parallel.pipeline.DocumentRenderResult([], {}),
+                        render_result=pipeline.DocumentRenderResult([], {}),
                     )
 
     def test_run_qa_strict_mode_allows_visual_warnings(self):
@@ -1097,21 +1056,21 @@ class ParallelArtifactReportTests(unittest.TestCase):
             )
 
             with (
-                patch.object(parallel.pipeline, "validate_document_quality", return_value=[]),
-                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
-                patch.object(parallel.qa, "run_backtranslation", return_value={}),
-                patch.object(parallel.qa, "build_report", return_value=[]),
-                patch.object(parallel.qa, "write_markdown"),
-                patch.object(parallel.qa_visual, "generate_visual_qa_report", return_value=visual_report),
+                patch.object(pipeline, "validate_document_quality", return_value=[]),
+                patch.object(pipeline.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(pipeline.qa, "run_backtranslation", return_value={}),
+                patch.object(pipeline.qa, "build_report", return_value=[]),
+                patch.object(pipeline.qa, "write_markdown"),
+                patch.object(pipeline.qa_visual, "generate_visual_qa_report", return_value=visual_report),
             ):
-                result = parallel.run_qa_for_job(
+                result = pipeline.run_qa_for_job(
                     selected_pages,
                     translations={},
                     job_paths=job_paths,
                     page_size=(612, 792),
-                    args=args,
+                    options=args,
                     output_pdf_path=output_pdf,
-                    render_result=parallel.pipeline.DocumentRenderResult([], {}),
+                    render_result=pipeline.DocumentRenderResult([], {}),
                 )
 
             self.assertEqual(result["visual_issue_count"], 1)
@@ -1156,21 +1115,21 @@ class ParallelArtifactReportTests(unittest.TestCase):
             )
 
             with (
-                patch.object(parallel.pipeline, "validate_document_quality", return_value=[]),
-                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
-                patch.object(parallel.qa, "run_backtranslation", return_value={}),
-                patch.object(parallel.qa, "build_report", return_value=[]),
-                patch.object(parallel.qa, "write_markdown"),
-                patch.object(parallel.qa_visual, "generate_visual_qa_report", return_value=visual_report),
+                patch.object(pipeline, "validate_document_quality", return_value=[]),
+                patch.object(pipeline.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(pipeline.qa, "run_backtranslation", return_value={}),
+                patch.object(pipeline.qa, "build_report", return_value=[]),
+                patch.object(pipeline.qa, "write_markdown"),
+                patch.object(pipeline.qa_visual, "generate_visual_qa_report", return_value=visual_report),
             ):
-                result = parallel.run_qa_for_job(
+                result = pipeline.run_qa_for_job(
                     selected_pages,
                     translations={},
                     job_paths=job_paths,
                     page_size=(612, 792),
-                    args=args,
+                    options=args,
                     output_pdf_path=output_pdf,
-                    render_result=parallel.pipeline.DocumentRenderResult([], {}),
+                    render_result=pipeline.DocumentRenderResult([], {}),
                 )
 
             self.assertEqual(result["visual_issue_count"], 3)
@@ -1240,22 +1199,22 @@ class ParallelArtifactReportTests(unittest.TestCase):
             )
 
             with (
-                patch.object(parallel.pipeline, "validate_document_quality", return_value=[]),
-                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
-                patch.object(parallel.qa, "run_backtranslation", return_value={}),
-                patch.object(parallel.qa, "build_report", return_value=[]),
-                patch.object(parallel.qa, "write_markdown"),
-                patch.object(parallel.qa_visual, "generate_visual_qa_report", return_value=visual_report),
+                patch.object(pipeline, "validate_document_quality", return_value=[]),
+                patch.object(pipeline.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(pipeline.qa, "run_backtranslation", return_value={}),
+                patch.object(pipeline.qa, "build_report", return_value=[]),
+                patch.object(pipeline.qa, "write_markdown"),
+                patch.object(pipeline.qa_visual, "generate_visual_qa_report", return_value=visual_report),
             ):
                 with self.assertRaisesRegex(RuntimeError, "strict QA failed with 1 ownership error"):
-                    parallel.run_qa_for_job(
+                    pipeline.run_qa_for_job(
                         selected_pages,
                         translations={},
                         job_paths=job_paths,
                         page_size=(612, 792),
-                        args=args,
+                        options=args,
                         output_pdf_path=output_pdf,
-                        render_result=parallel.pipeline.DocumentRenderResult([], {}),
+                        render_result=pipeline.DocumentRenderResult([], {}),
                     )
 
     def test_run_qa_non_strict_reports_ownership_visual_qa_counts(self):
@@ -1327,21 +1286,21 @@ class ParallelArtifactReportTests(unittest.TestCase):
             )
 
             with (
-                patch.object(parallel.pipeline, "validate_document_quality", return_value=[]),
-                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
-                patch.object(parallel.qa, "run_backtranslation", return_value={}),
-                patch.object(parallel.qa, "build_report", return_value=[]),
-                patch.object(parallel.qa, "write_markdown"),
-                patch.object(parallel.qa_visual, "generate_visual_qa_report", return_value=visual_report),
+                patch.object(pipeline, "validate_document_quality", return_value=[]),
+                patch.object(pipeline.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(pipeline.qa, "run_backtranslation", return_value={}),
+                patch.object(pipeline.qa, "build_report", return_value=[]),
+                patch.object(pipeline.qa, "write_markdown"),
+                patch.object(pipeline.qa_visual, "generate_visual_qa_report", return_value=visual_report),
             ):
-                result = parallel.run_qa_for_job(
+                result = pipeline.run_qa_for_job(
                     selected_pages,
                     translations={},
                     job_paths=job_paths,
                     page_size=(612, 792),
-                    args=args,
+                    options=args,
                     output_pdf_path=output_pdf,
-                    render_result=parallel.pipeline.DocumentRenderResult([], {}),
+                    render_result=pipeline.DocumentRenderResult([], {}),
                 )
 
             self.assertEqual(result["ownership_issue_count"], 2)
@@ -1359,11 +1318,11 @@ class ParallelCliIntegrationTests(unittest.TestCase):
             pdf_path = source_dir / "paper.pdf"
             pdf_path.write_bytes(b"%PDF-1.4\n")
 
-            def fake_translate_one_pdf(pdf_path_arg, output_dir_arg, args):
+            def fake_translate_one_pdf(pdf_path_arg, output_path_arg, args):
                 self.assertFalse(args.strict_qa)
                 return {
                     "pdf": str(pdf_path_arg),
-                    "output": str(output_dir_arg / "paper-Chinese.pdf"),
+                    "output": str(output_path_arg),
                     "status": "translated",
                     "qa": {
                         "deterministic_issue_count": 0,
@@ -1402,7 +1361,7 @@ class ParallelCliIntegrationTests(unittest.TestCase):
             ]
             with (
                 patch.object(sys, "argv", argv),
-                patch.object(parallel, "translate_one_pdf", side_effect=fake_translate_one_pdf),
+                patch.object(pipeline, "translate_document", side_effect=fake_translate_one_pdf),
             ):
                 parallel.main()
 
@@ -1441,7 +1400,7 @@ class ParallelCliIntegrationTests(unittest.TestCase):
             ]
             with (
                 patch.object(sys, "argv", argv),
-                patch.object(parallel, "translate_one_pdf", side_effect=fake_translate_one_pdf),
+                patch.object(pipeline, "translate_document", side_effect=fake_translate_one_pdf),
             ):
                 with self.assertRaisesRegex(RuntimeError, "1 PDF\\(s\\) failed"):
                     parallel.main()

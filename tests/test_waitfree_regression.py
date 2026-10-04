@@ -5,7 +5,7 @@ from pathlib import Path
 import layout
 import render_pdf
 import render_plan
-import translate_pdf_via_codex as pdf
+import pipeline as pdf
 
 
 JOB = Path("work/jobs/wait-free-synchronization")
@@ -963,8 +963,8 @@ class WaitFreeRenderPlanRegressionTests(unittest.TestCase):
             self.assertRegex(combined, r"(REFERENCES|LAMPORT|ANDERSON|HERLIHY)")
 
     def test_references_are_excluded_from_translation_batches(self):
-        batches = pdf.build_batches([self.pages[24], self.pages[25]], max_chars=100000)
-        ids = {item["id"] for batch in batches for item in batch}
+        batches = pdf.build_translation_batches(list(enumerate([self.pages[24], self.pages[25]], 1)), max_chars=100000, batch_scope="document")
+        ids = {item["id"] for batch in batches for item in batch.items}
 
         self.assertNotIn("p025b0005", ids)
         self.assertNotIn("p025b0006", ids)

@@ -40,14 +40,6 @@ class DarkPixelAnalysis:
 
 
 @dataclass(frozen=True)
-class PageImagePair:
-    source_path: str
-    destination_path: str
-    source: Image.Image
-    destination: Image.Image
-
-
-@dataclass(frozen=True)
 class VisualQaIssue:
     category: str
     severity: str
@@ -100,15 +92,6 @@ def load_fitz():
 def load_page_image(path: str | Path) -> Image.Image:
     with Image.open(path) as image:
         return image.convert("RGB")
-
-
-def load_page_image_pair(source_path: str | Path, destination_path: str | Path) -> PageImagePair:
-    return PageImagePair(
-        source_path=str(source_path),
-        destination_path=str(destination_path),
-        source=load_page_image(source_path),
-        destination=load_page_image(destination_path),
-    )
 
 
 def _page_to_pixel_crop_box(image: Image.Image, bbox, page_size) -> tuple[int, int, int, int]:
@@ -405,7 +388,7 @@ def _dedupe_protected_regions(regions: list[dict]) -> list[dict]:
     return list(by_bbox.values())
 
 
-def _ownership_issue_to_visual_issue(plan, issue, *, validation_failed: bool = False) -> VisualQaIssue:
+def _ownership_issue_to_visual_issue(plan, issue) -> VisualQaIssue:
     issue_code = str(_ledger_value(issue, "issue_code", ""))
     category = OWNERSHIP_ISSUE_CATEGORY_BY_CODE.get(issue_code, issue_code or "ownership_violation")
     source_ids = [str(source_id) for source_id in _ledger_value(issue, "source_ids", [])]
@@ -420,8 +403,6 @@ def _ownership_issue_to_visual_issue(plan, issue, *, validation_failed: bool = F
     if component_ids:
         artifact_paths["component_ids"] = ",".join(sorted(component_ids))
     severity = str(_ledger_value(issue, "severity", "error"))
-    if validation_failed:
-        severity = "error"
     message = str(_ledger_value(issue, "message", ""))
     if issue_code and issue_code not in message:
         message = f"{issue_code}: {message}"
@@ -449,9 +430,8 @@ def detect_ownership_issues(plan) -> list[VisualQaIssue]:
     serialized_issues = _item_value(validation, "errors", None)
     if serialized_issues is None:
         serialized_issues = _item_value(validation, "issues", [])
-    validation_failed = _item_value(validation, "ok", True) is False
     return [
-        _ownership_issue_to_visual_issue(plan, issue, validation_failed=validation_failed)
+        _ownership_issue_to_visual_issue(plan, issue)
         for issue in serialized_issues
     ]
 
@@ -939,6 +919,7 @@ def detect_style_issues(plan, *, font_tolerance: float = 0.01) -> list[VisualQaI
             kind=value["kind"], source_ids=_source_ids_for_item(value),
             bbox=_bbox_tuple(value["bbox"]), style_name=value.get("style_name", ""),
             font_size=value.get("font_size"), fallback_reason=value.get("fallback_reason", ""),
+            layout_role=value.get("layout_role", "normal"), font_policy=value.get("font_policy", "document"),
         )
         classifications = {
             classifications_by_id[source_id] for source_id in item.source_ids
@@ -958,15 +939,6 @@ def _is_body_flow_text_item(item, classifications_by_id: Mapping[str, str]) -> b
         and _classification_for_item(item, classifications_by_id) == "body"
         and str(_item_value(item, "style_name", "") or "") == "body"
     )
-
-
-def _body_text_items(plan) -> list:
-    classifications_by_id = _classifications_by_block_id(plan)
-    return [
-        item
-        for item in _plan_render_items(plan)
-        if _is_body_flow_text_item(item, classifications_by_id)
-    ]
 
 
 def _same_body_flow_column(left_bbox, right_bbox) -> bool:
@@ -1206,26 +1178,6 @@ def visual_qa_report_payload(
     }
 
 
-def visual_qa_report_json(
-    issues: list[VisualQaIssue],
-    *,
-    checked_pages=None,
-    png_paths: Mapping[int | str, str | Path] | None = None,
-    plan_artifact_paths=None,
-) -> str:
-    return json.dumps(
-        visual_qa_report_payload(
-            issues,
-            checked_pages=checked_pages,
-            png_paths=png_paths,
-            plan_artifact_paths=plan_artifact_paths,
-        ),
-        ensure_ascii=False,
-        sort_keys=True,
-        indent=2,
-    )
-
-
 def _visual_qa_report_markdown(payload: dict) -> str:
     lines = [
         "# Visual QA Report",
@@ -1294,10 +1246,6 @@ def write_visual_qa_report(
 
 def _load_plan_artifact(plan_artifact_path: str | Path) -> dict:
     return json.loads(Path(plan_artifact_path).read_text(encoding="utf-8"))
-
-
-def _load_plan_page_num(plan_artifact_path: str | Path) -> int:
-    return int(_load_plan_artifact(plan_artifact_path)["page_num"])
 
 
 def generate_visual_qa_report(

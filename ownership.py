@@ -1,4 +1,3 @@
-import json
 import re
 from collections import defaultdict
 from collections.abc import Mapping
@@ -51,19 +50,7 @@ class PageComponent:
     clip_bbox: tuple[float, float, float, float] | None
     confidence: str
     reason_codes: list[str] = field(default_factory=list)
-    render_strategy: str = ""
     parent_component_id: str = ""
-
-
-@dataclass(frozen=True)
-class OwnershipLedgerEntry:
-    page_number: int
-    source_id: str
-    component_id: str
-    component_kind: str
-    ownership_role: str
-    confidence: str
-    reason_codes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -84,20 +71,6 @@ class OwnershipValidationResult:
     @property
     def ok(self) -> bool:
         return not self.issues
-
-
-def _stable_value(value):
-    if isinstance(value, Mapping):
-        return {str(key): _stable_value(value[key]) for key in sorted(value, key=str)}
-    if isinstance(value, tuple):
-        return [_stable_value(item) for item in value]
-    if isinstance(value, list):
-        return [_stable_value(item) for item in value]
-    return value
-
-
-def stable_json_dumps(value) -> str:
-    return json.dumps(_stable_value(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def bbox_to_json(bbox) -> list[float]:
@@ -179,7 +152,6 @@ def page_component_to_json(component: PageComponent) -> dict:
         "confidence": component.confidence,
         "parent_component_id": component.parent_component_id,
         "reason_codes": sorted(str(code) for code in component.reason_codes),
-        "render_strategy": component.render_strategy,
         "source_bbox": bbox_to_json(component.source_bbox),
         "source_ids": sorted(str(source_id) for source_id in component.source_ids),
     }
@@ -206,34 +178,21 @@ def components_to_json(components: list[PageComponent]) -> list[dict]:
     return [page_component_to_json(component) for component in sorted(components, key=lambda item: item.component_id)]
 
 
-def ownership_ledger_entry_to_json(entry: OwnershipLedgerEntry) -> dict:
-    return {
-        "component_id": entry.component_id,
-        "component_kind": entry.component_kind,
-        "confidence": entry.confidence,
-        "ownership_role": entry.ownership_role,
-        "page_number": int(entry.page_number),
-        "reason_codes": sorted(str(code) for code in entry.reason_codes),
-        "source_id": entry.source_id,
-    }
-
-
-def ownership_ledger_for_components(page_number: int, components: list[PageComponent]) -> list[OwnershipLedgerEntry]:
-    entries = []
-    for component in sorted(components, key=lambda item: item.component_id):
-        for source_id in sorted(set(component.source_ids)):
-            entries.append(
-                OwnershipLedgerEntry(
-                    page_number=page_number,
-                    source_id=source_id,
-                    component_id=component.component_id,
-                    component_kind=component.component_kind,
-                    ownership_role="owner",
-                    confidence=component.confidence,
-                    reason_codes=list(component.reason_codes),
-                )
-            )
-    return entries
+def ownership_ledger_to_json(page_number: int, components: list[PageComponent]) -> list[dict]:
+    """Derive the export from current components so ownership cannot become stale."""
+    entries = [
+        {
+            "component_id": component.component_id,
+            "component_kind": component.component_kind,
+            "confidence": component.confidence,
+            "page_number": int(page_number),
+            "reason_codes": sorted(str(code) for code in component.reason_codes),
+            "source_id": source_id,
+        }
+        for component in components
+        for source_id in set(component.source_ids)
+    ]
+    return sorted(entries, key=lambda entry: (entry["source_id"], entry["component_id"]))
 
 
 def component_by_source_id(components: list[PageComponent]) -> dict[str, PageComponent]:
@@ -364,7 +323,6 @@ def _make_component(
     clip_bbox=None,
     confidence=CONFIDENCE_INFERRED,
     reason_codes=None,
-    render_strategy="",
     parent_component_id="",
 ) -> PageComponent:
     unique_ids = sorted({str(source_id) for source_id in source_ids if str(source_id) in block_by_id})
@@ -381,7 +339,6 @@ def _make_component(
         clip_bbox=None if clip_bbox is None else tuple(float(value) for value in clip_bbox),
         confidence=confidence,
         reason_codes=sorted(str(code) for code in (reason_codes or [])),
-        render_strategy=render_strategy,
         parent_component_id=parent_component_id,
     )
 
@@ -591,7 +548,6 @@ def build_page_components(
             clip_bbox=clip_bbox,
             confidence=CONFIDENCE_CONSERVATIVE,
             reason_codes=visual_reason_codes,
-            render_strategy="original_image_clip",
         )
         components.append(visual_component)
         component_index += 1
@@ -610,7 +566,6 @@ def build_page_components(
                     clip_bbox=None,
                     confidence=CONFIDENCE_INFERRED,
                     reason_codes=["body", REASON_MIXED_VISUAL_BODY_SPLIT],
-                    render_strategy="translated_text",
                     parent_component_id=visual_component.component_id,
                 )
             )
@@ -625,47 +580,38 @@ def build_page_components(
         if source_id in duplicate_ids:
             component_kind = COMPONENT_KIND_DUPLICATE
             confidence = CONFIDENCE_DETERMINISTIC
-            render_strategy = "skip_explicitly"
             reason_codes = ["duplicated_extraction"]
         elif source_id in skip_ids:
             component_kind = COMPONENT_KIND_SKIP
             confidence = CONFIDENCE_DETERMINISTIC
-            render_strategy = "skip_explicitly"
             reason_codes = ["skip_explicitly"]
         elif classification == "page_number":
             component_kind = COMPONENT_KIND_PAGE_NUMBER
             confidence = CONFIDENCE_DETERMINISTIC
-            render_strategy = "skip_explicitly"
             reason_codes = ["page_number"]
         elif classification in HEADER_FOOTER_CLASSES:
             component_kind = COMPONENT_KIND_HEADER_FOOTER
             confidence = CONFIDENCE_DETERMINISTIC
-            render_strategy = "skip_explicitly" if classification == "header_footer" else "original_selectable_text"
             reason_codes = [classification]
         elif classification == "reference":
             component_kind = COMPONENT_KIND_REFERENCE
             confidence = CONFIDENCE_INFERRED
-            render_strategy = "original_selectable_text"
             reason_codes = ["reference"]
         elif classification in NORMAL_TRANSLATED_CLASSES:
             component_kind = COMPONENT_KIND_TRANSLATED_TEXT
             confidence = CONFIDENCE_INFERRED
-            render_strategy = "translated_text"
             reason_codes = [classification]
         elif classification in VISUAL_CLASSES:
             component_kind = COMPONENT_KIND_VISUAL
             confidence = CONFIDENCE_CONSERVATIVE
-            render_strategy = "original_image_clip"
             reason_codes = [classification, "visual_classification"]
         elif is_trivial_block(block):
             component_kind = COMPONENT_KIND_SKIP
             confidence = CONFIDENCE_DETERMINISTIC
-            render_strategy = "skip_explicitly"
             reason_codes = ["trivial_block"]
         else:
             component_kind = COMPONENT_KIND_UNKNOWN
             confidence = CONFIDENCE_CONSERVATIVE
-            render_strategy = "original_image_clip"
             reason_codes = [classification, "unknown_preserve"]
 
         components.append(
@@ -678,7 +624,6 @@ def build_page_components(
                 clip_bbox=None,
                 confidence=confidence,
                 reason_codes=reason_codes,
-                render_strategy=render_strategy,
             )
         )
         component_index += 1

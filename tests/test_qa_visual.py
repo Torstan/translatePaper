@@ -35,20 +35,6 @@ class VisualQaImageTests(unittest.TestCase):
         self.assertEqual(image.mode, "RGB")
         self.assertEqual(image.size, (12, 10))
 
-    def test_load_page_image_pair_loads_source_and_destination(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            source_path = Path(tmp_dir) / "source.png"
-            destination_path = Path(tmp_dir) / "destination.png"
-            Image.new("RGB", (8, 6), "white").save(source_path)
-            Image.new("RGB", (10, 7), "black").save(destination_path)
-
-            pair = qa_visual.load_page_image_pair(source_path, destination_path)
-
-        self.assertEqual(pair.source.size, (8, 6))
-        self.assertEqual(pair.destination.size, (10, 7))
-        self.assertEqual(pair.source_path, str(source_path))
-        self.assertEqual(pair.destination_path, str(destination_path))
-
     def test_dark_pixel_analysis_counts_pixels_inside_pdf_bbox(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             image_path = Path(tmp_dir) / "page-001.png"
@@ -812,7 +798,7 @@ class VisualQaImageTests(unittest.TestCase):
         self.assertEqual(issues[0].source_ids, ["p016b0002"])
         self.assertEqual(issues[0].bbox, (10.0, 40.0, 80.0, 60.0))
 
-    def test_style_checks_allow_body_font_difference_with_fallback_reason(self):
+    def test_style_checks_allow_body_font_difference_with_explicit_policy(self):
         plan = {
             "page_num": 16,
             "render_items": [
@@ -832,6 +818,8 @@ class VisualQaImageTests(unittest.TestCase):
                     "style_name": "body",
                     "font_size": 8.0,
                     "fallback_reason": "body_flow_compact",
+                    "layout_role": "body_flow",
+                    "font_policy": "compact_body_flow",
                 },
             ],
             "coverage_ledger": [
@@ -866,6 +854,8 @@ class VisualQaImageTests(unittest.TestCase):
                     "style_name": "body",
                     "font_size": 8.0,
                     "fallback_reason": "body_flow_compact",
+                    "layout_role": "body_flow",
+                    "font_policy": "compact_body_flow",
                 },
                 {
                     "kind": "translated_text",
@@ -1849,6 +1839,8 @@ class VisualQaRulePairTests(unittest.TestCase):
                     "text": "危险信号：实现文档",
                     "style_name": "heading",
                     "font_size": 13.2,
+                    "layout_role": "callout",
+                    "font_policy": "source_adapted",
                     "fallback_reason": "callout_heading",
                 }
             ],
@@ -2099,7 +2091,7 @@ class VisualQaReportTests(unittest.TestCase):
         self.assertEqual([issue.render_kind for issue in issues], ["ownership"] * 6)
         self.assertEqual(issues[0].source_ids, ["p021b0001"])
         self.assertEqual(issues[0].bbox, (10.0, 20.0, 30.0, 40.0))
-        self.assertEqual(issues[1].severity, "error")
+        self.assertEqual(issues[1].severity, "warning")
         self.assertEqual(issues[1].artifact_paths, {"component_ids": "p021c0002,p021c0003"})
         self.assertEqual(issues[3].artifact_paths, {})
 
@@ -2139,7 +2131,7 @@ class VisualQaReportTests(unittest.TestCase):
         self.assertEqual(report_json["issues"][0]["category"], "duplicate_ownership")
         self.assertEqual(report_json["issues"][0]["render_kind"], "ownership")
 
-    def test_generate_visual_qa_report_marks_ownership_warning_as_failed_issue(self):
+    def test_generate_visual_qa_report_preserves_ownership_warning_severity(self):
         plan = {
             "page_num": 135,
             "render_items": [],
@@ -2172,10 +2164,10 @@ class VisualQaReportTests(unittest.TestCase):
             report_json = json.loads(report.json_path.read_text(encoding="utf-8"))
             report_md = report.markdown_path.read_text(encoding="utf-8")
 
-        self.assertEqual(report_json["error_count"], 1)
-        self.assertEqual(report_json["warning_count"], 0)
-        self.assertEqual(report_json["highest_severity"], "error")
-        self.assertEqual(report_json["issues"][0]["severity"], "error")
+        self.assertEqual(report_json["error_count"], 0)
+        self.assertEqual(report_json["warning_count"], 1)
+        self.assertEqual(report_json["highest_severity"], "warning")
+        self.assertEqual(report_json["issues"][0]["severity"], "warning")
         self.assertIn("visual_clip_undercaptures_source", report_md)
 
     def test_generate_visual_qa_report_writes_deterministic_json_and_markdown(self):
@@ -2234,18 +2226,23 @@ class VisualQaReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_dir = Path(tmp_dir)
 
-            first = qa_visual.visual_qa_report_json(
+            first = qa_visual.write_visual_qa_report(
                 issues,
+                output_dir,
                 checked_pages=[3],
                 png_paths={3: output_dir / "page-003.png"},
             )
-            second = qa_visual.visual_qa_report_json(
+            first_json = first.json_path.read_bytes()
+            first_markdown = first.markdown_path.read_bytes()
+            second = qa_visual.write_visual_qa_report(
                 issues,
+                output_dir,
                 checked_pages=[3],
                 png_paths={3: output_dir / "page-003.png"},
             )
 
-        self.assertEqual(first, second)
+            self.assertEqual(first_json, second.json_path.read_bytes())
+            self.assertEqual(first_markdown, second.markdown_path.read_bytes())
 
     def test_generate_visual_qa_report_loads_plan_artifact_pages(self):
         plan = {

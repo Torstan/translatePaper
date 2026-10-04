@@ -5,7 +5,7 @@ from pathlib import Path
 
 import layout
 import render_plan
-import translate_pdf_via_codex as pipeline
+import pipeline
 from tests.pdf_render_fixture_runner import assert_render_plan_fixture, iter_render_plan_fixtures
 
 

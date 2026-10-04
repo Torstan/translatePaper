@@ -9,7 +9,7 @@ import classify
 import layout
 import qa_visual
 import render_plan
-import translate_pdf_via_codex as pipeline
+import pipeline
 
 
 class ReviewCleanupTests(unittest.TestCase):

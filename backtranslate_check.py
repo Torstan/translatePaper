@@ -8,10 +8,6 @@ from pathlib import Path
 from qa_semantic import (
     build_report,
     choose_items_for_qa,
-    classify_block,
-    make_prompt,
-    make_schema,
-    normalize_english,
     run_backtranslation,
     write_markdown,
 )
@@ -47,7 +43,7 @@ def main():
     if source_pages_path.exists():
         pages = json.loads(source_pages_path.read_text(encoding="utf-8"))
     else:
-        import translate_pdf_via_codex as pipeline
+        import pipeline
 
         pages = pipeline.parse_bbox(bbox_path)
     original_map = {

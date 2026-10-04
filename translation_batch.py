@@ -1,14 +1,85 @@
-"""Translate one prepared batch; callers own grouping, scheduling and caches."""
+"""Execute fixed translation batches with retries, resume and incremental saves."""
 
 import json
 import re
+import shutil
 import subprocess
 import textwrap
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 TOOL_ROOT = Path(__file__).resolve().parent
+
+
+@dataclass(frozen=True)
+class TranslationBatch:
+    prefix: str
+    items: list[dict]
+
+
+def backup_if_exists(path: Path, label: str):
+    if path.exists():
+        backup = path.with_name(f"{path.stem}.{label}-{int(time.time())}{path.suffix}")
+        shutil.copy2(path, backup)
+
+
+def run_batches(
+    batches: list[TranslationBatch], job_paths, *, model: str,
+    reasoning_effort: str = "low", retries: int = 3, workers: int = 1,
+    minimum_cache_overlap: float = 0.0, retranslate: bool = False,
+) -> dict[str, str]:
+    """Resume accepted IDs and save collected successes; workers never regroup items.
+
+    The overlap threshold preserves the two CLI cache policies. ID overlap alone
+    does not establish freshness when the source or prompt changes.
+    """
+    cache_path = job_paths["translations_path"]
+    valid_ids = {item["id"] for batch in batches for item in batch.items}
+    translations = {}
+    if retranslate:
+        backup_if_exists(cache_path, "backup")
+    elif cache_path.exists():
+        existing = json.loads(cache_path.read_text(encoding="utf-8"))
+        overlap = len(valid_ids & set(existing))
+        if valid_ids and overlap < max(1, int(len(valid_ids) * minimum_cache_overlap)):
+            backup_if_exists(cache_path, "stale")
+        else:
+            translations = {key: value for key, value in existing.items() if key in valid_ids}
+
+    todo = [
+        TranslationBatch(batch.prefix, [item for item in batch.items if item["id"] not in translations])
+        for batch in batches
+    ]
+    todo = [batch for batch in todo if batch.items]
+    if not todo:
+        return translations
+    write_schema(job_paths["schema_path"])
+
+    def execute(batch):
+        return execute_translation_batch(
+            batch.items, job_paths["job_dir"], batch.prefix, job_paths["schema_path"],
+            model=model, reasoning_effort=reasoning_effort, retries=retries,
+        )
+
+    def save(result):
+        # Only this coordinator writes the cache; workers produce independent results.
+        translations.update(result)
+        temporary = cache_path.with_name(f"{cache_path.name}.tmp")
+        temporary.write_text(json.dumps(translations, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(cache_path)
+
+    if workers == 1:
+        for batch in todo:
+            save(execute(batch))
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(execute, batch) for batch in todo]
+            for future in as_completed(futures):
+                save(future.result())
+    return translations
 
 
 def write_schema(path: Path):

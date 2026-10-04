@@ -4,7 +4,7 @@ import unittest
 
 import regions
 import classify
-import translate_pdf_via_codex as pdf
+import pipeline as pdf
 
 
 def block(block_id, page, text, x0=100, y0=100, x1=400, y1=120, preserve_image=False):

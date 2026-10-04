@@ -12,7 +12,7 @@ TMP_DIR = TOOL_ROOT / "work"
 BACKTRANSLATE_SCRIPT = TOOL_ROOT / "backtranslate_check.py"
 
 sys.path.insert(0, str(TOOL_ROOT))
-import translate_pdf_via_codex as pipeline  # noqa: E402
+import pipeline  # noqa: E402
 
 
 def main():

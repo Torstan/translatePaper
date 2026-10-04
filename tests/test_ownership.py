@@ -1,10 +1,10 @@
-import json
 import unittest
 from unittest.mock import patch
 
-import translate_pdf_via_codex as pipeline
+import pipeline
 
 import ownership
+import render_plan
 
 
 def block(block_id, text="Body text.", x0=10, y0=20, x1=110, y1=40):
@@ -20,6 +20,24 @@ def block(block_id, text="Body text.", x0=10, y0=20, x1=110, y1=40):
 
 
 class OwnershipSerializationTests(unittest.TestCase):
+    def test_plan_export_derives_ownership_from_current_components(self):
+        component = ownership.PageComponent(
+            component_id="p007c0001", component_kind="translated_text",
+            source_ids=["p007b0002", "p007b0001", "p007b0001"],
+            source_bbox=(10, 20, 100, 40), clip_bbox=None,
+            confidence="inferred", reason_codes=["body"],
+        )
+        plan = render_plan.PageRenderPlan(page_num=7, components=[component])
+        entries = render_plan.render_plan_to_json(plan)["ownership_ledger"]
+        self.assertEqual(entries, [
+            {"page_number": 7, "source_id": "p007b0001", "component_id": "p007c0001",
+             "component_kind": "translated_text", "confidence": "inferred", "reason_codes": ["body"]},
+            {"page_number": 7, "source_id": "p007b0002", "component_id": "p007c0001",
+             "component_kind": "translated_text", "confidence": "inferred", "reason_codes": ["body"]},
+        ])
+        plan.components.clear()
+        self.assertEqual(render_plan.render_plan_to_json(plan)["ownership_ledger"], [])
+
     def test_page_component_serializes_deterministically(self):
         component = ownership.PageComponent(
             component_id="p001c0002",
@@ -29,7 +47,6 @@ class OwnershipSerializationTests(unittest.TestCase):
             clip_bbox=None,
             confidence=ownership.CONFIDENCE_DETERMINISTIC,
             reason_codes=["layout_flow", "body_text"],
-            render_strategy="translated_text",
         )
 
         self.assertEqual(
@@ -41,15 +58,9 @@ class OwnershipSerializationTests(unittest.TestCase):
                 "confidence": "deterministic",
                 "parent_component_id": "",
                 "reason_codes": ["body_text", "layout_flow"],
-                "render_strategy": "translated_text",
                 "source_bbox": [10.123, 20.0, 30.5, 40.0],
                 "source_ids": ["p001b0001", "p001b0002"],
             },
-        )
-        dumped = ownership.stable_json_dumps({"component": ownership.page_component_to_json(component)})
-        self.assertEqual(
-            dumped,
-            json.dumps(json.loads(dumped), ensure_ascii=False, sort_keys=True, separators=(",", ":")),
         )
 
     def test_validation_result_serializes_deterministically(self):
@@ -91,7 +102,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     clip_bbox=None,
                     confidence=ownership.CONFIDENCE_DETERMINISTIC,
                     reason_codes=["body_text"],
-                    render_strategy="translated_text",
                 )
             ],
         )
@@ -113,7 +123,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     None,
                     ownership.CONFIDENCE_DETERMINISTIC,
                     ["body_text"],
-                    "translated_text",
                 ),
                 ownership.PageComponent(
                     "p008c0002",
@@ -123,7 +132,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     None,
                     ownership.CONFIDENCE_INFERRED,
                     ["reference_like"],
-                    "original_selectable_text",
                 ),
             ],
         )
@@ -145,7 +153,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     None,
                     ownership.CONFIDENCE_DETERMINISTIC,
                     ["duplicated_extraction"],
-                    "skip_explicitly",
                 ),
                 ownership.PageComponent(
                     "p010c0002",
@@ -155,7 +162,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     None,
                     ownership.CONFIDENCE_DETERMINISTIC,
                     ["trivial_or_artifact"],
-                    "skip_explicitly",
                 ),
             ],
         )
@@ -176,7 +182,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     (135, 71, 495, 164),
                     ownership.CONFIDENCE_CONSERVATIVE,
                     ["mixed_visual_body_split", "visual_region"],
-                    "original_image_clip",
                 ),
                 ownership.PageComponent(
                     "p017c0002",
@@ -186,7 +191,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     None,
                     ownership.CONFIDENCE_INFERRED,
                     ["body", "mixed_visual_body_split"],
-                    "translated_text",
                     parent_component_id="p017c0001",
                 ),
             ],
@@ -207,7 +211,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     (135, 71, 495, 190),
                     ownership.CONFIDENCE_CONSERVATIVE,
                     ["mixed_visual_body_split", "visual_region"],
-                    "original_image_clip",
                 ),
                 ownership.PageComponent(
                     "p017c0002",
@@ -217,7 +220,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     None,
                     ownership.CONFIDENCE_INFERRED,
                     ["body", "mixed_visual_body_split"],
-                    "translated_text",
                     parent_component_id="p017c0001",
                 ),
             ],
@@ -239,7 +241,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     (135, 71, 495, 116.3),
                     ownership.CONFIDENCE_CONSERVATIVE,
                     ["mixed_visual_body_split", "visual_region"],
-                    "original_image_clip",
                 ),
                 ownership.PageComponent(
                     "p017c0002",
@@ -249,7 +250,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     None,
                     ownership.CONFIDENCE_INFERRED,
                     ["body", "mixed_visual_body_split"],
-                    "translated_text",
                     parent_component_id="p017c0001",
                 ),
             ],
@@ -270,7 +270,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     (135, 71, 495, 120),
                     ownership.CONFIDENCE_CONSERVATIVE,
                     ["mixed_visual_body_split", "visual_region"],
-                    "original_image_clip",
                 ),
                 ownership.PageComponent(
                     "p017c0002",
@@ -280,7 +279,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     (135, 122, 495, 164),
                     ownership.CONFIDENCE_CONSERVATIVE,
                     ["mixed_visual_body_split", "visual_region"],
-                    "original_image_clip",
                 ),
                 ownership.PageComponent(
                     "p017c0003",
@@ -290,7 +288,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     None,
                     ownership.CONFIDENCE_INFERRED,
                     ["body", "mixed_visual_body_split"],
-                    "translated_text",
                     parent_component_id="p017c0001",
                 ),
             ],
@@ -309,7 +306,6 @@ class OwnershipValidationTests(unittest.TestCase):
                 (135, 71, 495, 164),
                 ownership.CONFIDENCE_CONSERVATIVE,
                 ["mixed_visual_body_split", "visual_region"],
-                "original_image_clip",
             ),
             ownership.PageComponent(
                 "p017c0002",
@@ -319,7 +315,6 @@ class OwnershipValidationTests(unittest.TestCase):
                 None,
                 ownership.CONFIDENCE_INFERRED,
                 ["body", "mixed_visual_body_split"],
-                "translated_text",
                 parent_component_id="p017c0001",
             ),
         ]
@@ -342,7 +337,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     (100, 100, 200, 180),
                     ownership.CONFIDENCE_CONSERVATIVE,
                     ["figure_region"],
-                    "original_image_clip",
                 )
             ],
         )
@@ -364,7 +358,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     (100, 100, 200, 200),
                     ownership.CONFIDENCE_CONSERVATIVE,
                     ["figure_region"],
-                    "original_image_clip",
                 )
             ],
         )
@@ -384,7 +377,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     (100, 100, 200, 200),
                     ownership.CONFIDENCE_CONSERVATIVE,
                     ["figure_region"],
-                    "original_image_clip",
                 )
             ],
         )
@@ -405,7 +397,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     (100, 100, 200, 200),
                     ownership.CONFIDENCE_CONSERVATIVE,
                     ["figure_region"],
-                    "original_image_clip",
                 )
             ],
         )
@@ -427,7 +418,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     (100, 100, 200, 200),
                     ownership.CONFIDENCE_CONSERVATIVE,
                     ["figure_region"],
-                    "original_image_clip",
                 )
             ],
         )
@@ -447,7 +437,6 @@ class OwnershipValidationTests(unittest.TestCase):
                     (100, 100, 200, 200),
                     ownership.CONFIDENCE_CONSERVATIVE,
                     ["figure_region"],
-                    "original_image_clip",
                 )
             ],
         )
@@ -547,7 +536,6 @@ class OwnershipBuilderTests(unittest.TestCase):
 
         owner = ownership.component_by_source_id(components)["p004b0008"]
         self.assertEqual(owner.component_kind, ownership.COMPONENT_KIND_UNKNOWN)
-        self.assertEqual(owner.render_strategy, "original_image_clip")
 
 
 class OwnershipTranslationFilterTests(unittest.TestCase):
@@ -575,10 +563,10 @@ class OwnershipTranslationFilterTests(unittest.TestCase):
         )
 
         with patch.object(ownership, "build_page_components", return_value=components):
-            batches = pipeline.build_batches([blocks], 7000, page_numbers=[20])
+            batches = pipeline.build_translation_batches(list(zip([20], [blocks])), 7000, batch_scope="document")
 
         self.assertEqual(
-            batches,
+            [batch.items for batch in batches],
             [[{"id": "p020b0001", "text": "Heading"}, {"id": "p020b0002", "text": "Body paragraph."}]],
         )
 
@@ -592,8 +580,8 @@ class RenderLayerOwnershipValidationTests(unittest.TestCase):
             type("Item", (), {"kind": "translated_text", "source_ids": ["p009b0005"], "bbox": (85, 610, 120, 630), "component_id": "p009c0002", "component_kind": "translated_text"})(),
         ]
         components = [
-            ownership.PageComponent("p009c0001", "visual", ["p009b0005"], (80, 600, 306, 656), (80, 600, 306, 656), "conservative", ["table_region"], "original_image_clip"),
-            ownership.PageComponent("p009c0002", "translated_text", ["p009b0005"], (85, 610, 120, 630), None, "inferred", ["body"], "translated_text"),
+            ownership.PageComponent("p009c0001", "visual", ["p009b0005"], (80, 600, 306, 656), (80, 600, 306, 656), "conservative", ["table_region"]),
+            ownership.PageComponent("p009c0002", "translated_text", ["p009b0005"], (85, 610, 120, 630), None, "inferred", ["body"]),
         ]
 
         result = ownership.validate_render_layer_exclusivity(plan, components)
@@ -609,8 +597,8 @@ class RenderLayerOwnershipValidationTests(unittest.TestCase):
             type("Item", (), {"kind": "translated_text", "source_ids": ["p017b0002"], "bbox": (135, 168, 499, 238), "component_id": "p017c0002", "component_kind": "translated_text", "fallback_reason": "mixed_visual_body"})(),
         ]
         components = [
-            ownership.PageComponent("p017c0001", "visual", ["p017b0002"], (135, 72, 499, 164), (135, 72, 499, 164), "conservative", ["code_region", ownership.REASON_MIXED_VISUAL_BODY_SPLIT], "original_image_clip"),
-            ownership.PageComponent("p017c0002", "translated_text", ["p017b0002"], (135, 168, 499, 238), None, "inferred", ["body", ownership.REASON_MIXED_VISUAL_BODY_SPLIT], "translated_text", parent_component_id="p017c0001"),
+            ownership.PageComponent("p017c0001", "visual", ["p017b0002"], (135, 72, 499, 164), (135, 72, 499, 164), "conservative", ["code_region", ownership.REASON_MIXED_VISUAL_BODY_SPLIT]),
+            ownership.PageComponent("p017c0002", "translated_text", ["p017b0002"], (135, 168, 499, 238), None, "inferred", ["body", ownership.REASON_MIXED_VISUAL_BODY_SPLIT], parent_component_id="p017c0001"),
         ]
 
         result = ownership.validate_render_layer_exclusivity(plan, components)
@@ -625,8 +613,8 @@ class RenderLayerOwnershipValidationTests(unittest.TestCase):
             type("Item", (), {"kind": "translated_text", "source_ids": ["p015b0097"], "bbox": (120, 100, 250, 140), "component_id": "p015c0002", "component_kind": "translated_text"})(),
         ]
         components = [
-            ownership.PageComponent("p015c0001", "visual", ["p015b0009"], (111, 65, 484, 402), (111, 65, 484, 402), "conservative", ["figure_region"], "original_image_clip"),
-            ownership.PageComponent("p015c0002", "translated_text", ["p015b0097"], (120, 100, 250, 140), None, "inferred", ["body"], "translated_text"),
+            ownership.PageComponent("p015c0001", "visual", ["p015b0009"], (111, 65, 484, 402), (111, 65, 484, 402), "conservative", ["figure_region"]),
+            ownership.PageComponent("p015c0002", "translated_text", ["p015b0097"], (120, 100, 250, 140), None, "inferred", ["body"]),
         ]
 
         result = ownership.validate_render_layer_exclusivity(plan, components)
@@ -642,8 +630,8 @@ class RenderLayerOwnershipValidationTests(unittest.TestCase):
             type("Item", (), {"kind": "translated_text", "source_ids": ["p009b0010"], "bbox": (90, 100, 240, 140), "component_id": "p009c0002", "component_kind": "translated_text"})(),
         ]
         components = [
-            ownership.PageComponent("p009c0001", "visual", ["p009b0009"], (72, 67, 525, 281), (291, 64, 533, 284), "conservative", ["table_region"], "original_image_clip"),
-            ownership.PageComponent("p009c0002", "translated_text", ["p009b0010"], (90, 100, 240, 140), None, "inferred", ["body"], "translated_text"),
+            ownership.PageComponent("p009c0001", "visual", ["p009b0009"], (72, 67, 525, 281), (291, 64, 533, 284), "conservative", ["table_region"]),
+            ownership.PageComponent("p009c0002", "translated_text", ["p009b0010"], (90, 100, 240, 140), None, "inferred", ["body"]),
         ]
 
         result = ownership.validate_render_layer_exclusivity(plan, components)
@@ -668,9 +656,8 @@ class RenderLayerOwnershipValidationTests(unittest.TestCase):
                 (80, 120, 520, 285),
                 "conservative",
                 ["visual_region"],
-                "original_image_clip",
             ),
-            ownership.PageComponent("p003c0002", "translated_text", ["p003b0007"], (90, 222, 510, 246), None, "inferred", ["body"], "translated_text"),
+            ownership.PageComponent("p003c0002", "translated_text", ["p003b0007"], (90, 222, 510, 246), None, "inferred", ["body"]),
         ]
 
         result = ownership.validate_render_layer_exclusivity(plan, components)
@@ -684,8 +671,8 @@ class RenderLayerOwnershipValidationTests(unittest.TestCase):
             type("Item", (), {"kind": "original_image_clip", "source_ids": ["p007b0001", "p007b0002"], "bbox": (100, 100, 500, 300), "component_id": "p007c0001", "component_kind": "visual"})(),
         ]
         components = [
-            ownership.PageComponent("p007c0001", "visual", ["p007b0001"], (100, 100, 500, 260), (100, 100, 500, 300), "conservative", ["visual_region"], "original_image_clip"),
-            ownership.PageComponent("p007c0002", "translated_text", ["p007b0002"], (180, 270, 230, 290), None, "inferred", ["body"], "translated_text"),
+            ownership.PageComponent("p007c0001", "visual", ["p007b0001"], (100, 100, 500, 260), (100, 100, 500, 300), "conservative", ["visual_region"]),
+            ownership.PageComponent("p007c0002", "translated_text", ["p007b0002"], (180, 270, 230, 290), None, "inferred", ["body"]),
         ]
 
         result = ownership.validate_render_layer_exclusivity(plan, components)
@@ -700,8 +687,8 @@ class RenderLayerOwnershipValidationTests(unittest.TestCase):
             type("Item", (), {"kind": "translated_text", "source_ids": ["p012b0001"], "bbox": (320, 66, 526, 90), "component_id": "p012c0002", "component_kind": "translated_text"})(),
         ]
         components = [
-            ownership.PageComponent("p012c0001", "visual", ["p012b0002"], (82, 67, 292, 109), (70, 60, 526, 130), "conservative", ["reference_like"], "original_image_clip"),
-            ownership.PageComponent("p012c0002", "translated_text", ["p012b0001"], (320, 66, 526, 90), None, "inferred", ["body"], "translated_text"),
+            ownership.PageComponent("p012c0001", "visual", ["p012b0002"], (82, 67, 292, 109), (70, 60, 526, 130), "conservative", ["reference_like"]),
+            ownership.PageComponent("p012c0002", "translated_text", ["p012b0001"], (320, 66, 526, 90), None, "inferred", ["body"]),
         ]
 
         result = ownership.validate_render_layer_exclusivity(plan, components)
@@ -717,8 +704,8 @@ class RenderLayerOwnershipValidationTests(unittest.TestCase):
             type("Item", (), {"kind": "translated_text", "source_ids": ["p023b0002"], "bbox": (310, 120, 380, 150), "component_id": "p023c0002", "component_kind": "translated_text"})(),
         ]
         components = [
-            ownership.PageComponent("p023c0001", "visual", ["p023b0001"], (100, 100, 220, 180), (90, 90, 300, 200), "conservative", ["figure_region"], "original_image_clip"),
-            ownership.PageComponent("p023c0002", "translated_text", ["p023b0002"], (210, 120, 280, 150), None, "inferred", ["heading"], "translated_text"),
+            ownership.PageComponent("p023c0001", "visual", ["p023b0001"], (100, 100, 220, 180), (90, 90, 300, 200), "conservative", ["figure_region"]),
+            ownership.PageComponent("p023c0002", "translated_text", ["p023b0002"], (210, 120, 280, 150), None, "inferred", ["heading"]),
         ]
 
         result = ownership.validate_render_layer_exclusivity(plan, components)
@@ -734,8 +721,8 @@ class RenderLayerOwnershipValidationTests(unittest.TestCase):
             type("Item", (), {"kind": "translated_text", "source_ids": ["p017b0002"], "bbox": (135, 168, 495, 239), "component_id": "p017c0002", "component_kind": "translated_text"})(),
         ]
         components = [
-            ownership.PageComponent("p017c0001", "visual", ["p017b0002"], (135, 71, 495, 164), (135, 71, 495, 164), "conservative", ["mixed_visual_body_split", "visual_region"], "original_image_clip"),
-            ownership.PageComponent("p017c0002", "translated_text", ["p017b0002"], (135, 168, 495, 239), None, "inferred", ["body", "mixed_visual_body_split"], "translated_text", parent_component_id="p017c0001"),
+            ownership.PageComponent("p017c0001", "visual", ["p017b0002"], (135, 71, 495, 164), (135, 71, 495, 164), "conservative", ["mixed_visual_body_split", "visual_region"]),
+            ownership.PageComponent("p017c0002", "translated_text", ["p017b0002"], (135, 168, 495, 239), None, "inferred", ["body", "mixed_visual_body_split"], parent_component_id="p017c0001"),
         ]
 
         result = ownership.validate_render_layer_exclusivity(plan, components)
@@ -750,8 +737,8 @@ class RenderLayerOwnershipValidationTests(unittest.TestCase):
             type("Item", (), {"kind": "original_selectable_text", "source_ids": ["p140b0001", "p140b0002", "p140b0003"], "bbox": (72.0, 113.505, 329.604, 154.177), "component_id": "p140c0002", "component_kind": "translated_text"})(),
         ]
         components = [
-            ownership.PageComponent("p140c0001", "visual", ["p140b0001", "p140b0002", "p140b0003"], (71.25, 96.09, 540.39, 116.31), (71.25, 96.09, 540.39, 116.31), "conservative", ["mixed_visual_body_split", "visual_region"], "original_image_clip"),
-            ownership.PageComponent("p140c0002", "translated_text", ["p140b0001", "p140b0002", "p140b0003"], (72.0, 113.505, 327.604, 145.556), None, "inferred", ["body", "mixed_visual_body_split"], "translated_text", parent_component_id="p140c0001"),
+            ownership.PageComponent("p140c0001", "visual", ["p140b0001", "p140b0002", "p140b0003"], (71.25, 96.09, 540.39, 116.31), (71.25, 96.09, 540.39, 116.31), "conservative", ["mixed_visual_body_split", "visual_region"]),
+            ownership.PageComponent("p140c0002", "translated_text", ["p140b0001", "p140b0002", "p140b0003"], (72.0, 113.505, 327.604, 145.556), None, "inferred", ["body", "mixed_visual_body_split"], parent_component_id="p140c0001"),
         ]
 
         result = ownership.validate_render_layer_exclusivity(plan, components)
@@ -766,8 +753,8 @@ class RenderLayerOwnershipValidationTests(unittest.TestCase):
             type("Item", (), {"kind": "translated_text", "source_ids": ["p017b0002"], "bbox": (135, 168, 495, 239), "component_id": "p017c0002", "component_kind": "translated_text"})(),
         ]
         components = [
-            ownership.PageComponent("p017c0001", "visual", ["p017b0002"], (135, 71, 495, 164), (135, 71, 495, 164), "conservative", ["mixed_visual_body_split", "visual_region"], "original_image_clip"),
-            ownership.PageComponent("p017c0002", "translated_text", ["p017b0002"], (135, 168, 495, 239), None, "inferred", ["body", "mixed_visual_body_split"], "translated_text", parent_component_id="p017c0001"),
+            ownership.PageComponent("p017c0001", "visual", ["p017b0002"], (135, 71, 495, 164), (135, 71, 495, 164), "conservative", ["mixed_visual_body_split", "visual_region"]),
+            ownership.PageComponent("p017c0002", "translated_text", ["p017b0002"], (135, 168, 495, 239), None, "inferred", ["body", "mixed_visual_body_split"], parent_component_id="p017c0001"),
         ]
 
         result = ownership.validate_render_layer_exclusivity(plan, components)

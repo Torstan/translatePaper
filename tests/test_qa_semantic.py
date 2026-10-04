@@ -12,19 +12,10 @@ import qa_semantic
 
 
 class SemanticQaModuleTests(unittest.TestCase):
-    def test_backtranslate_check_reexports_semantic_qa_api(self):
-        self.assertIs(backtranslate_check.normalize_english, qa_semantic.normalize_english)
-        self.assertIs(backtranslate_check.make_prompt, qa_semantic.make_prompt)
-        self.assertIs(backtranslate_check.run_backtranslation, qa_semantic.run_backtranslation)
-        self.assertIs(backtranslate_check.build_report, qa_semantic.build_report)
-        self.assertIs(backtranslate_check.classify_block, qa_semantic.classify_block)
-        self.assertIs(backtranslate_check.choose_items_for_qa, qa_semantic.choose_items_for_qa)
-        self.assertIs(backtranslate_check.write_markdown, qa_semantic.write_markdown)
-
     def test_qa_semantic_does_not_import_translation_pipeline(self):
         script = (
             "import backtranslate_check, qa_semantic, sys; "
-            "raise SystemExit(1 if 'translate_pdf_via_codex' in sys.modules else 0)"
+            "raise SystemExit(1 if {'pipeline', 'translate_pdf_via_codex'} & sys.modules.keys() else 0)"
         )
         proc = subprocess.run(
             [sys.executable, "-c", script],
@@ -130,7 +121,7 @@ class SemanticQaModuleTests(unittest.TestCase):
         self.assertIn("## p001b0019  score=0.19", text)
         self.assertNotIn("## p001b0020", text)
 
-    def test_run_backtranslation_uses_injected_runner_and_validates_output_ids(self):
+    def test_run_backtranslation_batches_items_and_validates_output_ids(self):
         items = [
             {"id": "p001b0001", "translation": "甲" * 8},
             {"id": "p001b0002", "translation": "乙" * 8},
@@ -138,7 +129,8 @@ class SemanticQaModuleTests(unittest.TestCase):
         ]
         prompts = []
 
-        def fake_runner(cmd, *, input_text=None, check=True):
+        def fake_runner(cmd, *, input=None, **kwargs):
+            input_text = input
             prompts.append(input_text)
             out_path = Path(cmd[cmd.index("-o") + 1])
             payload = json.loads(input_text.split("Items:\n", 1)[1])
@@ -158,13 +150,8 @@ class SemanticQaModuleTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             job_dir = Path(tmp)
-            result = qa_semantic.run_backtranslation(
-                items,
-                16,
-                job_dir,
-                retries=1,
-                runner=fake_runner,
-            )
+            with patch("subprocess.run", side_effect=fake_runner):
+                result = qa_semantic.run_backtranslation(items, 16, job_dir, retries=1)
 
             self.assertTrue((job_dir / "backtranslate_schema.json").exists())
             self.assertTrue((job_dir / "backtranslate-01.log.txt").exists())
@@ -180,20 +167,75 @@ class SemanticQaModuleTests(unittest.TestCase):
         )
 
     def test_run_backtranslation_reports_failed_batch_log_path(self):
-        def failing_runner(_cmd, *, input_text=None, check=True):
+        def failing_runner(_cmd, **kwargs):
             return SimpleNamespace(returncode=1, stdout="bad", stderr="stderr")
 
         with tempfile.TemporaryDirectory() as tmp:
             job_dir = Path(tmp)
-            with self.assertRaisesRegex(RuntimeError, "back-translation batch 1 failed"):
+            with patch("subprocess.run", side_effect=failing_runner), self.assertRaisesRegex(
+                RuntimeError, "backtranslate-01.log.txt"
+            ):
                 qa_semantic.run_backtranslation(
                     [{"id": "p001b0001", "translation": "译文"}],
                     7000,
                     job_dir,
                     retries=1,
-                    runner=failing_runner,
                 )
             self.assertTrue((job_dir / "backtranslate-01.log.txt").exists())
+
+    def test_backtranslation_retries_invalid_and_stale_output(self):
+        good = {"items": [{"id": "a", "back_translation": "  Valid English.  "}]}
+        invalid_outputs = [
+            None, "not JSON", "[]", '{"items": []}',
+            json.dumps({"items": good["items"] * 2}),
+            json.dumps({"items": [{"id": "other", "back_translation": "Extra."}]}),
+            json.dumps({"items": [{"id": "a", "back_translation": " "}]}),
+            json.dumps({"items": [{"id": "a", "back_translation": 17}]}),
+            json.dumps({"items": [{"id": "a"}]}),
+            json.dumps({"items": [None]}),
+            (1, json.dumps(good)),
+        ]
+        for bad in invalid_outputs:
+            with self.subTest(output=bad), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                stale = json.dumps({"items": [{"id": "a", "back_translation": "Stale."}]})
+                for filename in ("backtranslate-01.json", "backtranslate-01.out.json"):
+                    (root / filename).write_text(stale, encoding="utf-8")
+                responses = iter([bad, json.dumps(good)])
+
+                def run(cmd, **kwargs):
+                    response = next(responses)
+                    code = 0
+                    if isinstance(response, tuple):
+                        code, response = response
+                    if response is not None:
+                        Path(cmd[cmd.index("-o") + 1]).write_text(response, encoding="utf-8")
+                    return subprocess.CompletedProcess(cmd, code, "", "")
+
+                with patch("subprocess.run", side_effect=run) as command, patch("time.sleep"):
+                    result = qa_semantic.run_backtranslation(
+                        [{"id": "a", "translation": "译文"}], 7000, root, retries=2,
+                    )
+                self.assertEqual(result, {"a": "Valid English."})
+                self.assertEqual(command.call_count, 2)
+
+    def test_backtranslation_exhausts_retries_and_records_invalid_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def run(cmd, **kwargs):
+                Path(cmd[cmd.index("-o") + 1]).write_text('{"items": []}', encoding="utf-8")
+                return subprocess.CompletedProcess(cmd, 0, "model output", "")
+
+            with patch("subprocess.run", side_effect=run) as command, patch("time.sleep"):
+                with self.assertRaisesRegex(RuntimeError, "backtranslate-01.log.txt"):
+                    qa_semantic.run_backtranslation(
+                        [{"id": "a", "translation": "译文"}], 7000, root, retries=2,
+                    )
+            self.assertEqual(command.call_count, 2)
+            log = (root / "backtranslate-01.log.txt").read_text(encoding="utf-8")
+            self.assertIn("VALIDATION ERROR", log)
+            self.assertIn("missing=['a']", log)
 
     def test_backtranslate_check_main_keeps_compatible_report_paths(self):
         with tempfile.TemporaryDirectory() as tmp:

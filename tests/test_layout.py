@@ -5,7 +5,7 @@ import layout
 import ownership
 import render_pdf
 import render_plan
-import translate_pdf_via_codex as pdf
+import pipeline as pdf
 
 
 class FakeFitz:
@@ -289,7 +289,6 @@ class LayoutExtractionModuleTests(unittest.TestCase):
                 (106.14, 137.909818, 506.22, 250.98),
                 ownership.CONFIDENCE_CONSERVATIVE,
                 ["visual_region", "visual_region"],
-                "original_image_clip",
             )
         )
         plan.items.append(
@@ -348,7 +347,6 @@ class LayoutExtractionModuleTests(unittest.TestCase):
                 visual_bbox,
                 ownership.CONFIDENCE_CONSERVATIVE,
                 ["visual_region"],
-                "original_image_clip",
             )
         )
         plan.items.append(

@@ -5,7 +5,7 @@ from pathlib import Path
 import classify
 import render_plan
 from classify import mark_running_headers
-import translate_pdf_via_codex as pdf
+import pipeline as pdf
 
 
 @dataclass(frozen=True)

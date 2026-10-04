@@ -8,7 +8,7 @@ from PIL import Image
 import render_pdf
 import layout
 import render_plan
-import translate_pdf_via_codex as pdf
+import pipeline as pdf
 
 
 class RenderPdfExtractionModuleTests(unittest.TestCase):

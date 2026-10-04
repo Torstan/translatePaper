@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -9,10 +10,131 @@ import qa_visual
 import translate_pdf_parallel as parallel
 import render_pdf
 import render_plan
-import translate_pdf_via_codex as pipeline
+import pipeline
+import ownership
 
 
 class FinalRenderPlanTests(unittest.TestCase):
+    def make_page(self, root):
+        source = root / "source.pdf"
+        with pipeline.load_fitz().open() as doc:
+            page = doc.new_page(width=200, height=220)
+            page.draw_rect((20, 120, 180, 160), fill=(0, 0, 0))
+            doc.save(source)
+        block = {"id": "p001b0001", "page": 1, "block_index": 1,
+                 "text": "A complete source paragraph for validation.",
+                 "xMin": 20, "yMin": 30, "xMax": 180, "yMax": 80}
+        translations = {block["id"]: "完整的正文。"}
+        plan = pipeline.build_page_render_plan(1, [block], translations, (200, 220))
+        return source, block, translations, plan
+
+    def test_invalid_ownership_blocks_drawing_without_optional_qa(self):
+        for defect in ("missing_owner", "duplicate_owner"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source, block, translations, plan = self.make_page(root)
+                if defect == "missing_owner":
+                    plan.components.clear()
+                else:
+                    plan.components.append(replace(plan.components[0], component_id="duplicate"))
+                output = root / "output.pdf"
+                previous = source.read_bytes()
+                output.write_bytes(previous)
+                fitz = pipeline.load_fitz()
+                opened = []
+                real_open = fitz.open
+
+                def track_open(*args, **kwargs):
+                    doc = real_open(*args, **kwargs)
+                    opened.append(doc)
+                    return doc
+
+                with (
+                    patch.object(pipeline, "build_page_render_plan", return_value=plan),
+                    patch.object(pipeline, "preserve_images_on_page") as images,
+                    patch.object(pipeline, "render_plan_item") as draw,
+                    patch.object(fitz, "open", side_effect=track_open),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "owner"):
+                        pipeline.write_vector_pdf(source, output, [(1, [block])], translations, 72,
+                                                  {"plans_dir": root / "plans"})
+                images.assert_not_called()
+                draw.assert_not_called()
+                self.assertTrue(opened and all(doc.is_closed for doc in opened))
+                self.assertEqual(output.read_bytes(), previous)
+                artifact = json.loads((root / "plans/page-001.render-plan.json").read_text())
+                self.assertEqual([i["issue_code"] for i in artifact["ownership_validation"]["issues"]], [defect])
+                self.assertEqual(artifact["ownership_validation"], artifact["validation_results"]["ownership"])
+
+    def test_final_layout_replaces_stale_layer_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, block, translations, plan = self.make_page(root)
+            visual = ownership.PageComponent("figure", "visual", [], (20, 120, 180, 160),
+                                             (20, 120, 180, 160), "deterministic")
+            plan.components.append(visual)
+            clip = render_plan.RenderItem("original_image_clip", [], (20, 30, 180, 160),
+                                          component_id="figure", component_kind="visual")
+            plan.items.append(clip)
+            plan.ownership_validation = ownership.validate_render_layer_exclusivity(plan, plan.components)
+            self.assertTrue(plan.ownership_validation.issues)
+
+            def finish_layout(*args, **kwargs):
+                clip.bbox = visual.clip_bbox
+
+            output = root / "output.pdf"
+            with (
+                patch.object(pipeline, "build_page_render_plan", return_value=plan),
+                patch.object(pipeline, "normalize_vector_text_layout", side_effect=finish_layout),
+            ):
+                result = pipeline.write_vector_pdf(source, output, [(1, [block])], translations, 72,
+                                                   {"plans_dir": root / "plans"})
+            self.assertEqual(result.plans[0].ownership_validation.issues, [])
+            artifact = json.loads((root / "plans/page-001.render-plan.json").read_text())
+            self.assertEqual(artifact["ownership_validation"], {"ok": True, "issues": []})
+            self.assertEqual(qa_visual.detect_ownership_issues(artifact), [])
+            self.assertEqual(pipeline.validate_document_quality([(1, [block])], translations, result.plans), [])
+
+    def test_final_text_overlap_is_rejected_before_drawing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, block, translations, plan = self.make_page(root)
+            second = dict(block, id="p001b0002", text="Another complete source paragraph.")
+            plan.components.append(replace(plan.components[0], component_id="second", source_ids=[second["id"]]))
+            plan.items.append(replace(plan.items[0], source_ids=[second["id"]], text="另一段正文。"))
+            plan.ledger.append(replace(plan.ledger[0], block_id=second["id"]))
+            with (
+                patch.object(pipeline, "build_page_render_plan", return_value=plan),
+                patch.object(pipeline, "normalize_vector_text_layout"),
+                patch.object(pipeline, "render_plan_item") as draw,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "overlaps text"):
+                    pipeline.write_vector_pdf(source, root / "output.pdf", [(1, [block, second])], translations, 72,
+                                              {"plans_dir": root / "plans"})
+            draw.assert_not_called()
+            artifact = json.loads((root / "plans/page-001.render-plan.json").read_text())
+            self.assertTrue(artifact["validation_results"]["text_overlap_errors"])
+
+    def test_ownership_warning_is_preserved_without_blocking_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, block, translations, plan = self.make_page(root)
+            visual = ownership.PageComponent("figure", "visual", [], (20, 120, 180, 160),
+                                             (20, 125, 180, 160), "conservative")
+            plan.components.append(visual)
+            plan.items.append(render_plan.RenderItem("original_image_clip", [], visual.clip_bbox,
+                                                     component_id="figure", component_kind="visual"))
+            with patch.object(pipeline, "build_page_render_plan", return_value=plan):
+                result = pipeline.write_vector_pdf(source, root / "output.pdf", [(1, [block])], translations, 72,
+                                                   {"plans_dir": root / "plans"})
+            self.assertTrue((root / "output.pdf").exists())
+            expected = [("visual_clip_undercaptures_source", "warning")]
+            self.assertEqual([(i.issue_code, i.severity) for i in result.plans[0].ownership_validation.issues], expected)
+            artifact = json.loads((root / "plans/page-001.render-plan.json").read_text())
+            for representation in (result.plans[0], artifact):
+                issues = qa_visual.detect_ownership_issues(representation)
+                self.assertEqual([i.severity for i in issues], ["warning"])
+
     def test_cached_boundary_repair_is_applied_once_before_vector_drawing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -56,7 +178,7 @@ class FinalRenderPlanTests(unittest.TestCase):
             selected = [(2, [block]), (3, [])]
             translations = {block["id"]: "这一段正文用于验证译文页面的实际宽度。"}
             job = {"job_dir": root, "plans_dir": root / "plans"}
-            result = pipeline.write_vector_pdf(source, output, selected, translations, (200, 300), 72, job)
+            result = pipeline.write_vector_pdf(source, output, selected, translations, 72, job)
             self.assertIsNotNone(result, "drawing must return its actual final plans")
             self.assertEqual([p.page_size for p in result.plans], [(420, 300), (300, 300)])
             self.assertEqual([p.output_page_num for p in result.plans], [1, 2])
@@ -67,9 +189,9 @@ class FinalRenderPlanTests(unittest.TestCase):
                 patch.object(pipeline, "build_page_render_plan", side_effect=AssertionError("QA rebuilt a plan")),
                 patch.object(pipeline, "normalize_vector_text_layout", side_effect=AssertionError("QA rewrote a plan")),
                 patch.object(qa_visual, "_load_plan_artifact", side_effect=AssertionError("QA reloaded a plan")),
-                patch.object(parallel.qa, "choose_items_for_qa", return_value=[]),
+                patch.object(pipeline.qa, "choose_items_for_qa", return_value=[]),
             ):
-                report = parallel.run_qa_for_job(selected, translations, job, (200, 300), args,
+                report = pipeline.run_qa_for_job(selected, translations, job, (200, 300), args,
                                                  output_pdf_path=output, render_result=result)
             self.assertEqual([render_plan.render_plan_json_dumps(p) for p in result.plans], before)
             payload = json.loads(Path(report["visual_report_json"]).read_text())

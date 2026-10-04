@@ -4,8 +4,10 @@ Translates English PDF papers to Chinese PDFs. It extracts text, uses Codex CLI,
 
 ## Scripts
 
-- `translate_pdf_parallel.py`: batch entry.
-- `translate_pdf_via_codex.py`: single-PDF pipeline.
+- `translate_pdf_parallel.py`: batch CLI; selects documents, schedules jobs and writes summaries.
+- `translate_pdf_via_codex.py`: single-PDF CLI.
+- `pipeline.py`: shared `translate_document()` workflow, source analysis, rendering and QA orchestration.
+- `translation_batch.py`: fixed batch execution, resume, incremental cache saves and model retries.
 - `backtranslate_check.py` / `qa_directory_backtranslation.py`: QA.
 
 ## Requirements
@@ -20,6 +22,22 @@ repairs before vector or raster rendering. Translation batches and sentence
 repairs share command execution and retries: failed commands, stale output,
 invalid fields, and missing, extra, or duplicate IDs/keys cannot enter the cache.
 An empty repair prefix is valid; an empty repaired sentence is not.
+
+Both CLIs call `pipeline.translate_document()` with explicit `DocumentOptions`.
+Their defaults remain distinct: the single-PDF CLI batches across pages with
+10,000 characters and does not run optional QA; the batch CLI groups within each
+page with 7,000 characters and runs QA unless `--no-qa` is given. Worker count
+controls execution concurrency without changing the prepared batch boundaries.
+
+Cache acceptance retains the existing policies: the single-PDF CLI requires
+`max(1, int(selected_ids * 0.6))` matching IDs; the batch CLI accepts any matching
+IDs. Both atomically save each successfully collected batch result. Stale cache backups now share
+the `translations.stale-<timestamp>.json` naming convention. These ID checks do
+not establish cache freshness when source text or model configuration changes.
+An empty page selection fails before model execution or PDF drawing.
+
+Python consumers import the implementation from `pipeline`, not the CLI scripts.
+The existing command names and flags remain available.
 
 `render_translated_pdf` applies boundary repairs once and returns the translations
 used for rendering and QA. The lower-level `write_vector_pdf` draws the supplied
@@ -64,6 +82,14 @@ During vector rendering, drawing and QA share the final in-memory plans; saved
 JSON plans remain available for offline visual QA. Raster diagnostics check the
 source layout and do not represent the raster drawing's final layout.
 
+Vector rendering validates the final layout before drawing each page, including
+source ownership, coverage, protected geometry, text overlap, style and fit.
+These checks run even with optional QA disabled. Ownership diagnostics are
+recomputed after layout; warnings retain their severity in both plans and QA.
+Failed validation writes all check results, closes PDF resources, and leaves an
+existing output PDF unchanged. A report-write failure does not replace the
+validation error.
+
 When QA is enabled, deterministic quality reports are written to:
 
 ```text
@@ -80,12 +106,18 @@ work/jobs/<pdf-stem>/visual_qa/visual_qa_report.md
 ```
 
 Use non-strict QA while exploring defects. Use `--strict-qa` before accepting a
-batch; strict mode fails jobs with coverage, layout, visual, clipping, overlap,
-or style errors instead of reporting a defective PDF as translated.
+batch to fail on additional deterministic content and visual QA errors. QA runs
+after PDF writing; rejection by optional QA does not yet remove or roll back
+that PDF.
 
-Drawing and offline visual QA enforce the same style roles, absolute font sizes,
-and explicit style exceptions. An arbitrary fallback reason does not exempt text
-from the style policy.
+Drawing and offline visual QA enforce the same style roles and font bounds.
+Render items record `layout_role` for flow/split relationships and `font_policy`
+for document, source-adapted, compact-flow, or dense-row sizing. These fields
+control layout and validation; `fallback_reason` is diagnostic text.
+Role splits still check their permitted styles and font sizes. Source-adapted
+sizes have per-style limits; compact body text has the existing 5pt minimum.
+Older JSON plans without these fields receive ordinary document-style checks;
+regenerate historical special plans to record their explicit permissions.
 
 Embedded running headers are removed only with source evidence: a repeated margin
 line across pages or separated rows in the extracted PDF geometry. Cleanup happens

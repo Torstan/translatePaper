@@ -63,7 +63,9 @@ PYTHONPYCACHEPREFIX=~/tmp/translatePaper_pycache python3 -m unittest \
   tests.test_qa_semantic tests.test_render_pdf tests.test_layout \
   tests.test_regions tests.test_render_plan tests.test_waitfree_regression \
   tests.test_pdf_render_fixtures tests.test_pdf_render_fixture_layout \
-  tests.test_translate_pdf_parallel tests.test_qa_visual -v
+  tests.test_translate_pdf_parallel tests.test_qa_visual \
+  tests.test_translation_batch tests.test_document_pipeline \
+  tests.test_final_render_plan tests.test_layout_policy -v
 ```
 
 Run Python compilation checks for touched Python modules and tests:
@@ -71,12 +73,15 @@ Run Python compilation checks for touched Python modules and tests:
 ```bash
 PYTHONPYCACHEPREFIX=~/tmp/translatePaper_pycache python3 -m py_compile \
   qa_semantic.py backtranslate_check.py render_pdf.py layout.py regions.py \
-  classify.py render_plan.py qa_visual.py translate_pdf_via_codex.py \
+  classify.py render_plan.py qa_visual.py pipeline.py translation_batch.py \
+  translate_pdf_via_codex.py \
   translate_pdf_parallel.py tests/test_qa_semantic.py tests/test_render_pdf.py \
   tests/test_layout.py tests/test_regions.py tests/test_render_plan.py \
   tests/test_waitfree_regression.py tests/test_pdf_render_fixtures.py \
   tests/test_pdf_render_fixture_layout.py tests/test_translate_pdf_parallel.py \
-  tests/test_qa_visual.py tests/pdf_render_fixture_runner.py
+  tests/test_qa_visual.py tests/pdf_render_fixture_runner.py \
+  tests/test_translation_batch.py tests/test_document_pipeline.py \
+  tests/test_final_render_plan.py tests/test_layout_policy.py ownership.py
 ```
 
 For rendering or visual-QA changes, run at least one deterministic sample or
