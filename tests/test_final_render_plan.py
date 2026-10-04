@@ -28,6 +28,51 @@ class FinalRenderPlanTests(unittest.TestCase):
         plan = pipeline.build_page_render_plan(1, [block], translations, (200, 220))
         return source, block, translations, plan
 
+    def test_final_plan_entry_adapts_text_and_saves_checked_page_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, block, _, _ = self.make_page(root)
+            block["yMax"] = 38
+            translations = {block["id"]: "这段正文需要扩展文本框才能保持统一字号。" * 4}
+            self.assertTrue(callable(getattr(pipeline, "build_final_page_plan", None)),
+                            "final plan generation needs one complete entry point")
+            with patch("subprocess.run", side_effect=AssertionError("planning must not invoke a model")):
+                plan = pipeline.build_final_page_plan(
+                    1, [block], translations, (200, 220), output_page_num=3,
+                    job_paths={"plans_dir": root / "plans"},
+                )
+            self.assertTrue(plan.items)
+            self.assertGreater(plan.items[0].bbox[3], 38)
+            self.assertEqual(plan.items[0].font_size, 9.2)
+            self.assertEqual(pipeline.validate_plan_text_fit(plan, pipeline.load_fitz()), [])
+            artifact = json.loads((root / "plans/page-001.render-plan.json").read_text())
+            self.assertEqual((artifact["page_num"], artifact["output_page_num"], artifact["page_size"]),
+                             (1, 3, [200.0, 220.0]))
+            self.assertEqual(artifact["render_items"], render_plan.render_plan_to_json(plan)["render_items"])
+            self.assertEqual(artifact["validation_results"], {
+                "ownership": {"ok": True, "issues": []}, "coverage_errors": [],
+                "layout_errors": [], "text_overlap_errors": [], "style_policy_errors": [],
+                "text_fit_errors": [],
+            })
+
+    def test_final_plan_entry_rejects_invalid_ownership_and_saves_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, block, translations, plan = self.make_page(root)
+            plan.components.clear()
+            self.assertTrue(callable(getattr(pipeline, "build_final_page_plan", None)),
+                            "final plan generation must reject invalid ownership itself")
+            with patch.object(pipeline, "build_page_render_plan", return_value=plan):
+                with self.assertRaisesRegex(RuntimeError, "owner"):
+                    pipeline.build_final_page_plan(
+                        1, [block], translations, (200, 220),
+                        job_paths={"plans_dir": root / "plans"},
+                    )
+            artifact = json.loads((root / "plans/page-001.render-plan.json").read_text())
+            self.assertEqual([i["issue_code"] for i in artifact["ownership_validation"]["issues"]],
+                             ["missing_owner"])
+            self.assertEqual(artifact["ownership_validation"], artifact["validation_results"]["ownership"])
+
     def test_invalid_ownership_blocks_drawing_without_optional_qa(self):
         for defect in ("missing_owner", "duplicate_owner"):
             with self.subTest(defect=defect), tempfile.TemporaryDirectory() as tmp:
@@ -135,7 +180,7 @@ class FinalRenderPlanTests(unittest.TestCase):
                 issues = qa_visual.detect_ownership_issues(representation)
                 self.assertEqual([i.severity for i in issues], ["warning"])
 
-    def test_cached_boundary_repair_is_applied_once_before_vector_drawing(self):
+    def test_translation_entry_repairs_cached_response_once_and_rendering_keeps_final_text(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.pdf"
@@ -147,16 +192,31 @@ class FinalRenderPlanTests(unittest.TestCase):
                                  "text": text, "xMin": 130, "yMin": y, "xMax": 486, "yMax": y + 40}])
                         for page, text, y in [(1, "The history appears sequential to each process, and", 590),
                                               (2, "of operations. Equivalently, each operation appears instantaneously.", 50)]]
-            job = {"job_dir": root, "plans_dir": root / "plans", "boundary_repairs_path": root / "repairs.json"}
+            job = {"job_dir": root, "plans_dir": root / "plans", "boundary_repairs_path": root / "repairs.json",
+                   "translations_path": root / "translations.json", "schema_path": root / "schema.json"}
             job["boundary_repairs_path"].write_text(json.dumps({"p001b0001->p002b0001": {
                 "translation": "完整句子。", "next_prefix_translation": "的操作。"}}))
             translations = {"p001b0001": "未完成，并且", "p002b0001": "的操作。的操作。后续句子。"}
+            job["translations_path"].write_text(json.dumps(translations))
+            cached_response = job["translations_path"].read_bytes()
+            self.assertTrue(callable(getattr(pipeline, "translate_pages", None)),
+                            "translation must own cache recovery and boundary repair")
             with patch("subprocess.run", side_effect=AssertionError("cached repair must not invoke Codex")):
-                result = pipeline.render_translated_pdf(
-                    source, root / "output.pdf", selected, translations, (623, 801), 72, job,
-                    render_mode="vector", model="test",
+                final_translations, translated_blocks = pipeline.translate_pages(
+                    selected, (623, 801), job, pipeline.DocumentOptions(model="test"),
                 )
+                result = pipeline.render_translated_pdf(
+                    source, root / "output.pdf", selected, final_translations, (623, 801), 72, job,
+                    render_mode="vector",
+                )
+                repeated = pipeline.render_translated_pdf(
+                    source, root / "repeated.pdf", selected, final_translations, (623, 801), 72, job,
+                    render_mode="vector",
+                )
+            self.assertEqual(translated_blocks, 2)
+            self.assertEqual(job["translations_path"].read_bytes(), cached_response)
             self.assertEqual(result.translations["p002b0001"], "的操作。后续句子。")
+            self.assertEqual(repeated.translations["p002b0001"], "的操作。后续句子。")
             self.assertTrue(any("的操作。后续句子。" in item.text for item in result.plans[1].items))
             self.assertEqual(translations["p002b0001"], "的操作。的操作。后续句子。")
 

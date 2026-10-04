@@ -39,9 +39,21 @@ An empty page selection fails before model execution or PDF drawing.
 Python consumers import the implementation from `pipeline`, not the CLI scripts.
 The existing command names and flags remain available.
 
-`render_translated_pdf` applies boundary repairs once and returns the translations
-used for rendering and QA. The lower-level `write_vector_pdf` draws the supplied
-final translations without applying cached repairs again. Layout planning and
+`translate_pages` owns grouping, cache recovery, response validation and boundary
+repairs, returning final translations and the requested source-block count.
+The response cache stays unrepaired so resuming cannot strip a sentence prefix twice.
+`render_translated_pdf` consumes those final translations; it no longer accepts
+`model`, `reasoning_effort` or `retries`. Python callers that previously relied on
+rendering to repair raw translations must call `translate_pages` first, or use
+the complete `translate_document` workflow.
+
+`build_final_page_plan` combines planning, layout adaptation, mandatory validation
+and diagnostic saving. It returns the existing `PageRenderPlan` or raises;
+when `job_paths` requests artifacts, the failed plan is recorded as well.
+`write_vector_pdf` uses this entry before drawing;
+ordinary callers do not sequence layout repair functions or validation results.
+Draft builders and individual repairs remain implementation/testing helpers.
+Layout planning and
 visual QA share the same protected-region overlap predicate (over 6pt vertically
 and over 5% of the smaller box's area).
 

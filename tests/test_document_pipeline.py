@@ -89,6 +89,43 @@ class SharedBatchExecutionTests(unittest.TestCase):
 
 
 class DocumentExecutionTests(unittest.TestCase):
+    def test_failed_sentence_repair_preserves_output_and_completed_translation_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "paper.pdf"
+            output = root / "output.pdf"
+            output.write_bytes(b"previous PDF")
+            job = root / "work/jobs/paper"
+            job.mkdir(parents=True)
+            pages = [[{
+                "id": f"p{page:03d}b0001", "page": page, "block_index": 1,
+                "text": text, "xMin": 130, "yMin": y, "xMax": 486, "yMax": y + 40,
+            }] for page, text, y in [
+                (1, "The history appears sequential to each process, and", 590),
+                (2, "of operations. Equivalently, each operation appears instantaneously.", 50),
+            ]]
+            (job / "source_pages.json").write_text(json.dumps(pages))
+            raw = {"p001b0001": "未完成，并且", "p002b0001": "的操作。后续句子。"}
+
+            def run(cmd, **kwargs):
+                self.assertEqual(cmd[:2], ["codex", "exec"])
+                out = Path(cmd[cmd.index("-o") + 1])
+                if out.name == "batch-01.out.json":
+                    out.write_text(json.dumps({"items": [
+                        {"id": block_id, "translation": text} for block_id, text in raw.items()
+                    ]}))
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                return subprocess.CompletedProcess(cmd, 1, "", "sentence repair failed")
+
+            with patch.object(pipeline, "TMP_ROOT", root / "work"), \
+                 patch.object(pipeline, "get_pdf_page_size", return_value=(623, 801)), \
+                 patch("subprocess.run", side_effect=run):
+                with self.assertRaisesRegex(RuntimeError, "boundary-sentence-repair"):
+                    pipeline.translate_document(source, output, pipeline.DocumentOptions(model="test", retries=1))
+            self.assertEqual(output.read_bytes(), b"previous PDF")
+            self.assertEqual(json.loads((job / "translations.json").read_text()), raw)
+            self.assertEqual(list((job / "plans").glob("*.json")), [])
+
     def test_refresh_source_keeps_backup_even_when_rebuild_selects_no_pages(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

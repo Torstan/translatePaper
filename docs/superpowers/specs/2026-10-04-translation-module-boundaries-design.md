@@ -48,6 +48,8 @@
 
 当前两个 CLI 已共享 `pipeline.translate_document()` 和批次恢复/执行逻辑，vector 绘制与进程内 QA 也已交接实际最终计划；这些能力继续复用。[E1][E6]
 
+`pipeline.translate_pages()` 现已封装 B/C 的组批、恢复/执行和边界修复，返回最终译文与作业统计；`render_translated_pdf()` 只消费最终译文。`build_final_page_plan()` 封装 D/E/F 的规划、适配、最终校验和诊断保存，返回既有 `PageRenderPlan`；普通调用方无需拼接中间结果或逐项调用布局修补。两个入口都在现有模块中实现，没有增加阶段包装类型。[E1][E4][E6]
+
 vector 已在最终布局后统一刷新归属诊断，结构检查通过后才绘制，QA 保留 warning 的原严重度。[E4][E5]
 
 绘制项现已通过 `layout_role` 表达布局关系、通过 `font_policy` 表达有限字号权限，原因文字只参与诊断说明。合流/拆分传递这些字段，样式检查核对角色和字号范围。[E3]
@@ -64,10 +66,10 @@ vector 已在最终布局后统一刷新归属诊断，结构检查通过后才�
 
 | 编号 | 已检查来源 | 支持的事实 |
 | --- | --- | --- |
-| E1 | [translation_batch.py](../../../translation_batch.py)：`execute_translation_batch`、`execute_json_task`、`validate_translation_payload` | 批次执行已集中；具备响应 ID、空译文和新鲜输出校验 |
+| E1 | [translation_batch.py](../../../translation_batch.py)：`execute_translation_batch`、`execute_json_task`、`validate_translation_payload`；[pipeline.py](../../../pipeline.py)：`translate_pages` | 批次执行已集中；完整翻译入口拥有组批、恢复/执行与边界修复，具备响应 ID、空译文和新鲜输出校验 |
 | E2 | [pipeline.py](../../../pipeline.py)：`build_translation_page_components`、`final_visual_ownership_regions`、`build_translation_batches`、`build_page_render_plan` | 组批和渲染分别分析组件，渲染分析接收译文并改变视觉归属 |
 | E3 | [layout.py](../../../layout.py)：`text_item_style_issues`、`text_item_font_size_bounds`、`split_translated_text_around_protected`；[pipeline.py](../../../pipeline.py)：`fit_body_flow_text_items`、`merge_adjacent_body_text_flows`、`normalize_vector_text_layout` | 布局与字体政策独立于诊断原因；最终布局修改几何/字号并保存权限；拆分保留元数据 |
-| E4 | [pipeline.py](../../../pipeline.py)：`validate_final_page_plan`、`write_vector_pdf`、`validate_plan_quality`；[render_plan.py](../../../render_plan.py)：`validate_plan_ownership`、`validate_plan_layout` | 最终布局后刷新归属并统一检查覆盖、几何、文本重叠、样式和 fit；结构错误在绘制前阻断 |
+| E4 | [pipeline.py](../../../pipeline.py)：`build_final_page_plan`、`validate_final_page_plan`、`write_vector_pdf`、`validate_plan_quality`；[render_plan.py](../../../render_plan.py)：`validate_plan_ownership`、`validate_plan_layout` | 完整入口封装规划、布局、最终校验和诊断保存；最终布局后刷新归属并统一检查覆盖、几何、文本重叠、样式和 fit；结构错误在绘制前阻断 |
 | E5 | [qa_visual.py](../../../qa_visual.py)：`_plan_render_items`、`_item_value`、`detect_ownership_issues`、`generate_visual_qa_report`；[render_plan.py](../../../render_plan.py)：`PageRenderPlan`、`render_plan_to_json` | 检测逻辑兼容字典/对象；清理后归属 ledger 在导出时由组件生成 |
 | E6 | [tests/test_final_render_plan.py](../../../tests/test_final_render_plan.py)：`FinalRenderPlanTests`；[README.md](../../../README.md)：QA Artifacts | 已有最终计划交接、实际页尺寸、输出页映射和跨页修复只应用一次的测试 |
 | E7 | [translate_pdf_parallel.py](../../../translate_pdf_parallel.py)：`main`；[pipeline.py](../../../pipeline.py)：`translate_document`；[translation_batch.py](../../../translation_batch.py)：`run_batches`；[tests/test_translation_batch.py](../../../tests/test_translation_batch.py)：组批及低重合缓存测试 | 两入口组批与缓存接受策略不同；正式输出写入发生在可选 QA 之前 |
@@ -168,6 +170,8 @@ G 之后可以运行依赖实际 PDF 的视觉 QA。其结果汇入 H，并交�
 
 该入口属于翻译模块内部的组批能力。普通编排调用方只调用一个完整翻译入口，由它完成 B/C 的执行、响应校验与修复，不自行拼接中间状态。
 
+当前完整入口为 `pipeline.translate_pages(selected_pages, page_size, job_paths, options)`。它返回最终译文字典和原任务 block 数；统计值用于保留既有作业报告，并非额外阶段状态。缓存保留模型响应译文，边界修复仅作用于本次返回值。
+
 #### 5. C：译文结果
 
 **封装的知识：** 哪些响应可以作为译文使用，如何完成有依据的译文规范化和跨页修复。
@@ -232,6 +236,8 @@ G 之后可以运行依赖实际 PDF 的视觉 QA。其结果汇入 H，并交�
 文字的分段、换行与源映射属于排版操作；句子补全和语义重写属于 C，两者不得相互代替。
 
 **建议入口：** `layout_page(draft, font_metrics)`。最终计划中的有效字体和度量依据应足以保证 G/F 使用同一结果；可以保存最终行布局，也可以复用同一个确定性 fit 实现。
+
+当前 vector 调用方使用 `pipeline.build_final_page_plan()` 获取已适配、校验和保存诊断的计划；D/E/F 的单独函数保留用于内部实现与测试，不要求普通调用方调用上述候选阶段入口。
 
 #### 8. F：最终计划校验
 
@@ -378,6 +384,8 @@ KISS 实施约束：A–H 描述责任，调用方只需掌握源分析、完整
 第 1 项实现记录见 [最终计划校验收敛](../plans/2026-10-04-final-plan-validation.md)。`pipeline.validate_final_page_plan()` 在最终布局后统一刷新归属并收集必需校验结果；`render_plan.validate_plan_layout()` 只负责几何，源归属及图层互斥归 `validate_plan_ownership()`。绘制前的结构检查不依赖可选 QA，QA 保留每条诊断的原严重度。完整内容守恒、计划外源图片及可选 QA 失败后的正式产物发布仍属于后续责任收敛范围。
 
 第 2 项实现记录见 [布局行为与诊断原因解耦](../plans/2026-10-04-layout-policy-separation.md)。`layout_role` 和 `font_policy` 为有限数据字段，不增加策略插件或阶段对象。原因不能绕过角色/字号检查；内存与 JSON 计划消费同一规则。旧 JSON 缺少字段时按普通布局/文档字体检查，特殊计划需要重建以记录权限。既有合法绘制样例的最终几何和 PNG 与改动前一致。
+
+阶段入口收敛见 [翻译与最终计划入口收敛](../plans/2026-10-04-stage-entry-simplification.md)。完整翻译入口和 vector 最终计划入口已在现有 `pipeline.py` 中实现；源分析交接、raster 实际计划、缓存身份和可选 QA 后的正式产物接受仍按上述迁移范围实施。
 
 每项修改使用聚焦回归保护其契约。内容守恒需要同时检查来源覆盖、文本顺序和合法规范化，不能只比较字符计数。绘制与视觉 QA 的变更必须写出计划、实际 PDF/PNG 和报告，检查问题数与产物对应关系。
 

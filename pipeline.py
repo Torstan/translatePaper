@@ -4927,6 +4927,33 @@ def validate_final_page_plan(plan: PageRenderPlan, blocks, fitz) -> tuple[dict, 
     return {"ownership": ownership.ownership_validation_to_json(plan.ownership_validation), **checks}, errors
 
 
+def build_final_page_plan(
+    page_num, blocks, translations, page_size, *, bbox_lines=None,
+    source_image_path=None, force_reference=False, output_page_num=None,
+    job_paths=None, fitz=None,
+) -> PageRenderPlan:
+    """Build, adapt and validate a vector plan; save requested diagnostic artifacts.
+
+    Callers receive a drawable plan or an error, without sequencing layout repairs
+    or assembling validation results. This does not repair translations or draw.
+    """
+    if fitz is None:
+        fitz = load_fitz()
+    plan = build_page_render_plan(
+        page_num, blocks, translations, page_size, bbox_lines=bbox_lines,
+        source_image_path=source_image_path, force_reference=force_reference,
+    )
+    plan.page_size = page_size
+    plan.output_page_num = output_page_num
+    normalize_vector_text_layout(plan, page_size, fitz=fitz)
+    validation_results, errors = validate_final_page_plan(plan, blocks, fitz)
+    if errors:
+        try_write_render_plan_artifact(plan, validation_results, job_paths)
+        raise RuntimeError("\n".join(errors[:20]))
+    write_render_plan_artifact(plan, validation_results, job_paths)
+    return plan
+
+
 def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translations, dpi: int, job_paths=None) -> DocumentRenderResult:
     fitz = load_fitz()
     with fitz.open(pdf_path) as src_doc, fitz.open() as out_doc:
@@ -4946,7 +4973,7 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
             page_rect = src_page.rect
             source_image = source_page_image_path(job_paths, page_num)
 
-            plan = build_page_render_plan(
+            plan = build_final_page_plan(
                 page_num,
                 blocks,
                 translations,
@@ -4954,21 +4981,16 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
                 bbox_lines=lines_by_page.get(page_num),
                 source_image_path=source_image,
                 force_reference=in_reference_section,
+                output_page_num=output_idx,
+                job_paths=job_paths,
+                fitz=fitz,
             )
-            plan.page_size = (page_rect.width, page_rect.height)
-            plan.output_page_num = output_idx
-            normalize_vector_text_layout(plan, plan.page_size, fitz=fitz)
             plans.append(plan)
             plan_has_reference = any(entry.classification == "reference" for entry in plan.ledger)
             if plan_has_reference:
                 in_reference_section = True
             elif in_reference_section:
                 in_reference_section = False
-            validation_results, errors = validate_final_page_plan(plan, blocks, fitz)
-            if errors:
-                try_write_render_plan_artifact(plan, validation_results, job_paths)
-                raise RuntimeError("\n".join(errors[:20]))
-            write_render_plan_artifact(plan, validation_results, job_paths)
             out_page = out_doc.new_page(width=page_rect.width, height=page_rect.height)
             out_page.draw_rect(page_rect, color=None, fill=(1, 1, 1))
             preserve_images_on_page(src_page, out_page, fitz, dpi)
@@ -4988,14 +5010,9 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
 
 def render_translated_pdf(
     pdf_path: Path, pdf_output: Path, selected_pages, translations, page_size,
-    dpi: int, job_paths, *, render_mode: str, model: str,
-    reasoning_effort: str = "low", retries: int = 3,
+    dpi: int, job_paths, *, render_mode: str,
 ) -> DocumentRenderResult:
-    """Repair boundaries once before drawing; return the translations used by QA."""
-    translations = postprocess_cross_page_sentence_splits(
-        selected_pages, translations, job_paths=job_paths, model=model,
-        reasoning_effort=reasoning_effort, retries=retries,
-    )
+    """Render final translations; model execution and sentence repairs belong to translation."""
     if render_mode == "raster":
         render_pages(selected_pages, translations, dpi, job_paths)
         render_pdf.write_raster_pdf(
@@ -5248,6 +5265,29 @@ class DocumentOptions:
     strict_body_flow: bool = False
 
 
+def translate_pages(selected_pages, page_size, job_paths, options: DocumentOptions) -> tuple[dict[str, str], int]:
+    """Translate selected source pages and apply boundary repairs exactly once.
+
+    Return final translations and the requested source-block count for job reports.
+    The model-response cache stays unrepaired so resuming does not strip twice.
+    """
+    batches = build_translation_batches(
+        selected_pages, options.batch_chars, page_size=page_size, job_paths=job_paths,
+        batch_scope=options.batch_scope,
+    )
+    translated_blocks = len({item["id"] for batch in batches for item in batch.items})
+    translations = translation_batch.run_batches(
+        batches, job_paths, model=options.model, reasoning_effort=options.reasoning_effort,
+        retries=options.retries, workers=options.page_workers,
+        minimum_cache_overlap=options.minimum_cache_overlap, retranslate=options.retranslate,
+    )
+    translations = postprocess_cross_page_sentence_splits(
+        selected_pages, translations, job_paths=job_paths, model=options.model,
+        reasoning_effort=options.reasoning_effort, retries=options.retries,
+    )
+    return translations, translated_blocks
+
+
 def translate_document(pdf_path: Path, output_path: Path, options: DocumentOptions, *, job_name: str | None = None) -> dict:
     """Run one document; CLI defaults select batching, cache and QA policies explicitly."""
     if output_path.exists() and not options.overwrite:
@@ -5283,21 +5323,11 @@ def translate_document(pdf_path: Path, output_path: Path, options: DocumentOptio
     if not selected_pages:
         raise RuntimeError(f"no pages selected for {pdf_path}")
 
-    batches = build_translation_batches(
-        selected_pages, options.batch_chars, page_size=pdf_size_pt, job_paths=job_paths,
-        batch_scope=options.batch_scope,
-    )
-    valid_ids = {item["id"] for batch in batches for item in batch.items}
-    translations = translation_batch.run_batches(
-        batches, job_paths, model=options.model, reasoning_effort=options.reasoning_effort,
-        retries=options.retries, workers=options.page_workers,
-        minimum_cache_overlap=options.minimum_cache_overlap, retranslate=options.retranslate,
-    )
+    translations, translated_blocks = translate_pages(selected_pages, pdf_size_pt, job_paths, options)
 
     render_result = render_translated_pdf(
         pdf_path, output_path, selected_pages, translations, pdf_size_pt, options.dpi,
-        job_paths, render_mode=options.render_mode, model=options.model,
-        reasoning_effort=options.reasoning_effort, retries=options.retries,
+        job_paths, render_mode=options.render_mode,
     )
     translations = render_result.translations
 
@@ -5308,7 +5338,7 @@ def translate_document(pdf_path: Path, output_path: Path, options: DocumentOptio
         "job_slug": job_paths["job_slug"],
         "pages": len(selected_pages),
         "source_blocks": sum(len(page) for _, page in selected_pages),
-        "translated_blocks": len(valid_ids),
+        "translated_blocks": translated_blocks,
     }
     if options.qa:
         result["qa"] = run_qa_for_job(
