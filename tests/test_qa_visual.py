@@ -254,6 +254,41 @@ class VisualQaImageTests(unittest.TestCase):
                         qa_visual.generate_visual_qa_report([path], output_dir=root / "qa")
                     self.assertFalse((root / "qa/visual_qa_report.json").exists())
 
+    def test_plan_file_requires_page_size_to_check_nonempty_plan(self):
+        item = {"kind": "translated_text", "source_ids": ["b"],
+                "bbox": [10, 10, 80, 40], "text": "正文",
+                "style_name": "body", "font_size": 1}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "plan.json"
+            path.write_text(json.dumps({"page_num": 1, "render_items": [item]}))
+            with self.assertRaisesRegex(ValueError, "page_size"):
+                qa_visual.generate_visual_qa_report([path], output_dir=root / "qa")
+            self.assertFalse((root / "qa/visual_qa_report.json").exists())
+
+            report = qa_visual.generate_visual_qa_report(
+                [path], output_dir=root / "qa", page_size=(100, 100))
+            categories = {issue["category"] for issue in json.loads(report.json_path.read_text())["issues"]}
+            self.assertIn("body_font_consistency", categories)
+
+    def test_plan_file_rejects_rendered_ledger_without_matching_item(self):
+        entry = {"block_id": "b", "classification": "body",
+                 "render_kind": "translated_text", "rendered": True}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "plan.json"
+            path.write_text(json.dumps({"page_num": 1, "page_size": [100, 100],
+                                        "render_items": [], "coverage_ledger": [entry]}))
+            with self.assertRaisesRegex(ValueError, "coverage_ledger"):
+                qa_visual.generate_visual_qa_report([path], output_dir=root / "qa")
+            self.assertFalse((root / "qa/visual_qa_report.json").exists())
+
+            path.write_text(json.dumps({"page_num": 1, "page_size": [100, 100],
+                                        "render_items": [], "coverage_ledger": [
+                                            {**entry, "render_kind": "skip_explicitly"}]}))
+            report = qa_visual.generate_visual_qa_report([path], output_dir=root / "qa")
+            self.assertEqual(report.error_count, 0)
+
     def test_geometry_checks_report_item_outside_page_bounds(self):
         plan = {
             "page_num": 11,

@@ -613,27 +613,26 @@ def _image_clip_items_are_siblings(left, right) -> bool:
     return overlap > 0 and overlap / min(len(left_source_ids), len(right_source_ids)) >= 0.5
 
 
-def _sibling_image_clips_explain_dark_excess(
-    dark_bbox, clip_bbox, current_item, item_index: int, items, *, source_image_path, page_size, darkness_threshold,
+def _planned_image_clips_explain_dark_excess(
+    dark_bbox, clip_bbox, item_index: int, items, *, source_image_path, page_size, darkness_threshold,
 ) -> bool:
     excess_boxes = _dark_excess_boxes(dark_bbox, clip_bbox)
     if not excess_boxes:
         return False
 
-    sibling_boxes = [
+    other_clip_boxes = [
         _bbox_tuple(_item_value(item, "bbox"))
         for index, item in enumerate(items)
         if index != item_index
         and _item_value(item, "kind") == "original_image_clip"
-        and _image_clip_items_are_siblings(current_item, item)
     ]
-    if not sibling_boxes:
+    if not other_clip_boxes:
         return False
-    # Subtract real sibling coverage, not its enclosing rectangle. A bounding
+    # Subtract actual planned image coverage, not its enclosing rectangle. A bounding
     # dark box can contain white corners; only actual dark pixels in gaps fail.
     remaining = excess_boxes
-    for sibling in sibling_boxes:
-        remaining = [piece for box in remaining for piece in subtract_bbox(box, sibling)]
+    for other_clip in other_clip_boxes:
+        remaining = [piece for box in remaining for piece in subtract_bbox(box, other_clip)]
     return all(_dark_pixel_bbox(source_image_path, box, page_size,
                                darkness_threshold=darkness_threshold) is None for box in remaining)
 
@@ -692,10 +691,9 @@ def detect_image_clip_boundary_issues(
         )
         source_ids = _source_ids_for_item(item)
         if dark_bbox is not None and _dark_bbox_exceeds_clip_edge(dark_bbox, clip_bbox, edge_tolerance):
-            if not _sibling_image_clips_explain_dark_excess(
+            if not _planned_image_clips_explain_dark_excess(
                 dark_bbox,
                 clip_bbox,
-                item,
                 item_index,
                 items,
                 source_image_path=source_image_path,
@@ -1245,6 +1243,9 @@ def generate_visual_qa_report(
         [load_render_plan_artifact(path) for path in normalized_plan_paths]
         if plans is None else list(plans)
     )
+    for plan in loaded_plans:
+        if _plan_render_items(plan) and _item_value(plan, "page_size") is None and page_size is None:
+            raise ValueError(f"visual QA page {_plan_page_num(plan)} requires page_size for render_items")
     checked_pages = sorted({_plan_page_num(plan) for plan in loaded_plans})
     png_paths = {}
     if translated_pdf_path is not None:

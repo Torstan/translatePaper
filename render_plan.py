@@ -203,6 +203,11 @@ def load_render_plan_artifact(path: str | Path) -> dict:
         for name in ("block_id", "classification", "render_kind"):
             require(isinstance(entry.get(name), str) and bool(entry[name]), "coverage_ledger." + name)
         require(type(entry.get("rendered")) is bool, "coverage_ledger.rendered")
+        if entry["rendered"] and entry["render_kind"] != "skip_explicitly":
+            require(any(item["kind"] == entry["render_kind"]
+                        and entry["block_id"] in item["source_ids"]
+                        for item in plan["render_items"]),
+                    "coverage_ledger has rendered entry without matching render item")
     for component in plan.get("components", []):
         require(isinstance(component.get("component_id"), str), "components.component_id")
         require(component.get("component_kind") in ownership.COMPONENT_KINDS, "components.component_kind")

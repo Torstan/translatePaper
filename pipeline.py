@@ -3891,6 +3891,7 @@ def add_source_images_to_plan(plan: PageRenderPlan, source_images: list[RenderIt
     A partial image uses a page crop, never a stretched copy of the full xref.
     Source items remain untouched so final coverage checks use original bounds.
     """
+    first_native_index = len(plan.items)
     for source in source_images:
         remaining = [source.bbox]
         for item in plan.items:
@@ -3910,6 +3911,9 @@ def add_source_images_to_plan(plan: PageRenderPlan, source_images: list[RenderIt
         for source_id in source.source_ids:
             plan.ledger.append(CoverageEntry(source_id, "unknown", "original_image_clip", True,
                                              source.fallback_reason))
+    # Source images are the background layer; selectable text and planned clips
+    # must remain visible above them in the final PDF.
+    plan.items = plan.items[first_native_index:] + plan.items[:first_native_index]
 
 
 def build_page_render_plan(

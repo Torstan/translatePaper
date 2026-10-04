@@ -69,6 +69,62 @@ class RenderPdfExtractionModuleTests(unittest.TestCase):
             issues = qa_visual.detect_image_clip_boundary_issues(plan, root / "source.png", (200, 240))
             self.assertIn("clipped_content", [issue.category for issue in issues])
 
+    def test_native_image_under_selectable_text_preserves_visible_text(self):
+        fitz = render_pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, output = root / "source.pdf", root / "output.pdf"
+            stream = io.BytesIO()
+            Image.new("RGB", (20, 20), (220, 220, 220)).save(stream, format="PNG")
+            with fitz.open() as doc:
+                page = doc.new_page(width=200, height=200)
+                page.insert_image((20, 20, 180, 120), stream=stream.getvalue())
+                page.insert_text((40, 70), "References")
+                doc.save(source)
+            block = {"id": "p001b0001", "page": 1, "text": "References",
+                     "xMin": 40, "yMin": 50, "xMax": 180, "yMax": 90}
+
+            result = pdf.write_vector_pdf(source, output, [(1, [block])], {}, 72)
+            self.assertEqual([item.kind for item in result.plans[0].items],
+                             ["original_image_clip", "original_selectable_text"])
+            with fitz.open(source) as doc:
+                source_pixels = doc[0].get_pixmap(clip=fitz.Rect(40, 50, 180, 90)).samples
+            with fitz.open(output) as doc:
+                output_pixels = doc[0].get_pixmap(clip=fitz.Rect(40, 50, 180, 90)).samples
+                self.assertIn("References", doc[0].get_text())
+            self.assertGreater(sum(value < 100 for value in source_pixels), 0)
+            self.assertGreater(sum(value < 100 for value in output_pixels), 0)
+
+    def test_adjacent_independent_native_images_have_no_clip_warning(self):
+        fitz = render_pdf.load_fitz()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, output = root / "source.pdf", root / "output.pdf"
+            with fitz.open() as doc:
+                page = doc.new_page(width=200, height=200)
+                for bbox, color in (((20, 20, 60, 60), "red"), ((61, 20, 101, 60), "blue")):
+                    stream = io.BytesIO()
+                    Image.new("RGB", (20, 20), color).save(stream, format="PNG")
+                    page.insert_image(bbox, stream=stream.getvalue())
+                doc.save(source)
+            with fitz.open(source) as doc:
+                source_pixels = doc[0].get_pixmap().samples
+                doc[0].get_pixmap().save(root / "source.png")
+
+            pdf.write_vector_pdf(source, output, [(1, [])], {}, 72,
+                                 {"plans_dir": root / "plans"})
+            with fitz.open(output) as doc:
+                self.assertEqual(doc[0].get_pixmap().samples, source_pixels)
+            report = qa_visual.generate_visual_qa_report(
+                [root / "plans/page-001.render-plan.json"], output_dir=root / "qa",
+                source_png_paths={1: root / "source.png"},
+            )
+            self.assertEqual(report.error_count, 0)
+            report_data = json.loads(report.json_path.read_text())
+            self.assertEqual(report_data["issue_count"], 0)
+            self.assertEqual(report_data["plan_artifact_paths"],
+                             [str(root / "plans/page-001.render-plan.json")])
+
     def test_missing_native_image_coverage_blocks_publication(self):
         fitz = render_pdf.load_fitz()
         with tempfile.TemporaryDirectory() as tmp:
