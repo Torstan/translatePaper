@@ -2558,7 +2558,7 @@ class RenderPlanClassificationTests(unittest.TestCase):
             )
         )
 
-    def test_missing_input_event_enumeration_uses_heuristic_translation(self):
+    def test_missing_input_event_enumeration_preserves_source_and_reports_missing_translation(self):
         blocks = [
             block("p004b0005", 4, "(2) In(A) is a set of input events,", x0=135, y0=207, x1=282, y1=216),
         ]
@@ -2567,9 +2567,10 @@ class RenderPlanClassificationTests(unittest.TestCase):
         item = plan.items[0]
         entry = plan.ledger[0]
 
-        self.assertEqual(item.kind, "translated_text")
-        self.assertIn("输入事件集合", item.text)
-        self.assertEqual(entry.fallback_reason, "heuristic_translation")
+        self.assertEqual(item.kind, "original_selectable_text")
+        self.assertEqual(item.text, blocks[0]["text"])
+        self.assertEqual(entry.fallback_reason, "missing_translation")
+        self.assertTrue(pdf.validate_plan_translation_quality(4, blocks, {}, plan))
 
     def test_formula_after_assertion_is_preserved_as_image_clip(self):
         blocks = [

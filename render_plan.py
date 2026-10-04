@@ -15,6 +15,33 @@ VECTOR_BODY_COLOR = (0, 0, 0)
 ALLOWED_SKIP_CLASSES = {"page_number", "header_footer", "nested_duplicate"}
 
 
+@dataclass(frozen=True)
+class TextSpan:
+    """Half-open range in whitespace-free final text, retaining component identity."""
+    source_id: str
+    start: int
+    end: int
+    component_id: str = ""
+
+
+def text_content(text: str) -> str:
+    """Ignore layout whitespace only; punctuation and letter case carry meaning."""
+    return "".join(text.split())
+
+
+def slice_text_spans(spans: list[TextSpan], start: int, end: int) -> list[TextSpan]:
+    result = []
+    offset = 0
+    for span in spans:
+        size = span.end - span.start
+        left, right = max(start, offset), min(end, offset + size)
+        if left < right:
+            result.append(TextSpan(span.source_id, span.start + left - offset,
+                                   span.start + right - offset, span.component_id))
+        offset += size
+    return result
+
+
 @dataclass
 class RenderItem:
     kind: str
@@ -37,6 +64,7 @@ class RenderItem:
     raster_source_bbox: tuple[int, int, int, int] | None = None
     # None: existing visual clip; 0: explicit PDF page crop; positive: native image resource.
     source_image_xref: int | None = None
+    text_spans: list[TextSpan] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -98,6 +126,13 @@ class PageRenderPlan:
         for source in self.coverage:
             outcomes = {}
             for item in items_by_source.get(source.block_id, []):
+                span_components = {span.component_id for span in item.text_spans
+                                   if span.source_id == source.block_id and span.component_id}
+                if source.component_id and span_components:
+                    if source.component_id not in span_components:
+                        continue
+                    outcomes.setdefault(item.kind, []).append(item.fallback_reason)
+                    continue
                 if source.component_id and item.component_id and source.component_id != item.component_id:
                     continue
                 components = components_by_source.get(source.block_id, {})
@@ -142,6 +177,9 @@ def render_item_to_json(item: RenderItem) -> dict:
         "layout_role": item.layout_role,
         "font_policy": item.font_policy,
     }
+    if item.text_spans:
+        data["text_spans"] = [{"source_id": span.source_id, "start": span.start, "end": span.end,
+                               "component_id": span.component_id} for span in item.text_spans]
     if item.raster_lines:
         data["raster_lines"] = list(item.raster_lines)
         data["raster_vertical"] = item.raster_vertical
@@ -244,6 +282,13 @@ def render_plan_from_json(plan: dict, *, source: str = "<memory>") -> PageRender
             require(isinstance(item.get("text"), str), field + ".text")
         for name in ("text", "style_name", "fallback_reason", "component_id", "component_kind", "layout_role", "font_policy"):
             require(isinstance(item.get(name, ""), str), field + "." + name)
+        require(isinstance(item.get("text_spans", []), list), field + ".text_spans")
+        for span in item.get("text_spans", []):
+            require(isinstance(span, dict) and isinstance(span.get("source_id"), str)
+                    and span["source_id"] in item["source_ids"]
+                    and type(span.get("start")) is int and type(span.get("end")) is int
+                    and 0 <= span["start"] < span["end"]
+                    and isinstance(span.get("component_id", ""), str), field + ".text_spans")
         size = item.get("font_size")
         require(size is None or (type(size) in (int, float) and math.isfinite(size) and size > 0), field + ".font_size")
         xref = item.get("source_image_xref")
@@ -307,6 +352,7 @@ def render_plan_from_json(plan: dict, *, source: str = "<memory>") -> PageRender
         for name in ("bbox", "color", "raster_source_bbox"):
             if fields.get(name) is not None:
                 fields[name] = tuple(fields[name])
+        fields["text_spans"] = [TextSpan(**span) for span in value.get("text_spans", [])]
         items.append(RenderItem(**fields))
     coverage = []
     for entry in plan.get("coverage_ledger", []):

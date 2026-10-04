@@ -127,6 +127,13 @@ Visual components require image clips even when their OCR text is trivial; a
 text item with the same source and component IDs does not fulfill that obligation.
 These checks run even with optional QA disabled. Ownership diagnostics are
 recomputed after layout; warnings retain their severity in both plans and QA.
+Translated items carry `text_spans`: source/component IDs and half-open character
+ranges in the final translation with whitespace removed. Layout preserves these
+ranges through merges and splits. Final validation checks exact-once coverage,
+unchanged punctuation and case, and source order within closed body flows.
+For mixed visual/body components, ranges cover the planned body fragment.
+These ranges do not establish alignment with the original language or global
+reading order across columns.
 Failed validation writes all check results, closes PDF resources, and leaves an
 existing output PDF unchanged. A report-write failure does not replace the
 validation error.
@@ -145,6 +152,11 @@ work/jobs/<pdf-stem>/visual_qa/rendered_png/
 work/jobs/<pdf-stem>/visual_qa/visual_qa_report.json
 work/jobs/<pdf-stem>/visual_qa/visual_qa_report.md
 ```
+
+Visual QA and backtranslation run independently before strict QA applies its
+acceptance checks. `work/jobs/<pdf-stem>/qa_summary.json` records their completed,
+failed or not-run status; a backtranslation failure leaves the deterministic
+and visual reports available and still fails the job.
 
 Use non-strict QA while exploring defects. Use `--strict-qa` before accepting a
 batch to fail on additional deterministic content and visual QA errors. QA runs

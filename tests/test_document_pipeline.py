@@ -130,13 +130,13 @@ class DocumentExecutionTests(unittest.TestCase):
                 patch.object(pipeline, "should_use_ocr", return_value=False),
                 patch.object(pipeline, "text_extraction_looks_garbled", return_value=False),
             ):
-                first = pipeline.load_or_build_source_pages(source, 200, job, (200, 220))
+                first = pipeline.load_or_build_source_pages(source, 200, job)
                 self.assertEqual(first[0][0]["id"], "fresh")
                 self.assertEqual(assets.call_count, 1)
-                pipeline.load_or_build_source_pages(source, 200, job, (200, 220))
+                pipeline.load_or_build_source_pages(source, 200, job)
                 self.assertEqual(assets.call_count, 1)
                 source.write_bytes(b"changed PDF bytes")
-                pipeline.load_or_build_source_pages(source, 200, job, (200, 220))
+                pipeline.load_or_build_source_pages(source, 200, job)
                 self.assertEqual(assets.call_count, 2)
 
     def test_failed_sentence_repair_preserves_output_and_completed_translation_cache(self):

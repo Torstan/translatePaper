@@ -625,7 +625,7 @@ def is_journal_footer_text(text: str) -> bool:
     has_acm = "acm" in key
     has_transactions = "transactions" in key or "transactlons" in key
     has_venue = "programming" in key or "programmmg" in key or "languagesandsystems" in key or "lanwages" in key
-    has_issue = "january1991" in key or ("vol" in key and "1991" in key)
+    has_issue = "vol" in key and re.search(r"(?:19|20)\d{2}", key)
     return has_acm and has_transactions and has_venue and has_issue
 
 
@@ -1249,6 +1249,8 @@ def is_non_prose_identifier_text(text: str) -> bool:
 
 def source_requires_chinese_translation(text: str) -> bool:
     cleaned = strip_journal_footer_lines(text)
+    if is_body_enumeration_line(cleaned):
+        return True
     if is_non_prose_identifier_text(cleaned):
         return False
     words = latin_words(cleaned)

@@ -109,6 +109,9 @@ from render_plan import (
     DocumentRenderResult,
     PageRenderPlan,
     RenderItem,
+    TextSpan,
+    slice_text_spans,
+    text_content,
     bbox_area,
     bbox_overlap_area,
     bbox_overlap_height,
@@ -175,7 +178,6 @@ FONT_PATH = raster_font_path() or "/usr/share/fonts/truetype/arphic/uming.ttc"
 SOURCE_FONT_SCALE = 0.94
 TEXT_BOX_MARGIN_PX = 8
 HEURISTIC_HEADING_BOTTOM_MARGIN_PT = 70.0
-JOURNAL_FOOTER_TEXT = "ACM Transactions on Programming Languages and Systems, Vol. 11, No. 1, January 1991."
 JOURNAL_FOOTER_WIDTH_PT = 260.0
 JOURNAL_FOOTER_HEIGHT_PT = 8.0
 VISUAL_CLIP_PAD_X_PT = 8.0
@@ -588,9 +590,9 @@ def merge_ocr_lines(lines, page_width_px: int, barriers=None):
     return blocks
 
 
-def generate_ocr_pages(job_paths, pdf_size_pt):
+def generate_ocr_pages(job_paths, page_sizes_by_page):
+    """Convert OCR pixels using the dimensions of that source page, including subsets."""
     ocr = load_rapidocr()
-    width_pt, height_pt = pdf_size_pt
     pages_by_num = {}
 
     for image_path in sorted(job_paths["pages_dir"].glob("page-*.png")):
@@ -598,8 +600,9 @@ def generate_ocr_pages(job_paths, pdf_size_pt):
         if not match:
             continue
         page_idx = int(match.group(1))
-        image = Image.open(image_path)
-        width_px, height_px = image.size
+        width_pt, height_pt = page_sizes_by_page[page_idx]
+        with Image.open(image_path) as image:
+            width_px, height_px = image.size
         scale_x = width_pt / width_px
         scale_y = height_pt / height_px
         result, _ = ocr(str(image_path))
@@ -669,7 +672,6 @@ def load_or_build_source_pages(
     pdf_path: Path,
     dpi: int,
     job_paths,
-    pdf_size_pt,
     page_start: int = 1,
     page_end: int = 0,
     force_ocr: bool = False,
@@ -685,7 +687,10 @@ def load_or_build_source_pages(
 
     pages = parse_bbox(job_paths["bbox_path"])
     if force_ocr or should_use_ocr(pages) or text_extraction_looks_garbled(pages):
-        pages = generate_ocr_pages(job_paths, pdf_size_pt)
+        with load_fitz().open(pdf_path) as source_doc:
+            page_sizes = {idx: (page.rect.width, page.rect.height)
+                          for idx, page in enumerate(source_doc, 1)}
+        pages = generate_ocr_pages(job_paths, page_sizes)
     pages = [blocks for _, blocks in mark_running_headers(list(enumerate(pages, 1)), bbox_lines_by_page(job_paths))]
     save_source_pages(pages, job_paths)
     cache_key_path.write_text(cache_key + "\n", encoding="utf-8")
@@ -697,7 +702,7 @@ def source_cache_key(pdf_path: Path, dpi: int, page_start: int, page_end: int, f
     with pdf_path.open("rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
-    settings = {"version": 1, "dpi": dpi, "page_start": page_start,
+    settings = {"version": 2, "dpi": dpi, "page_start": page_start,
                 "page_end": page_end, "force_ocr": force_ocr}
     digest.update(json.dumps(settings, sort_keys=True).encode("utf-8"))
     return digest.hexdigest()
@@ -1069,21 +1074,10 @@ def annotate_plan_with_component_metadata(
     plan: PageRenderPlan,
     components_by_source_id: dict[str, list[ownership.PageComponent]],
 ) -> None:
-    def matching_component(source_id: str, render_kind: str):
+    def matching_component(source_id: str):
         candidates = components_by_source_id.get(source_id, [])
-        if render_kind == "original_image_clip":
-            kind = ownership.COMPONENT_KIND_VISUAL
-        elif render_kind == "translated_text":
-            kind = ownership.COMPONENT_KIND_TRANSLATED_TEXT
-        elif render_kind == "original_selectable_text":
-            kind = ownership.COMPONENT_KIND_REFERENCE
-        else:
-            kind = ""
-        if kind:
-            matches = [component for component in candidates if component.component_kind == kind]
-            if len(matches) == 1:
-                return matches[0]
-            return None
+        # Drawing a body as an image or source text does not change its source role.
+        # Mixed fragments already carry the explicit component selected by planning.
         if len(candidates) == 1:
             return candidates[0]
         return None
@@ -1094,7 +1088,7 @@ def annotate_plan_with_component_metadata(
         kinds = {item.kind for item in plan.items if entry.block_id in item.source_ids}
         if not kinds and not entry.skipped:
             continue
-        component = matching_component(entry.block_id, next(iter(kinds)) if len(kinds) == 1 else "")
+        component = matching_component(entry.block_id)
         if component is None:
             continue
         entry.component_id = component.component_id
@@ -1106,12 +1100,12 @@ def annotate_plan_with_component_metadata(
         components = [
             component
             for source_id in item.source_ids
-            for component in [matching_component(source_id, item.kind)]
+            for component in [matching_component(source_id)]
             if component is not None
         ]
         component_ids = {component.component_id for component in components}
         component_kinds = {component.component_kind for component in components}
-        if len(component_ids) == 1:
+        if len(components) == len(set(item.source_ids)) and len(component_ids) == 1:
             item.component_id = next(iter(component_ids))
         if len(component_kinds) == 1:
             item.component_kind = next(iter(component_kinds))
@@ -1146,6 +1140,13 @@ def build_translation_page_components(
         source_image_path=source_image,
         bbox_lines=bbox_lines,
     )
+    visual_source_ids = {source_id for region in visual_ownership_regions for source_id in region["source_ids"]}
+    heading_pairs = standalone_heading_number_pairs(page, classes)
+    heading_number_ids = {number["id"] for number, _title, _text in heading_pairs}
+    for number, title, _ in heading_pairs:
+        if number["id"] not in visual_source_ids and title["id"] not in visual_source_ids:
+            classes[number["id"]] = "heading"
+            classes[title["id"]] = "heading"
     duplicate_ids = {
         block_id
         for block_id in nested_duplicate_block_ids(page)
@@ -1168,10 +1169,13 @@ def build_translation_page_components(
     )
     validation = ownership.validate_ownership(page_num, page, components)
     translatable_ids = []
+    block_by_id = {block["id"]: block for block in page}
     for component in sorted(components, key=lambda item: (item.source_bbox[1], item.source_bbox[0], item.component_id)):
         if component.component_kind != ownership.COMPONENT_KIND_TRANSLATED_TEXT:
             continue
         for source_id in component.source_ids:
+            if source_id in heading_number_ids or is_trivial_keep(block_by_id[source_id]["text"]):
+                continue
             if (
                 classes.get(source_id) not in NORMAL_TRANSLATED_CLASSES
                 and not component_has_reason(component, ownership.REASON_MIXED_VISUAL_BODY_SPLIT)
@@ -2072,7 +2076,8 @@ def build_raster_page_plan(page_num, blocks, translations, dpi, raster_size, pag
             if text:
                 fallback = ("" if all(translations.get(b["id"]) for b in source_blocks)
                             else "missing_translation_original_text")
-                item = RenderItem("translated_text", list(component.source_ids), component.source_bbox,
+                item = RenderItem("original_selectable_text" if fallback else "translated_text",
+                                  list(component.source_ids), component.source_bbox,
                                   text=text, fallback_reason=fallback)
             else:
                 item = RenderItem("original_image_clip", list(component.source_ids), component.source_bbox,
@@ -2122,6 +2127,7 @@ def build_raster_page_plan(page_num, blocks, translations, dpi, raster_size, pag
             vertical=item.raster_vertical,
             max_font_size=target_font_size_for_block(block, dpi, vertical=item.raster_vertical),
         )
+    bind_plan_text_spans(plan, blocks, translations)
     return plan, errors
 
 
@@ -2212,7 +2218,7 @@ def render_pages(pages, translations, dpi: int, job_paths, page_sizes=None, sour
         plan, initial_errors = build_raster_page_plan(
             page_num, blocks, translations, dpi, raster_size, page_size,
             output_page_num=output_page_num,
-            source_analysis=None if source_analysis_by_page is None else source_analysis_by_page.get(page_num),
+            source_analysis=None if source_analysis_by_page is None else source_analysis_by_page[page_num],
             bbox_lines=lines_by_page.get(page_num),
         )
         validation, errors = validate_raster_page_plan(plan, blocks, initial_errors, translations)
@@ -2469,7 +2475,7 @@ def journal_footer_render_items(bbox_lines, page_size) -> list[RenderItem]:
                 "original_selectable_text",
                 [],
                 journal_footer_bbox(page_size),
-                text=JOURNAL_FOOTER_TEXT,
+                text=normalize_text(line["text"]),
                 font_size=JOURNAL_FOOTER_FONT_SIZE,
                 style_name="footer",
                 fallback_reason="journal_footer",
@@ -2731,10 +2737,11 @@ def add_standalone_heading_pair_render_items(
                 )
                 rendered_ids.add(block["id"])
             continue
-        title_text = clean_outline_title(translated_title or short_heading_text(title_block.get("text", "")))
+        title_text = translated_title.strip()
         if not title_text:
             continue
-        heading_text = clean_outline_title(f"{number_text} {title_text}")
+        number_label = normalize_text(number_block["text"]).split("\n", 1)[0]
+        heading_text = f"{number_label} {title_text}"
         plan.items.append(
             RenderItem(
                 "translated_text",
@@ -2875,22 +2882,6 @@ def first_page_title_metadata_render_items(block, translated: str, bbox, page_si
             layout_role="title_metadata",
         ),
     ]
-
-
-def heuristic_translation_for_missing_block(text: str) -> str:
-    normalized = normalize_text(text)
-    match = re.fullmatch(r"\((\d+)\)\s+(.+?)\s+is\s+a\s+set\s+of\s+(.+?)[,.]?", normalized, flags=re.I)
-    if match:
-        number, subject, noun = match.groups()
-        noun_map = {
-            "input events": "输入事件",
-            "output events": "输出事件",
-            "internal events": "内部事件",
-            "starting states": "初始状态",
-        }
-        noun_zh = noun_map.get(noun.lower(), noun)
-        return f"({number}) {subject} 是{noun_zh}集合，"
-    return ""
 
 
 def is_garbled_latin_fragment(line: str) -> bool:
@@ -3314,9 +3305,12 @@ def move_leading_enum_continuations_to_previous_items(plan: PageRenderPlan) -> N
         if split is None:
             continue
         previous = previous_body_item_in_same_lane(plan, idx)
-        if previous is None or not re.search(r"\(\d{1,2}\)", previous.text):
+        if previous is None or previous.kind != item.kind or not re.search(r"\(\d{1,2}\)", previous.text):
             continue
         leading, rest = split
+        cut = len(text_content(leading))
+        previous.text_spans.extend(slice_text_spans(item.text_spans, 0, cut))
+        item.text_spans = slice_text_spans(item.text_spans, cut, len(text_content(item.text)))
         previous.text = join_render_lines(previous.text.rstrip(), leading)
         previous.source_ids.extend(source_id for source_id in item.source_ids if source_id not in previous.source_ids)
         item.text = rest
@@ -3417,22 +3411,8 @@ def neighboring_source_ids(blocks, source_id: str) -> tuple[str | None, str | No
 
 
 def merge_short_fragment_text(target_text: str, fragment_text: str) -> str:
-    target = normalize_text(target_text).strip()
-    fragment = normalize_text(fragment_text).strip()
-    if not target or not fragment:
-        return target_text
-    fragment_compact = compact_duplicate_text(fragment)
-    if not fragment_compact or fragment_compact in compact_duplicate_text(target):
-        return target
-    short_fragment = re.sub(r"[。！？.!?]+$", "", fragment).strip()
-    if short_fragment == "链表" and "链表" not in target and "下一个单元" in target:
-        return target.replace("下一个单元", "链表中的下一个单元", 1)
-    if short_fragment and len(compact_duplicate_text(short_fragment)) <= 8:
-        terminal = re.search(r"([。！？.!?])$", target)
-        if terminal:
-            return target[: terminal.start()] + f"（{short_fragment}）" + terminal.group(1)
-    separator = "" if target.endswith(("\n", " ", "　")) else " "
-    return target + separator + fragment
+    """Join source-adjacent fragments without deduplication or semantic repair."""
+    return " ".join(part.strip() for part in (target_text, fragment_text) if part.strip())
 
 
 def short_fragment_absorption_target(
@@ -3492,10 +3472,10 @@ def drop_redundant_short_body_fragments(plan: PageRenderPlan, blocks, bbox_lines
             target = previous
         else:
             target = short_fragment_absorption_target(plan, idx, source_block, blocks, bbox_lines)
-            if target is not None:
-                target.text = merge_short_fragment_text(target.text, item.text)
         if target is None:
             continue
+        target.text = merge_short_fragment_text(target.text, item.text)
+        target.text_spans.extend(item.text_spans)
         for source_id in item.source_ids:
             if source_id not in target.source_ids:
                 target.source_ids.append(source_id)
@@ -3891,7 +3871,8 @@ def build_page_render_plan(
     source_analysis: TranslationPageOwnership | None = None,
     source_images: list[RenderItem] | None = None,
 ) -> PageRenderPlan:
-    blocks = mark_running_headers([(page_num, blocks)], {page_num: bbox_lines or []})[0][1]
+    if source_analysis is None:
+        blocks = mark_running_headers([(page_num, blocks)], {page_num: bbox_lines or []})[0][1]
     plan = PageRenderPlan(page_num=page_num, page_size=tuple(page_size))
     if not blocks and source_image_path:
         full_page_bbox = (0.0, 0.0, float(page_size[0]), float(page_size[1]))
@@ -3926,11 +3907,6 @@ def build_page_render_plan(
     component_by_source_id = ownership.component_by_source_id(plan.components)
     visual_component_ids = visual_source_ids_from_components(plan.components)
     heading_pairs = standalone_heading_number_pairs(blocks, classes)
-    for number_block, title_block, _number_text in heading_pairs:
-        if number_block["id"] in visual_component_ids or title_block["id"] in visual_component_ids:
-            continue
-        classes[number_block["id"]] = "heading"
-        classes[title_block["id"]] = "heading"
     callout_roles = callout_text_roles(blocks)
     footer_items = journal_footer_render_items(bbox_lines or [], page_size)
     plan.items.extend(footer_items)
@@ -4098,7 +4074,7 @@ def build_page_render_plan(
                     "original_selectable_text",
                     [block["id"]],
                     journal_footer_bbox(page_size),
-                    text=JOURNAL_FOOTER_TEXT,
+                    text=normalize_text(block["text"]),
                     font_size=JOURNAL_FOOTER_FONT_SIZE,
                     style_name="footer",
                     fallback_reason="journal_footer",
@@ -4224,21 +4200,6 @@ def build_page_render_plan(
                 plan.coverage.append(
                     CoverageSource(block["id"], classification)
                 )
-            elif classification == "body" and (heuristic_translated := heuristic_translation_for_missing_block(text)):
-                plan.items.append(
-                    RenderItem(
-                        "translated_text",
-                        [block["id"]],
-                        bbox,
-                        text=heuristic_translated,
-                        font_size=BODY_FONT_SIZE,
-                        style_name="body",
-                        fallback_reason="heuristic_translation",
-                    )
-                )
-                plan.coverage.append(
-                    CoverageSource(block["id"], classification)
-                )
             elif block.get("preserve_image") and not is_body_enumeration_line(text):
                 plan.items.append(
                     RenderItem(
@@ -4270,8 +4231,9 @@ def build_page_render_plan(
         plan.items.append(RenderItem("original_image_clip", [block["id"]], bbox, fallback_reason="unknown_classification"))
         plan.coverage.append(CoverageSource(block["id"], classification))
     add_source_images_to_plan(plan, source_images or [])
-    arrange_page_render_items(plan, blocks, page_size, bbox_lines or [])
     annotate_plan_with_component_metadata(plan, components_by_source_id)
+    bind_plan_text_spans(plan, blocks, translations)
+    arrange_page_render_items(plan, blocks, page_size, bbox_lines or [])
     plan.ownership_validation = render_plan.validate_plan_ownership(plan, blocks)
     return plan
 
@@ -4328,44 +4290,104 @@ def validate_plan_translation_quality(page_num: int, blocks, translations, plan:
     return errors
 
 
-def validate_plan_text_content(page_num: int, blocks, translations, plan: PageRenderPlan) -> list[str]:
-    """Require final translated text to survive plan merges and splits in order."""
-    errors = []
-    ledger_by_id = {entry.block_id: entry for entry in plan.ledger}
-    rendered_by_id = rendered_text_by_source_id(plan)
-    for block in blocks:
-        block_id = block["id"]
-        entry = ledger_by_id.get(block_id)
-        translated = translations.get(block_id)
-        if entry is None or entry.render_kind != "translated_text" or not translated:
+def plan_source_texts(blocks, translations, plan: PageRenderPlan) -> dict[str, str]:
+    # Source text is needed for an untranslated numeric heading joined to its title.
+    texts = {block["id"]: text_content(block.get("text", "")) for block in blocks}
+    mixed_source_ids = {source_id for component in mixed_visual_body_components(plan.components)
+                        for source_id in component.source_ids}
+    texts.update({key: text_content(translation_anchor_text(value) if key in mixed_source_ids else value)
+                  for key, value in translations.items()})
+    return texts
+
+
+def bind_plan_text_spans(plan: PageRenderPlan, blocks, translations) -> None:
+    """Record text ranges before layout; geometry transformations must carry them.
+
+    Initial items may split one source or join a numeric heading and its title.
+    Only exact contiguous text matches are accepted. Unmatched content remains
+    unbound and final validation rejects it instead of guessing an alignment.
+    """
+    texts = plan_source_texts(blocks, translations, plan)
+    cursors = {}
+    for item in plan.items:
+        if item.kind != "translated_text":
             continue
-        expected = translated
-        expected_content = compact_render_content(translation_anchor_text(expected))
-        rendered_chars = iter(compact_render_content(rendered_by_id.get(block_id, "")))
-        if expected_content and not all(char in rendered_chars for char in expected_content):
-            errors.append(f"page {page_num} block {block_id} rendered text is missing or reorders translated content")
-    # A body flow records the order of complete source texts when merging.
-    # Splits retain that ordered list; concatenate their pieces before checking.
-    block_by_id = {block["id"]: block for block in blocks}
+        remaining = text_content(item.text)
+        spans = []
+        for source_id in item.source_ids:
+            source = texts.get(source_id, "")
+            start = cursors.get(source_id, 0)
+            if len(item.source_ids) == 1:
+                found = source.find(remaining, start)
+                if remaining and found >= 0:
+                    spans.append(TextSpan(source_id, found, found + len(remaining), item.component_id))
+                    cursors[source_id] = found + len(remaining)
+                    remaining = ""
+                break
+            length = 0
+            while start + length < len(source) and length < len(remaining) and source[start + length] == remaining[length]:
+                length += 1
+            if length:
+                component = next((c for c in plan.components if c.source_ids == [source_id]), None)
+                spans.append(TextSpan(source_id, start, start + length,
+                                      component.component_id if component else item.component_id))
+                cursors[source_id] = start + length
+                remaining = remaining[length:]
+        item.text_spans = spans
+
+
+def validate_plan_text_content(page_num: int, blocks, translations, plan: PageRenderPlan) -> list[str]:
+    """Require exact-once final text ranges and unchanged text after layout."""
+    errors = []
+    texts = plan_source_texts(blocks, translations, plan)
+    items = [item for item in sorted(plan.items, key=lambda item: (item.bbox[1], item.bbox[0]))
+             if item.kind == "translated_text"]
+    # Sparse helper/legacy plans can be checked without mutating the supplied plan.
+    # Production plans bind ranges before layout and never regenerate them here.
+    if items and not any(item.text_spans for item in items):
+        temporary = replace(plan, items=[replace(item) for item in items])
+        bind_plan_text_spans(temporary, blocks, translations)
+        items = temporary.items
+    ranges = {}
+    for item in items:
+        actual = text_content(item.text)
+        expected = ""
+        for span in item.text_spans:
+            source = texts.get(span.source_id, "")
+            if span.source_id not in item.source_ids or not 0 <= span.start < span.end <= len(source):
+                errors.append(f"page {page_num} text {item.source_ids} has invalid text span")
+                continue
+            expected += source[span.start:span.end]
+            ranges.setdefault(span.source_id, []).append((span.start, span.end))
+        if actual != expected:
+            errors.append(f"page {page_num} text {item.source_ids} is missing, duplicates or changes translated content")
+    required = {source_id for item in items for source_id in item.source_ids
+                if source_id in translations and text_content(translations[source_id])}
+    for source_id in required:
+        cursor = 0
+        for start, end in ranges.get(source_id, []):
+            if start != cursor:
+                errors.append(f"page {page_num} block {source_id} is missing, duplicates or reorders translated content")
+                break
+            cursor = end
+        if cursor != len(texts[source_id]):
+            errors.append(f"page {page_num} block {source_id} has incomplete translated content coverage")
+    # Per-source ranges cannot detect swapping complete sources together with
+    # their spans. Closed body flows also preserve the recorded source order.
     flows = {}
-    for item in sorted(plan.items, key=lambda value: (value.bbox[1], value.bbox[0])):
-        if item.kind == "translated_text" and item.layout_role == "body_flow" and len(item.source_ids) > 1:
+    for item in items:
+        if item.layout_role == "body_flow" and len(item.source_ids) > 1:
             flows.setdefault(tuple(item.source_ids), []).append(item.text)
     for source_ids, pieces in flows.items():
-        # A source may be split across this flow and another item (for example
-        # around a figure). Only a closed group can require each full translation;
-        # partial groups retain the aggregate per-source check above.
-        if any(item.kind == "translated_text" and set(item.source_ids).intersection(source_ids)
+        # A source split around a figure may also occur outside this flow;
+        # its complete translation is checked by the ranges above instead.
+        if any(set(item.source_ids).intersection(source_ids)
                and (item.layout_role != "body_flow" or tuple(item.source_ids) != source_ids)
-               for item in plan.items):
+               for item in items):
             continue
-        expected = "".join(
-            compact_render_content(translation_anchor_text(translations[source_id]))
-            for source_id in source_ids if source_id in block_by_id and translations.get(source_id)
-        )
-        actual = iter(compact_render_content("".join(pieces)))
-        if expected and not all(char in actual for char in expected):
-            errors.append(f"page {page_num} body flow {list(source_ids)} is missing or reorders source text")
+        expected = "".join(texts.get(source_id, "") for source_id in source_ids)
+        if text_content("".join(pieces)) != expected:
+            errors.append(f"page {page_num} body flow {list(source_ids)} is missing or reorders translated content")
     return errors
 
 
@@ -4589,7 +4611,8 @@ def validate_footer_consistency(plans: list[PageRenderPlan]) -> list[str]:
     for plan in plans:
         for item in plan.items:
             if item.layout_role == "journal_footer":
-                footer_shapes.append((plan.page_num, item.kind, item.bbox, item.font_size, item.text))
+                # Content and absolute placement can differ across issues/page sizes.
+                footer_shapes.append((plan.page_num, item.kind, item.style_name, item.font_size, item.color))
     if not footer_shapes:
         return []
     expected = footer_shapes[0][1:]
@@ -4749,50 +4772,17 @@ def item_can_merge_body_text(item: RenderItem, classes: dict[str, str]) -> bool:
     )
 
 
-def short_insertion_is_redundant(base_text: str, insertion: str) -> bool:
-    insertion = normalize_text(insertion).strip()
-    if not insertion:
-        return True
-    if insertion in {"如下", "如下:", "如下："}:
-        return bool(re.search(r"(表述为|如下|如下所示|定义为|记为|形式为)[:：]?\s*$", base_text.strip()))
-    return False
-
-
-def merge_text_at_relative_position(base_text: str, insertion: str, relative_y: float) -> str:
-    insertion = normalize_translation(insertion)
-    if not insertion:
-        return base_text
-    if short_insertion_is_redundant(base_text, insertion):
-        return base_text
-    base_compact = compact_duplicate_text(base_text)
-    insertion_compact = compact_duplicate_text(insertion)
-    if len(insertion_compact) >= 8 and insertion_compact in base_compact:
-        return base_text
+def text_insertion_parts(base_text: str, insertion: str, relative_y: float) -> tuple[str, str]:
+    """Choose a paragraph/numbered-item boundary without rewriting either text."""
     insertion_number = numbered_enumeration_start(insertion)
     if insertion_number is not None:
-        following = next(
-            (
-                match
-                for match in re.finditer(r"\((\d{1,2})\)\s*", base_text)
-                if int(match.group(1)) > insertion_number
-            ),
-            None,
-        )
+        following = next((match for match in re.finditer(r"\((\d{1,2})\)\s*", base_text)
+                          if int(match.group(1)) > insertion_number), None)
         if following:
-            prefix = base_text[: following.start()].rstrip()
-            suffix = base_text[following.start() :].lstrip()
-            return "\n".join(part for part in (prefix, insertion, suffix) if part)
+            return base_text[:following.start()], base_text[following.start():]
     paragraphs = base_text.split("\n")
-    if not paragraphs:
-        return insertion
-    index = int(round(max(0.0, min(1.0, relative_y)) * len(paragraphs)))
-    index = max(0, min(len(paragraphs), index))
-    if len(insertion) <= 36 and paragraphs:
-        target = max(0, min(len(paragraphs) - 1, int(math.floor(max(0.0, min(0.999, relative_y)) * len(paragraphs)))))
-        paragraphs[target] = join_render_lines(paragraphs[target].rstrip(), insertion)
-        return "\n".join(paragraph for paragraph in paragraphs if paragraph.strip())
-    paragraphs.insert(index, insertion)
-    return "\n".join(paragraph for paragraph in paragraphs if paragraph.strip())
+    index = max(0, min(len(paragraphs), int(round(max(0.0, min(1.0, relative_y)) * len(paragraphs)))))
+    return "\n".join(paragraphs[:index]), "\n".join(paragraphs[index:])
 
 
 def merge_contained_text_fragments(plan: PageRenderPlan) -> None:
@@ -4831,7 +4821,11 @@ def merge_contained_text_fragments(plan: PageRenderPlan) -> None:
     for large_idx, fragments in merge_targets.items():
         large = plan.items[large_idx]
         for relative_y, _small_idx, small in sorted(fragments, key=lambda item: item[0]):
-            large.text = merge_text_at_relative_position(large.text, small.text, relative_y)
+            prefix, suffix = text_insertion_parts(large.text, small.text, relative_y)
+            cut = len(text_content(prefix))
+            large.text_spans = (slice_text_spans(large.text_spans, 0, cut) + small.text_spans
+                               + slice_text_spans(large.text_spans, cut, len(text_content(large.text))))
+            large.text = "\n".join(part for part in (prefix, small.text, suffix) if part.strip())
             for source_id in small.source_ids:
                 if source_id not in large.source_ids:
                     large.source_ids.append(source_id)
@@ -4936,6 +4930,9 @@ def merge_adjacent_body_text_flows(plan: PageRenderPlan) -> None:
             fallback_reason=fallback_reason,
             layout_role="body_flow",
             font_policy=font_policy,
+            text_spans=[span for item in ordered_items for span in item.text_spans],
+            component_id=(ordered_items[0].component_id if len({item.component_id for item in ordered_items}) == 1 else ""),
+            component_kind=(ordered_items[0].component_kind if len({item.component_kind for item in ordered_items}) == 1 else ""),
         )
         remove_indices.update(idx for idx, _item in group[1:])
 
@@ -5058,10 +5055,8 @@ def convert_unfit_nonprose_text_to_image_clips(plan: PageRenderPlan, blocks, fit
             new_items.append(item)
             continue
         new_items.append(
-            RenderItem(
-                "original_image_clip",
-                list(item.source_ids),
-                item.bbox,
+            replace(
+                item, kind="original_image_clip", text="", text_spans=[], font_size=None,
                 fallback_reason="unfit_nonprose_image",
             )
         )
@@ -5155,7 +5150,7 @@ def write_vector_pdf(pdf_path: Path, pdf_output: Path, selected_pages, translati
                 output_page_num=output_idx,
                 job_paths=job_paths,
                 fitz=fitz,
-                source_analysis=(source_analysis_by_page or {}).get(page_num),
+                source_analysis=None if source_analysis_by_page is None else source_analysis_by_page[page_num],
                 source_images=render_pdf.source_image_items(src_page, page_num),
             )
             plans.append(plan)
@@ -5380,58 +5375,67 @@ def run_qa_for_job(
         plan_artifact_paths=plan_artifact_paths,
         checks_performed=checks_performed,
     )
-    if deterministic_issues and options.strict_qa:
-        raise RuntimeError(
-            f"deterministic QA found {len(deterministic_issues)} issue(s); "
-            f"see {job_paths['job_dir'] / 'deterministic_quality_report.md'}"
-        )
-
-    items = qa.choose_items_for_qa(original_map, translations, options.qa_mode, options.qa_sample_size)
-    sampled_translations = {item["id"]: item["translation"] for item in items}
-    backtranslations = qa.run_backtranslation(
-        items,
-        options.qa_batch_chars,
-        job_paths["job_dir"],
-        model=options.model,
-        reasoning_effort=options.reasoning_effort,
-        retries=options.retries,
-    )
-    report = qa.build_report(original_map, sampled_translations, backtranslations)
-    report_path = job_paths["job_dir"] / "backtranslate_report.json"
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    qa.write_markdown(report, job_paths["job_dir"] / "backtranslate_report.md")
     result = {
         "deterministic_issue_count": len(deterministic_issues),
         "deterministic_issues": deterministic_issues[:10],
         "plan_artifact_paths": plan_artifact_paths,
         "deterministic_checks_performed": checks_performed,
-        "checked_blocks": len(report),
-        "worst_score": report[0]["score"] if report else None,
-        "worst_items": report[:5],
+        "checked_blocks": 0,
+        "worst_score": None,
+        "worst_items": [],
+        "visual_status": "not_run",
+        "semantic_status": "not_run",
     }
+    failures = []
+    # Independent checks finish before applying acceptance policy. In particular,
+    # an unavailable model cannot prevent the deterministic visual report.
     if output_pdf_path is not None and getattr(options, "render_mode", "vector") == "vector":
-        visual_result = run_visual_qa_for_job(
-            selected_pages,
-            job_paths,
-            page_size,
-            options,
-            output_pdf_path,
-            plan_artifact_paths,
-            render_result.plans,
+        try:
+            result.update(run_visual_qa_for_job(
+                selected_pages, job_paths, page_size, options, output_pdf_path,
+                plan_artifact_paths, render_result.plans,
+            ))
+            result["visual_status"] = "completed"
+        except (RuntimeError, OSError, ValueError) as exc:
+            result.update(visual_status="failed", visual_error=str(exc))
+            failures.append(exc)
+    try:
+        items = qa.choose_items_for_qa(original_map, translations, options.qa_mode, options.qa_sample_size)
+        sampled_translations = {item["id"]: item["translation"] for item in items}
+        backtranslations = qa.run_backtranslation(
+            items, options.qa_batch_chars, job_paths["job_dir"], model=options.model,
+            reasoning_effort=options.reasoning_effort, retries=options.retries,
         )
-        result.update(visual_result)
-        ownership_error_count = int(visual_result.get("ownership_error_count", 0))
-        if getattr(options, "strict_qa", False) and ownership_error_count > 0:
+        report = qa.build_report(original_map, sampled_translations, backtranslations)
+        (job_paths["job_dir"] / "backtranslate_report.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        qa.write_markdown(report, job_paths["job_dir"] / "backtranslate_report.md")
+        result.update(semantic_status="completed", checked_blocks=len(report),
+                      worst_score=report[0]["score"] if report else None, worst_items=report[:5])
+    except (RuntimeError, OSError, ValueError) as exc:
+        result.update(semantic_status="failed", semantic_error=str(exc))
+        failures.append(exc)
+    (job_paths["job_dir"] / "qa_summary.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    if failures:
+        raise failures[0]
+    if deterministic_issues and options.strict_qa:
+        raise RuntimeError(
+            f"deterministic QA found {len(deterministic_issues)} issue(s); "
+            f"see {job_paths['job_dir'] / 'deterministic_quality_report.md'}"
+        )
+    if getattr(options, "strict_qa", False) and result.get("visual_error_count", 0) > 0:
+        if result.get("ownership_error_count", 0) > 0:
             raise RuntimeError(
-                f"strict QA failed with {ownership_error_count} ownership error(s); "
-                f"see {visual_result['visual_report_md']}"
+                f"strict QA failed with {result['ownership_error_count']} ownership error(s); "
+                f"see {result['visual_report_md']}"
             )
-        if getattr(options, "strict_qa", False) and visual_result["visual_error_count"] > 0:
-            raise RuntimeError(
-                f"visual QA found {visual_result['visual_error_count']} error(s); "
-                f"see {visual_result['visual_report_md']}"
-            )
+        raise RuntimeError(
+            f"visual QA found {result['visual_error_count']} error(s); "
+            f"see {result['visual_report_md']}"
+        )
     return result
+
 
 
 @dataclass(frozen=True)
@@ -5503,7 +5507,6 @@ def translate_document(pdf_path: Path, output_path: Path, options: DocumentOptio
         pdf_path,
         options.dpi,
         job_paths,
-        pdf_size_pt,
         options.page_start,
         options.page_end,
         force_ocr=options.force_ocr,

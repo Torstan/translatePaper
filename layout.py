@@ -13,6 +13,8 @@ from render_plan import (
     bbox_area,
     bbox_significantly_overlaps_protected,
     ledger_classifications,
+    slice_text_spans,
+    text_content,
 )
 from regions import (
     TEXT_PROTECTED_GAP_PT,
@@ -1189,6 +1191,7 @@ def split_translated_text_around_protected(plan: PageRenderPlan, page_size=None,
             continue
         texts = distribute_text_across_segments(item.text, segments, text_style(item.style_name or "body"), fitz=fitz)
         replacement_items = []
+        text_offset = 0
         for segment, text in zip(segments, texts):
             if not text.strip():
                 continue
@@ -1198,9 +1201,11 @@ def split_translated_text_around_protected(plan: PageRenderPlan, page_size=None,
                     source_ids=list(item.source_ids),
                     bbox=segment,
                     text=text,
+                    text_spans=slice_text_spans(item.text_spans, text_offset, text_offset + len(text_content(text))),
                     fallback_reason=item.fallback_reason or "split_around_visual",
                 )
             )
+            text_offset += len(text_content(text))
         if not replacement_items:
             new_items.append(item)
             continue
