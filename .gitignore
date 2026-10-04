@@ -1,2 +1,8 @@
+docs/superpowers
+.DS_Store
+__pycache__/
+docs/
+tests/__pycache__/
+vendor/
+work/
 .worktrees
-.worktrees/
